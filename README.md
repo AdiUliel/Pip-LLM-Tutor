@@ -13,7 +13,7 @@
 ## ESP32 SDK version used in this project: 
 
 ## Arduino/ESP32 libraries used in this project:
-* XXXX - version XXXXX
+* ESP32 Speech-to-Text - version 2.0.1
 * XXXX - version XXXXX
 * XXXX - version XXXXX
 
