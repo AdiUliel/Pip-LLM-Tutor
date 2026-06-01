@@ -11,6 +11,7 @@
 * Assets: link to 3D printed parts, Audio files used in this project, Fritzing file for connection diagram (FZZ format) etc
 
 ## ESP32 SDK version used in this project: 
+* ESP32 by Espressif - version 2.0.17
 
 ## Arduino/ESP32 libraries used in this project:
 * ESP32 Speech-to-Text - version 2.0.1
