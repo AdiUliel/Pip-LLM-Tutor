@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Devices ──────────────────────────────────────────────────────────────
+    // A device authenticates with Firebase Auth (anonymous or device token).
+    // It can only read/write its own document.
+    match /devices/{deviceId} {
+      allow read, write: if request.auth != null && request.auth.uid == deviceId;
+    }
+
+    // ── Sessions ─────────────────────────────────────────────────────────────
+    // Any authenticated user (device or Flutter app) can read sessions.
+    // Only the device that owns the session can create it.
+    match /sessions/{sessionId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.deviceId == request.auth.uid;
+      allow update: if request.auth != null
+                    && resource.data.deviceId == request.auth.uid;
+
+      // ── Exchanges (subcollection) ─────────────────────────────────────────
+      // The ESP32 (device) creates exchanges with a question.
+      // The Cloud Function (admin SDK, bypasses rules) writes the answer.
+      // Flutter reads exchanges in real-time.
+      match /exchanges/{exchangeId} {
+        allow read: if request.auth != null;
+
+        // Device can create a new exchange (question)
+        allow create: if request.auth != null
+                      && get(/databases/$(database)/documents/sessions/$(sessionId)).data.deviceId == request.auth.uid
+                      && request.resource.data.keys().hasAll(['question', 'status', 'askedAt'])
+                      && request.resource.data.status == 'pending'
+                      && request.resource.data.answer == null;
+
+        // Device cannot update exchanges — only Cloud Functions (admin SDK) can write answers
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+  }
+}
