@@ -1,0 +1,43 @@
+{
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "llm-tutor-d721e",
+          "appId": "1:233818904977:android:39f93f9f9d649b0f616230",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "llm-tutor-d721e",
+          "configurations": {
+            "android": "1:233818904977:android:39f93f9f9d649b0f616230",
+            "web": "1:233818904977:web:76839d8d4143d89d616230"
+          }
+        }
+      }
+    }
+  }
+}

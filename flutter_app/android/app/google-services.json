@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "233818904977",
+    "project_id": "llm-tutor-d721e",
+    "storage_bucket": "llm-tutor-d721e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:233818904977:android:39f93f9f9d649b0f616230",
+        "android_client_info": {
+          "package_name": "com.emotionaltutor.emotional_tutor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD71FKbTF6s2rOWFTJqwzmvZEzsC-B_I64"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
