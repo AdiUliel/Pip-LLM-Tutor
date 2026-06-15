@@ -3,18 +3,21 @@
  * ----------------------------------------------------------------------------
  *  Lifted nearly byte-for-byte from the original Pip_ESP32.ino reference
  *  sketch — the drawing helpers and per-state logic are untouched so the
- *  visual output is identical to the design. The only structural changes:
+ *  visual output is identical to the design. Structural changes:
  *    - setup()/loop() removed; their bodies wrapped as Pip::begin/tick().
  *    - tick() is non-blocking — pacing via millis() instead of delay(33).
  *    - state-cycling demo loop dropped (lives in examples/PipDemo/ now).
  *    - bottom status strip cached + redrawn only on change.
  *    - new Pip::setDeviceStatus() maps the project's deviceState vocabulary
  *      onto the 12-emotion enum (table in PipFace.h).
+ *    - bottom strip now renders Hebrew (and any UTF-8) via u8g2's
+ *      unifont_t_hebrew, with a tiny bidi-lite pass to handle RTL display.
  * ========================================================================== */
 
 #include "PipFace.h"
 
 #include <TFT_eSPI.h>
+#include <U8g2_for_TFT_eSPI.h>
 #include <math.h>
 #include <string.h>
 
@@ -22,6 +25,7 @@ namespace {  // ---- private to this translation unit ----
 
 TFT_eSPI  tft  = TFT_eSPI();
 TFT_eSprite face = TFT_eSprite(&tft);     // 240x240 face buffer
+U8g2_for_TFT_eSPI u8f;                    // Unicode/Hebrew text engine
 
 enum PipState {
   IDLE, SPEAKING, LISTENING, THINKING,
@@ -229,22 +233,123 @@ void fillStarTFT(int cx, int cy, int r, uint16_t col) {
   }
 }
 
-// Bottom status strip — paints text + star icon + count straight to the TFT.
-// Right-aligned: star is a real 5-point shape (not the ASCII '*' glyph).
+// ---- Bidi-lite for RTL display on a LTR rendering engine ----
+//
+// Takes a UTF-8 string in logical order and returns its visual order so
+// that drawing it left-to-right makes a Hebrew reader see it right-to-left
+// correctly. Numbers and Latin letters stay in their natural order within
+// their own runs; Hebrew runs are reversed; the run order itself is
+// reversed.
+//
+// Algorithm (works for Hebrew + digits + Latin punctuation, the only
+// scripts this project produces):
+//   1. Reverse the entire codepoint sequence.
+//   2. Within that reversed sequence, reverse each run of "LTR-strong"
+//      codepoints (ASCII digits + Latin letters) back to its natural order.
+// Hebrew letters, spaces, and punctuation stay reversed — which is exactly
+// what RTL display needs. This handles the project's prompts ("כמה זה 5
+// כפול 8?", "איך אומרים book באנגלית?", etc.) without pulling in a full
+// Unicode Bidirectional Algorithm.
+bool isLtrStrong(uint32_t cp) {
+  return (cp >= '0' && cp <= '9') ||
+         (cp >= 'a' && cp <= 'z') ||
+         (cp >= 'A' && cp <= 'Z');
+}
+
+String bidiToVisual(const char* utf8) {
+  constexpr int MAX_CPS = 128;
+  uint32_t cps[MAX_CPS];
+  int n = 0;
+
+  // 1. UTF-8 -> codepoints.
+  const uint8_t* p = (const uint8_t*)utf8;
+  while (*p && n < MAX_CPS) {
+    uint32_t cp = 0;
+    if (*p < 0x80) {
+      cp = *p++;
+    } else if ((*p & 0xE0) == 0xC0) {
+      cp  = (uint32_t)(*p++ & 0x1F) << 6;
+      cp |= (uint32_t)(*p++ & 0x3F);
+    } else if ((*p & 0xF0) == 0xE0) {
+      cp  = (uint32_t)(*p++ & 0x0F) << 12;
+      cp |= (uint32_t)(*p++ & 0x3F) << 6;
+      cp |= (uint32_t)(*p++ & 0x3F);
+    } else {
+      p++;  // 4-byte or invalid — skip
+      continue;
+    }
+    cps[n++] = cp;
+  }
+
+  // 2. Reverse the whole sequence.
+  for (int i = 0, j = n - 1; i < j; i++, j--) {
+    uint32_t t = cps[i]; cps[i] = cps[j]; cps[j] = t;
+  }
+
+  // 3. Re-reverse LTR-strong runs (numbers + Latin) so they read naturally.
+  int i = 0;
+  while (i < n) {
+    if (isLtrStrong(cps[i])) {
+      int j = i;
+      while (j < n && isLtrStrong(cps[j])) j++;
+      for (int a = i, b = j - 1; a < b; a++, b--) {
+        uint32_t t = cps[a]; cps[a] = cps[b]; cps[b] = t;
+      }
+      i = j;
+    } else {
+      i++;
+    }
+  }
+
+  // 4. Codepoints -> UTF-8.
+  String out;
+  out.reserve(n * 3);
+  for (int k = 0; k < n; k++) {
+    uint32_t cp = cps[k];
+    if (cp < 0x80) {
+      out += (char)cp;
+    } else if (cp < 0x800) {
+      out += (char)(0xC0 | (cp >> 6));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else {
+      out += (char)(0xE0 | (cp >> 12));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    }
+  }
+  return out;
+}
+
+// Bottom status strip — Hebrew-capable text on the right (RTL aligned),
+// star icon + count on the left. Text rendered via u8g2's Hebrew unifont
+// so כמה זה 5 כפול 8? displays correctly; the star count uses the
+// built-in ASCII font 4 since it's just digits.
 void drawStrip() {
   tft.fillRect(0, 240, 240, 80, SCREEN_BG);
   tft.drawFastHLine(0, 242, 240, GLOWD);
-  tft.setTextColor(WHT, SCREEN_BG);
-  tft.setTextDatum(ML_DATUM);
-  tft.drawString(stripText, 16, 280, 4);
+
+  // ---- stars + count, left side (less prominent badge in Hebrew layout) ----
+  int leftCursor = 16;
   if (stripStars >= 0) {
+    fillStarTFT(22, 282, 10, GOLD);
     char buf[8]; snprintf(buf, sizeof(buf), "%d", stripStars);
-    int numW = tft.textWidth(buf, 4);
     tft.setTextColor(GOLD, SCREEN_BG);
-    tft.setTextDatum(MR_DATUM);
-    tft.drawString(buf, 224, 280, 4);
-    // 10 px star, sitting just to the left of the digit(s).
-    fillStarTFT(224 - numW - 14, 280, 10, GOLD);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString(buf, 38, 282, 4);
+    leftCursor = 38 + tft.textWidth(buf, 4) + 8;
+  }
+
+  // ---- question text, right side, bidi-reordered ----
+  if (stripText[0] != '\0') {
+    String visual = bidiToVisual(stripText);
+    u8f.setFont(u8g2_font_unifont_t_hebrew);
+    u8f.setForegroundColor(WHT);
+    u8f.setBackgroundColor(SCREEN_BG);
+    int textW = u8f.getUTF8Width(visual.c_str());
+    int x = 240 - 16 - textW;       // right-align with 16 px right pad
+    if (x < leftCursor) x = leftCursor;
+    u8f.setCursor(x, 290);          // baseline ~16 px above strip bottom
+    u8f.print(visual);
   }
 }
 
@@ -283,6 +388,14 @@ bool begin() {
     tft.drawString("Sprite alloc failed - enable PSRAM", 6, 6, 2);
     return false;
   }
+
+  // u8g2 wrapper — used by the bottom strip for Hebrew/Unicode rendering.
+  // Mode 1 = transparent background per glyph (we paint the strip's solid
+  // background separately in drawStrip()).
+  u8f.begin(tft);
+  u8f.setFontMode(1);
+  u8f.setFontDirection(0);
+
   // Paint one frame immediately so the screen isn't blank between begin()
   // and the first tick().
   drawFace(millis());
