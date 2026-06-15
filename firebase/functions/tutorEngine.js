@@ -1,7 +1,9 @@
 const { FieldValue } = require("firebase-admin/firestore");
 const { checkAnswer, clamp, generateQuestion } = require("./questionGenerator");
 
-const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-2.0-flash-001";
+// Default model — kept in sync with index.js. gemini-2.0-flash-001 was
+// discontinued (404); 2.5-flash is the current child-safe default.
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 // Child-safe safety settings applied to every Gemini call in this module.
 const CHILD_SAFETY_SETTINGS = [
@@ -135,10 +137,10 @@ function safeJsonParse(text) {
   }
 }
 
-async function llmFeedback(ai, payload) {
+async function llmFeedback(ai, payload, model = DEFAULT_MODEL, safetySettings = CHILD_SAFETY_SETTINGS) {
   if (!ai) return null;
   const result = await ai.models.generateContent({
-    model: MODEL_NAME,
+    model,
     contents: [
       {
         role: "user",
@@ -150,7 +152,7 @@ async function llmFeedback(ai, payload) {
       maxOutputTokens: 180,
       temperature: 0.45,
       responseMimeType: "application/json",
-      safetySettings: CHILD_SAFETY_SETTINGS,
+      safetySettings,
     },
   });
   return safeJsonParse(result.text);
@@ -209,7 +211,16 @@ async function createInitialQuestion(db, sessionRef, sessionData, child) {
   return question;
 }
 
-async function processLearningTurn({ db, ai, sessionId, exchangeId, exchangeData }) {
+async function processLearningTurn({
+  db,
+  ai,
+  model = DEFAULT_MODEL,
+  safetySettings = CHILD_SAFETY_SETTINGS,
+  synthesize = null,
+  sessionId,
+  exchangeId,
+  exchangeData,
+}) {
   const sessionRef = db.collection("sessions").doc(sessionId);
   const exchangeRef = sessionRef.collection("exchanges").doc(exchangeId);
   const sessionSnap = await sessionRef.get();
@@ -271,7 +282,7 @@ async function processLearningTurn({ db, ai, sessionId, exchangeId, exchangeData
         expectedAnswer: q.expectedAnswer,
         correct: q.correct,
       })),
-    });
+    }, model, safetySettings);
     if (llm && typeof llm.spokenFeedback === "string") {
       feedback = {
         spokenFeedback: llm.spokenFeedback.slice(0, 500),
@@ -297,6 +308,15 @@ async function processLearningTurn({ db, ai, sessionId, exchangeId, exchangeData
   const mood = moodFromEmotion(feedback.emotion);
   const now = FieldValue.serverTimestamp();
 
+  // Build the single utterance the robot will speak: the feedback on this answer
+  // followed by the next question. Synthesize it to a WAV BEFORE we flip the
+  // exchange to "done", so the polling device always reads a ready audioUrl.
+  const spokenText = `${feedback.spokenFeedback} ${nextQuestion.prompt}`.trim();
+  let audioUrl = "";
+  if (synthesize) {
+    audioUrl = await synthesize(spokenText, exchangeId);
+  }
+
   await db.runTransaction(async (tx) => {
     tx.set(
       sessionRef.collection("questions").doc(exchangeId),
@@ -321,6 +341,7 @@ async function processLearningTurn({ db, ai, sessionId, exchangeId, exchangeData
       isCorrect,
       answer: feedback.spokenFeedback,
       spokenFeedback: feedback.spokenFeedback,
+      audioUrl,
       emotion: feedback.emotion,
       shouldTakeBreak: feedback.shouldTakeBreak,
       nextQuestion: nextQuestion.prompt,

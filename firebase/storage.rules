@@ -1,13 +1,27 @@
 rules_version = '2';
+
 service firebase.storage {
   match /b/{bucket}/o {
-    // TTS audio files: publicly readable, only Cloud Functions (admin SDK) can write
+
+    // ── TTS audio (written by Cloud Functions, played by the ESP32) ──────────
+    // Public read so the device can stream the WAV without an auth token;
+    // only the Admin SDK (Cloud Functions) may write.
     match /tts/{file} {
-      allow read:  if true;   // public — ESP32 downloads without auth
-      allow write: if false;  // admin SDK only (Cloud Function)
+      allow read:  if true;
+      allow write: if false;
     }
 
-    // Everything else is private
+    // ── Homework materials uploaded by the parent app ───────────────────────
+    // Any authenticated user (parent app: email/password; device: anonymous)
+    // may read. Writes are authenticated and capped at 5 MB
+    // (mirrors AppConstants.maxUploadBytes).
+    match /materials/{childId}/{file=**} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Everything else is private.
     match /{allPaths=**} {
       allow read, write: if false;
     }

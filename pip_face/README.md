@@ -11,23 +11,31 @@ Animated procedural face for the ESP32-S3 + ILI9341 tutor device. Twelve emotion
 
 - [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) (Arduino Library Manager).
 
-`TFT_eSPI/User_Setup.h` must match your wiring. Example for ESP32-S3:
+`TFT_eSPI/User_Setup.h` must match your wiring. **This project's board is the
+LCDWIKI 2.8" ESP32-S3 Display** — use the pins below (a ready-to-copy file ships
+as [`User_Setup_LCDWIKI.h`](User_Setup_LCDWIKI.h)):
 
 ```c
 #define ILI9341_DRIVER       // works for ILI9341 and ILI9341V (same init)
 #define TFT_WIDTH  240
 #define TFT_HEIGHT 320
+#define TFT_MISO 13
 #define TFT_MOSI 11
 #define TFT_SCLK 12
 #define TFT_CS   10
-#define TFT_DC    9
-#define TFT_RST   8
+#define TFT_DC   46
+#define TFT_RST  -1          // tied to board reset; no dedicated GPIO
 #define SPI_FREQUENCY 40000000
 
 // IPS panels (this one is IPS) often need color inversion. If the demo
 // looks inverted (black appears white), uncomment the next line:
 // #define TFT_INVERSION_ON
 ```
+
+> ⚠️ The previous generic example used `TFT_DC 9` / `TFT_RST 8`. **Do not use
+> those on this board** — GPIO8 is the I2S speaker output (`I2S_DOUT`) and GPIO9
+> is the battery ADC. The backlight (GPIO45) is driven by the main firmware, so
+> there is no `TFT_BL` line here.
 
 ## Quick start
 

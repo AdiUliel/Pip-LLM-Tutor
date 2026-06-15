@@ -1,34 +1,51 @@
 /**
- * Homework Assistant — ESP32-S3 Firmware
+ * Homework Assistant — ESP32-S3 Firmware (Emotional Tutor, edge-to-edge)
  * Board: LCDWIKI 2.8" ESP32-S3 Display (ES3C28P / ES3N28P)
  *
- * Flow:
- *   1. Boot → connect WiFi → Firebase anonymous auth → create session
- *   2. IDLE: wait for button press (IO2, active LOW)
- *   3. RECORDING: hold button → I2S audio capture from ES8311 mic
- *   4. Release button → encode PCM → POST to Cloud Function STT proxy
- *   5. PROCESSING: post question to Firestore → Cloud Function calls Gemini
- *   6. Poll Firestore for answer
- *   7. SPEAKING: stream TTS MP3 answer via speaker
- *   8. Back to IDLE
+ * This firmware drives the team's adaptive tutor loop end-to-end and shows the
+ * pip_face animated emotions on the ILI9341 display. It also publishes
+ * deviceState so the Flutter parent app sees the device live.
  *
- * Required libraries (Arduino IDE → Tools → Manage Libraries):
- *   - ArduinoJson  by Benoit Blanchon  (v7.x)
- *   - ESP32-audioI2S  by schreibfaul1
+ * Flow:
+ *   1. Boot → ES8311 codec → pip_face → WiFi → NTP → Firebase anon auth
+ *   2. Create a session (auto-detects the child profile by deviceId)
+ *   3. Backend (onSessionCreated) generates the first question + its TTS audio
+ *   4. Device SPEAKS the question (face: speaking) then LISTENS (face: listening)
+ *   5. Child holds the button and answers → I2S capture → STT proxy
+ *   6. Device posts a learning_turn → backend grades + Gemini feedback +
+ *      next question + combined TTS audio
+ *   7. Device shows the returned EMOTION on pip_face, SPEAKS feedback+next
+ *      question, then loops back to step 4 with the next question
+ *
+ * Required libraries (Arduino IDE → Manage Libraries):
+ *   - ArduinoJson      by Benoit Blanchon (v7.x)
+ *   - TFT_eSPI         by Bodmer            (for pip_face; configure User_Setup)
+ *   See INTEGRATION.md for the TFT_eSPI User_Setup for this exact board.
  *
  * Board settings (Arduino IDE):
  *   - Board: "ESP32S3 Dev Module"
  *   - Flash Size: 16MB (128Mb)
- *   - PSRAM: "OPI PSRAM"   ← IMPORTANT for the audio buffer
+ *   - PSRAM: "OPI PSRAM"   ← IMPORTANT (audio buffer + pip_face sprite)
  *   - Partition Scheme: "Huge APP"
  *   - Upload Speed: 921600
  */
 
 #include <WiFi.h>
+#include <time.h>
 #include <driver/i2s.h>   // ESP32-S3 built-in I2S driver
 #include "secrets.h"
 #include "pins.h"
 #include "es8311.h"
+// ── pip_face on/off switch ────────────────────────────────────────────────────
+// Set to 0 to build & boot WITHOUT the display. The audio tutor loop runs fine
+// without it — use this to isolate a display/TFT_eSPI problem from the rest of
+// the device. With USE_PIP_FACE=1 you MUST have TFT_eSPI installed AND its
+// User_Setup configured for this board (copy pip_face/User_Setup_LCDWIKI.h over
+// libraries/TFT_eSPI/User_Setup.h), or TFT_eSPI will crash at init.
+#define USE_PIP_FACE 1
+#if USE_PIP_FACE
+  #include "PipFace.h"     // animated face (TFT_eSPI). See INTEGRATION.md.
+#endif
 #include "firebase_client.h"
 #include "stt_client.h"
 #include "tts_player.h"
@@ -41,9 +58,17 @@ State state = IDLE;
 uint8_t* recordBuf  = nullptr;
 size_t   recordBytes = 0;
 
+// ── Tutor loop state ──────────────────────────────────────────────────────────
+String g_currentQuestion = "";
+int    g_stars           = 0;     // running correct-answer count (shown on strip)
+bool   g_haveFace        = false; // pip_face initialised OK
+
+// ── Heartbeat ─────────────────────────────────────────────────────────────────
+uint32_t g_lastHeartbeat = 0;
+const uint32_t HEARTBEAT_MS = 10000;  // app online-timeout is 30s
+
 // ─────────────────────────────────────────────────────────────────────────────
 // I2S setup for RECORDING (raw driver, full-duplex)
-// Call before reading from the mic.
 // ─────────────────────────────────────────────────────────────────────────────
 void i2s_start_recording() {
   i2s_config_t cfg = {
@@ -55,11 +80,10 @@ void i2s_start_recording() {
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count    = 8,
     .dma_buf_len      = 512,
-    .use_apll         = true,           // accurate clock for STT
+    .use_apll         = true,
     .tx_desc_auto_clear = true,
-    .mclk_multiple    = I2S_MCLK_MULTIPLE_384,  // MCLK = 384 * 16000 = 6.144 MHz (matches official LCD Wiki example)
+    .mclk_multiple    = I2S_MCLK_MULTIPLE_384,
   };
-
   i2s_pin_config_t pins = {
     .mck_io_num   = PIN_I2S_MCLK,
     .bck_io_num   = PIN_I2S_BCLK,
@@ -67,7 +91,6 @@ void i2s_start_recording() {
     .data_out_num = PIN_I2S_DOUT,
     .data_in_num  = PIN_I2S_DIN,
   };
-
   i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
   i2s_set_pin(I2S_PORT, &pins);
   i2s_zero_dma_buffer(I2S_PORT);
@@ -78,7 +101,8 @@ void i2s_stop_recording() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 void connectWiFi() {
   Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -87,26 +111,103 @@ void connectWiFi() {
     Serial.print(".");
   }
   Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
-  delay(500); // let the stack settle before HTTPS
+  delay(500);
+}
+
+void syncClock() {
+  // Real time is needed for Firestore timestamps + the app heartbeat freshness.
+  configTime(0, 0, NTP_SERVER);     // UTC; gmtime_r() is used downstream
+  Serial.print("[Time] Syncing NTP");
+  time_t now = time(nullptr);
+  uint32_t start = millis();
+  while (now < 1000000000 && millis() - start < 10000) {
+    delay(300);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println(now < 1000000000 ? "  (failed — using placeholder time)"
+                                  : "  ok: " + isoNow());
+}
+
+// Map the backend emotion vocabulary onto a pip_face emotion label.
+const char* pipEmotionFor(const String& e) {
+  if (e == "celebrating") return "celebrating";
+  if (e == "happy")       return "happy";
+  if (e == "encouraging") return "encouraging";
+  if (e == "concerned")   return "concerned";
+  if (e == "neutral")     return "happy";
+  return "encouraging";
+}
+
+// These are no-ops when USE_PIP_FACE==0 (or when begin() failed) so the rest of
+// the firmware never has to care whether the display is present.
+void faceEmotion(const char* label) {
+#if USE_PIP_FACE
+  if (g_haveFace) Pip::setEmotion(label);
+#else
+  (void)label;
+#endif
+}
+void faceStatus(const char* status, int mood = -1) {
+#if USE_PIP_FACE
+  if (g_haveFace) Pip::setDeviceStatus(status, mood);
+#else
+  (void)status; (void)mood;
+#endif
+}
+void faceStrip(const String& text) {
+#if USE_PIP_FACE
+  if (g_haveFace) Pip::setStrip(text.c_str(), g_stars);
+#else
+  (void)text;
+#endif
+}
+void faceTick() {
+#if USE_PIP_FACE
+  if (g_haveFace) Pip::tick();
+#endif
+}
+
+// Speak the current question and move into the "waiting for the child" state.
+void askCurrentQuestion(const String& audioUrl) {
+  Serial.println("[Tutor] Question: " + g_currentQuestion);
+  faceStatus("asking");
+  faceStrip(g_currentQuestion);
+  firestoreWriteDeviceState("asking", g_currentQuestion);
+  faceTick();
+
+  state = SPEAKING;
+  speakFromUrl(audioUrl);            // releases I2S when done
+
+  // Now listen.
+  state = IDLE;
+  faceStatus("listening");
+  firestoreWriteDeviceState("listening", g_currentQuestion);
+  Serial.println("\n🎤 Hold the button and say your answer.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n=== Homework Assistant Booting ===");
+  Serial.println("\n=== Homework Assistant (Emotional Tutor) Booting ===");
 
-  // Button — IO3 reads press, IO2 acts as GND (OUTPUT LOW)
+  // Button — IO3 reads press, IO2 acts as GND (OUTPUT LOW).
+  // (If the IO3 expansion line is flaky on your unit, switch PIN_BTN to GPIO0 /
+  //  the onboard BOOT button in pins.h — see INTEGRATION.md.)
   pinMode(PIN_BTN_GND, OUTPUT);
   digitalWrite(PIN_BTN_GND, LOW);
   pinMode(PIN_BTN, INPUT_PULLUP);
 
-  // Speaker amp — disabled until needed
+  // Speaker amp — disabled until needed.
   pinMode(PIN_AUDIO_EN, OUTPUT);
   digitalWrite(PIN_AUDIO_EN, HIGH);
 
-  // PSRAM check
+  // Display backlight (pip_face / TFT_eSPI does not manage it).
+  pinMode(PIN_LCD_BL, OUTPUT);
+  digitalWrite(PIN_LCD_BL, HIGH);
+
+  // PSRAM check + record buffer.
   if (!psramFound()) {
     Serial.println("⚠️  PSRAM not found! Check board settings (PSRAM: OPI PSRAM).");
   } else {
@@ -114,71 +215,92 @@ void setup() {
     Serial.printf("[PSRAM] Record buffer: %u bytes\n", RECORD_BUF_SIZE);
   }
 
-  // Init ES8311 codec via I2C
-  if (!initES8311()) {
-    Serial.println("⚠️  ES8311 init failed. Audio may not work.");
-  }
+  // pip_face (needs PSRAM for its 240x240 sprite, and a correct TFT_eSPI
+  // User_Setup for this board).
+#if USE_PIP_FACE
+  g_haveFace = Pip::begin();
+  if (!g_haveFace) Serial.println("⚠️  pip_face init failed (PSRAM/TFT_eSPI). Continuing audio-only.");
+  faceEmotion("thinking");
+  faceTick();
+#else
+  Serial.println("[pip_face] disabled at build time (USE_PIP_FACE=0).");
+#endif
 
-  // WiFi
+  // ES8311 codec via I2C.
+  if (!initES8311()) Serial.println("⚠️  ES8311 init failed. Audio may not work.");
+
+  // Network + time + auth.
   connectWiFi();
+  syncClock();
 
-  // Firebase anonymous auth
   g_idToken = firebaseSignIn();
   if (g_idToken.isEmpty()) {
     Serial.println("❌ Firebase auth failed. Check FIREBASE_WEB_API_KEY in secrets.h");
-    while (true) delay(1000);
+    faceStatus("error");
+    while (true) { faceTick(); delay(200); }
   }
 
-  // Create Firestore session
-  g_sessionId = firestoreCreateSession();
+  // Create session (auto-detects the child) and wait for the first question.
+  g_sessionId = firestoreCreateSession(SESSION_SUBJECT);
   if (g_sessionId.isEmpty()) {
     Serial.println("❌ Could not create Firestore session.");
-    while (true) delay(1000);
+    faceStatus("error");
+    firestoreWriteDeviceState("error");
+    while (true) { faceTick(); delay(200); }
+  }
+  firestoreWriteDeviceState("idle");
+
+  Serial.println("[Tutor] Waiting for the first question from the backend...");
+  faceEmotion("thinking");
+  String firstAudio;
+  if (!firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio)) {
+    Serial.println("❌ No first question. Check the Cloud Functions / Vertex AI setup.");
+    faceStatus("error");
+    firestoreWriteDeviceState("error");
+    while (true) { faceTick(); delay(200); }
   }
 
-  Serial.println("\n✅ Ready! Hold the button to ask a question.");
+  askCurrentQuestion(firstAudio);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
 void loop() {
-  bool btnDown = (digitalRead(PIN_BTN) == LOW);
+  faceTick();  // ~30fps internally; cheap to call every iteration
 
-  // ── DEBUG: print pin state every 500 ms (remove once button works) ─────────
-  static uint32_t lastDebug = 0;
-  if (millis() - lastDebug > 500) {
-    Serial.printf("[BTN] IO%d = %s\n", PIN_BTN, btnDown ? "LOW (pressed)" : "HIGH (idle)");
-    lastDebug = millis();
+  // Heartbeat so the app keeps showing the device online.
+  if (millis() - g_lastHeartbeat > HEARTBEAT_MS) {
+    g_lastHeartbeat = millis();
+    const char* hb = (state == IDLE) ? "listening" : "asking";
+    firestoreWriteDeviceState(hb, g_currentQuestion);
   }
 
-  // ── IDLE → start recording when button pressed ────────────────────────────
+  bool btnDown = (digitalRead(PIN_BTN) == LOW);
+
+  // ── IDLE → start recording the child's answer when button pressed ──────────
   if (state == IDLE && btnDown) {
-    Serial.println("[Main] Recording...");
+    Serial.println("[Main] Recording answer...");
     state = RECORDING;
     recordBytes = 0;
+    faceEmotion("listening");
     i2s_start_recording();
   }
 
-  // ── RECORDING → capture audio while button is held ───────────────────────
+  // ── RECORDING → capture while button held ─────────────────────────────────
   if (state == RECORDING) {
     if (btnDown && recordBytes < RECORD_BUF_SIZE) {
       size_t bytesRead = 0;
       i2s_read(I2S_PORT,
                recordBuf + recordBytes,
                min((size_t)1024, RECORD_BUF_SIZE - recordBytes),
-               &bytesRead,
-               portMAX_DELAY);
+               &bytesRead, portMAX_DELAY);
       recordBytes += bytesRead;
-
-      // Safety: stop if buffer full
       if (recordBytes >= RECORD_BUF_SIZE) {
         Serial.println("[Main] Buffer full — stopping recording.");
         btnDown = false;
       }
     }
 
-    // Button released → process
-    if (!btnDown) {
+    if (!btnDown) {  // button released → process this answer
       i2s_stop_recording();
       state = PROCESSING;
       Serial.printf("[Main] Recorded %u bytes (%.1f sec)\n",
@@ -187,15 +309,12 @@ void loop() {
       if (recordBytes < 1000) {
         Serial.println("[Main] Recording too short, ignoring.");
         state = IDLE;
+        faceStatus("listening");
         return;
       }
 
-      // ── Identify which stereo channel carries mic data ───────────────────
-      // The ES8311 is a mono codec; only one I2S slot carries the mic, the
-      // other is zeros/noise. Measure both and keep the louder one — never
-      // hard-code a channel (we previously stripped ch0 blindly, which sends
-      // silence to STT if the mic actually lands on ch1).
-      int micChannel = 0;  // 0 = even indices, 1 = odd indices
+      // ── Pick the stereo slot that actually carries the mic (mono codec) ────
+      int micChannel = 0;
       {
         int16_t* raw = (int16_t*)recordBuf;
         size_t frames = recordBytes / 4;
@@ -207,78 +326,85 @@ void loop() {
         float rms0 = sqrt((float)(sumSq0 / (int64_t)frames));
         float rms1 = sqrt((float)(sumSq1 / (int64_t)frames));
         micChannel = (rms1 > rms0) ? 1 : 0;
-        Serial.printf("[Main] ch0(even) RMS: %.0f  ch1(odd) RMS: %.0f  -> using ch%d\n",
-                      rms0, rms1, micChannel);
+        Serial.printf("[Main] ch0 RMS: %.0f  ch1 RMS: %.0f  -> ch%d\n", rms0, rms1, micChannel);
       }
-
-      // ── Strip the unused channel — keep only the mic channel (mono) ──────
+      // Strip to mono (keep the mic channel).
       {
         int16_t* src = (int16_t*)recordBuf;
         int16_t* dst = (int16_t*)recordBuf;
-        size_t frames = recordBytes / 4;  // each stereo frame = 4 bytes
+        size_t frames = recordBytes / 4;
         for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2 + micChannel];
-        recordBytes = frames * 2;  // now mono
-      }
-      Serial.printf("[Main] Mono bytes after channel strip: %u (%.1f sec)\n",
-                    recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
-
-      // ── Amplitude check — tells us if mic is actually working ─────────────
-      int16_t* samples = (int16_t*)recordBuf;
-      int32_t  peak = 0;
-      int32_t  clipped = 0;
-      int64_t  sumSq = 0;
-      size_t   nSamples = recordBytes / 2;
-      for (size_t i = 0; i < nSamples; i++) {
-        int32_t s = abs((int32_t)samples[i]);
-        if (s > peak) peak = s;
-        if (s >= 32700) clipped++;   // within ~200 of max → effectively clipped
-        sumSq += (int64_t)samples[i] * samples[i];
-      }
-      float rms = sqrt((float)(sumSq / (int64_t)nSamples));
-      Serial.printf("[Main] Audio peak: %d  RMS: %.0f  clipped: %d/%u (%.1f%%)\n",
-                    peak, rms, clipped, (unsigned)nSamples,
-                    100.0f * clipped / nSamples);
-      // Reject near-silence BEFORE calling STT. Google STT will hallucinate a
-      // plausible sentence from noise (we saw a full Hebrew sentence come back
-      // from a RMS-4 recording). Real speech is RMS ~900+; silence is RMS ~10.
-      // A threshold of 100 cleanly separates them.
-      if (rms < 100) {
-        Serial.println("[Main] ⚠️  Near-silence (RMS < 100) — no speech captured, "
-                       "skipping STT. Speak clearly close to the mic while holding the button.");
-        state = IDLE;
-        return;
+        recordBytes = frames * 2;
       }
 
-      // Send to STT proxy Cloud Function
-      String question = transcribeAudio(recordBuf, recordBytes, g_idToken);
-      if (question.isEmpty()) {
+      // Reject near-silence before paying for STT (STT hallucinates on noise).
+      {
+        int16_t* samples = (int16_t*)recordBuf;
+        int64_t sumSq = 0; size_t n = recordBytes / 2;
+        for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
+        float rms = sqrt((float)(sumSq / (int64_t)n));
+        Serial.printf("[Main] Answer RMS: %.0f\n", rms);
+        if (rms < 100) {
+          Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
+          state = IDLE;
+          faceStatus("listening");
+          return;
+        }
+      }
+
+      // STT.
+      faceEmotion("thinking");
+      faceTick();
+      String answer = transcribeAudio(recordBuf, recordBytes, g_idToken);
+      if (answer.isEmpty()) {
         Serial.println("[Main] STT returned empty transcript.");
         state = IDLE;
+        faceStatus("listening");
         return;
       }
-      Serial.println("[Main] Question: " + question);
+      Serial.println("[Main] Child answered: " + answer);
 
-      // Post to Firestore
-      String exchangeId = firestorePostQuestion(g_sessionId, question);
-      if (exchangeId.isEmpty()) {
+      // Post learning turn → backend grades + feedback + next question + audio.
+      firestoreWriteDeviceState("feedback", g_currentQuestion);
+      String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
+      if (exchangeId.isEmpty()) { state = IDLE; faceStatus("listening"); return; }
+
+      TurnResult turn;
+      if (!firestorePollForTurnResult(g_sessionId, exchangeId, turn, 30000)) {
         state = IDLE;
+        faceStatus("listening");
         return;
       }
 
-      // Poll for LLM answer + audio URL (30 second timeout)
-      String answer, audioUrl;
-      if (!firestorePollForAnswer(g_sessionId, exchangeId, answer, audioUrl, 30000)) {
-        state = IDLE;
-        return;
-      }
-      Serial.println("[Main] Answer: " + answer);
-      Serial.println("[Main] Audio:  " + audioUrl);
+      if (turn.isCorrect) g_stars++;
+      Serial.println("[Main] Feedback: " + turn.spokenFeedback);
+      Serial.println("[Main] Next:     " + turn.nextQuestion);
+      Serial.println("[Main] Emotion:  " + turn.emotion);
 
-      // Stream WAV from Storage → I2S (no library needed)
+      // Show emotion + speak feedback (audio already includes the next question).
+      faceEmotion(pipEmotionFor(turn.emotion));
+      firestoreWriteDeviceState("feedback", turn.nextQuestion);
+      faceStrip(turn.nextQuestion);
+
       state = SPEAKING;
-      speakFromUrl(audioUrl);   // releases I2S when done
+      speakFromUrl(turn.audioUrl);
+
+      // The next question is now current.
+      g_currentQuestion = turn.nextQuestion;
+
+      if (turn.shouldTakeBreak) {
+        Serial.println("[Main] Taking a short break.");
+        faceStatus("break");
+        firestoreWriteDeviceState("break", g_currentQuestion);
+        faceTick();
+        delay(4000);
+      }
+
+      // Ready for the next answer.
       state = IDLE;
-      Serial.println("\n✅ Ready! Hold the button to ask another question.");
+      faceStatus("listening");
+      firestoreWriteDeviceState("listening", g_currentQuestion);
+      Serial.println("\n🎤 Hold the button and say your answer.");
     }
   }
 }
