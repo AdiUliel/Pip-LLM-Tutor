@@ -212,7 +212,25 @@ void drawFace(uint32_t t) {
   face.pushSprite(0, 0);
 }
 
-// Bottom status strip — paints text + star count straight to the TFT.
+// 5-point filled star, drawn directly to the TFT (not the sprite).
+// Mirrors the in-sprite fillStar(); kept separate so we don't need to
+// allocate a tiny sprite for the strip.
+void fillStarTFT(int cx, int cy, int r, uint16_t col) {
+  float pts[10][2];
+  for (int i = 0; i < 10; i++) {
+    float a = M_PI/5*i - M_PI/2;
+    float rad = (i % 2 == 0) ? r : r*0.45f;
+    pts[i][0] = cx + cosf(a)*rad;
+    pts[i][1] = cy + sinf(a)*rad;
+  }
+  for (int i = 0; i < 10; i++) {
+    int j = (i+1) % 10;
+    tft.fillTriangle(cx, cy, pts[i][0], pts[i][1], pts[j][0], pts[j][1], col);
+  }
+}
+
+// Bottom status strip — paints text + star icon + count straight to the TFT.
+// Right-aligned: star is a real 5-point shape (not the ASCII '*' glyph).
 void drawStrip() {
   tft.fillRect(0, 240, 240, 80, SCREEN_BG);
   tft.drawFastHLine(0, 242, 240, GLOWD);
@@ -220,10 +238,13 @@ void drawStrip() {
   tft.setTextDatum(ML_DATUM);
   tft.drawString(stripText, 16, 280, 4);
   if (stripStars >= 0) {
+    char buf[8]; snprintf(buf, sizeof(buf), "%d", stripStars);
+    int numW = tft.textWidth(buf, 4);
     tft.setTextColor(GOLD, SCREEN_BG);
     tft.setTextDatum(MR_DATUM);
-    char buf[8]; snprintf(buf, sizeof(buf), "* %d", stripStars);
     tft.drawString(buf, 224, 280, 4);
+    // 10 px star, sitting just to the left of the digit(s).
+    fillStarTFT(224 - numW - 14, 280, 10, GOLD);
   }
 }
 
