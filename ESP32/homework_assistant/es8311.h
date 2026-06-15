@@ -58,11 +58,27 @@ bool initES8311() {
   es8311_write(0x13, 0x10);   // ★ Enable output to HP drive (was 0x00)
 
   // ── Microphone (analog, not PDM) ──────────────────────────────────────────
-  es8311_write(0x14, 0x11);   // Enable analog MIC, PGA gain reduced (bits[2:0]=1 → +3dB only)
-  es8311_write(0x17, 0x80);   // ADC digital gain ~50% — reduce further if still clipping
+  es8311_write(0x14, 0x1A);   // Enable analog MIC, DIFFERENTIAL, +PGA (official board value)
+                                // This board (per the LCD Wiki ai_chat demo) wires the mic
+                                // DIFFERENTIALLY. Single-ended (0x10) recorded only constant
+                                // clock/common-mode crosstalk (crest factor ~1.0, level
+                                // independent of speech) — differential rejects that and
+                                // passes the actual voice. The earlier "differential clips"
+                                // result was caused by reg17=0xC8 (+36dB), NOT by MIC1N; with
+                                // the low digital gain below it no longer over-drives.
+  // ADC DIGITAL volume. With the HPF now removing DC, this gain is clean. At 0xC8 the
+  // mic worked but Hebrew speech was quiet (RMS ~928, -31dBFS) and STT returned empty.
+  // 0xDA is ~+9dB: targets speech RMS ~2600 / peak ~24500 (-22dBFS) with headroom.
+  // Each step = 0.5dB. If loud speech clips (peak hits 32767), step down toward 0xD0.
+  es8311_write(0x17, 0xDA);   // ADC digital volume (~+9dB for healthy STT level)
 
-  // ── ADC equalizer bypass + cancel DC offset ───────────────────────────────
-  es8311_write(0x1C, 0x6A);   // ★ ADC EQ bypass, DC offset cancel (was 0x00)
+  // ── ADC high-pass filter — REMOVES DC OFFSET (two-stage) ──────────────────
+  // CRITICAL: both stages must be written. Stage 1 (0x1B) was previously MISSING,
+  // so a DC offset passed through and railed the ADC to a constant value (~8700),
+  // with speech only a tiny ripple on top — STT heard no speech. The full
+  // Espressif/arduino-audio-driver init writes BOTH of these.
+  es8311_write(0x1B, 0x0A);   // ★ ADC HPF stage 1 + ALC automute (was never set)
+  es8311_write(0x1C, 0x6A);   // ADC HPF stage 2 + EQ bypass
 
   // ── DAC equalizer bypass ──────────────────────────────────────────────────
   es8311_write(0x37, 0x08);   // Bypass DAC EQ

@@ -15,10 +15,15 @@
 #define PIN_I2C_SCL     15
 #define ES8311_I2C_ADDR 0x18
 
-// ── Button (push-to-talk, on IO2/IO3/IO14/IO21 expansion header) ─────────────
-#define PIN_BTN         3    // IO3 — INPUT_PULLUP, active LOW
-#define PIN_BTN_GND     2    // IO2 — set OUTPUT LOW to act as GND for the button
-                             // Wire button between IO2 and IO3 on the expansion header.
+// ── Button (push-to-talk) ────────────────────────────────────────────────────
+// TEMPORARY: using the onboard BOOT button (GPIO0) because the external button's
+// IO3 line is broken (shorting IO3→GND did not read LOW). GPIO0 is active-LOW with
+// its own onboard pull-up, so it reads LOW when BOOT is pressed.
+// NOTE: do NOT hold BOOT during reset/power-on — that enters USB download mode.
+// To revert to the external button, restore: PIN_BTN 3, PIN_BTN_GND 2 (drive LOW).
+#define PIN_BTN         0    // GPIO0 — onboard BOOT button, INPUT_PULLUP, active LOW
+//#define PIN_BTN       3    // (was) IO3 external button — line is broken
+#define PIN_BTN_GND     2    // IO2 — unused with BOOT button (BOOT has its own GND)
                              // IO43/IO44 (UART) can't be used: TX idles HIGH, RX is
                              // held by UART peripheral.
 

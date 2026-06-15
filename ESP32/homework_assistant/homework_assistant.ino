@@ -190,14 +190,33 @@ void loop() {
         return;
       }
 
-      // ── Strip right channel — keep only left (mic) samples ───────────────
-      // ES8311 outputs: [LEFT/mic][RIGHT/zeros][LEFT][RIGHT]...
-      // After extraction: [mic0][mic1][mic2]... (half the bytes)
+      // ── Identify which stereo channel carries mic data ───────────────────
+      // The ES8311 is a mono codec; only one I2S slot carries the mic, the
+      // other is zeros/noise. Measure both and keep the louder one — never
+      // hard-code a channel (we previously stripped ch0 blindly, which sends
+      // silence to STT if the mic actually lands on ch1).
+      int micChannel = 0;  // 0 = even indices, 1 = odd indices
+      {
+        int16_t* raw = (int16_t*)recordBuf;
+        size_t frames = recordBytes / 4;
+        int64_t sumSq0 = 0, sumSq1 = 0;
+        for (size_t i = 0; i < frames; i++) {
+          sumSq0 += (int64_t)raw[i*2]   * raw[i*2];
+          sumSq1 += (int64_t)raw[i*2+1] * raw[i*2+1];
+        }
+        float rms0 = sqrt((float)(sumSq0 / (int64_t)frames));
+        float rms1 = sqrt((float)(sumSq1 / (int64_t)frames));
+        micChannel = (rms1 > rms0) ? 1 : 0;
+        Serial.printf("[Main] ch0(even) RMS: %.0f  ch1(odd) RMS: %.0f  -> using ch%d\n",
+                      rms0, rms1, micChannel);
+      }
+
+      // ── Strip the unused channel — keep only the mic channel (mono) ──────
       {
         int16_t* src = (int16_t*)recordBuf;
         int16_t* dst = (int16_t*)recordBuf;
         size_t frames = recordBytes / 4;  // each stereo frame = 4 bytes
-        for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2]; // left sample
+        for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2 + micChannel];
         recordBytes = frames * 2;  // now mono
       }
       Serial.printf("[Main] Mono bytes after channel strip: %u (%.1f sec)\n",
@@ -206,13 +225,28 @@ void loop() {
       // ── Amplitude check — tells us if mic is actually working ─────────────
       int16_t* samples = (int16_t*)recordBuf;
       int32_t  peak = 0;
-      for (size_t i = 0; i < recordBytes / 2; i++) {
+      int32_t  clipped = 0;
+      int64_t  sumSq = 0;
+      size_t   nSamples = recordBytes / 2;
+      for (size_t i = 0; i < nSamples; i++) {
         int32_t s = abs((int32_t)samples[i]);
         if (s > peak) peak = s;
+        if (s >= 32700) clipped++;   // within ~200 of max → effectively clipped
+        sumSq += (int64_t)samples[i] * samples[i];
       }
-      Serial.printf("[Main] Audio peak amplitude: %d (32767 = max)\n", peak);
-      if (peak < 100) {
-        Serial.println("[Main] ⚠️  Near-silence — mic may not be capturing audio.");
+      float rms = sqrt((float)(sumSq / (int64_t)nSamples));
+      Serial.printf("[Main] Audio peak: %d  RMS: %.0f  clipped: %d/%u (%.1f%%)\n",
+                    peak, rms, clipped, (unsigned)nSamples,
+                    100.0f * clipped / nSamples);
+      // Reject near-silence BEFORE calling STT. Google STT will hallucinate a
+      // plausible sentence from noise (we saw a full Hebrew sentence come back
+      // from a RMS-4 recording). Real speech is RMS ~900+; silence is RMS ~10.
+      // A threshold of 100 cleanly separates them.
+      if (rms < 100) {
+        Serial.println("[Main] ⚠️  Near-silence (RMS < 100) — no speech captured, "
+                       "skipping STT. Speak clearly close to the mic while holding the button.");
+        state = IDLE;
+        return;
       }
 
       // Send to STT proxy Cloud Function

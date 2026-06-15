@@ -214,7 +214,8 @@ bool firestorePollForAnswer(const String& sessionId,
       return true;
     }
     if (status == "error") {
-      Serial.println("[Firestore] Cloud Function reported an error.");
+      String errMsg = resp["fields"]["error"]["stringValue"].as<String>();
+      Serial.println("[Firestore] Cloud Function reported an error: " + errMsg);
       return false;
     }
 
