@@ -80,7 +80,7 @@ You can find it in the Firebase console → Project Settings → General → Pro
 
 ---
 
-## Step 4: Store Your LLM API Key as a Secret
+## Step 4: Store Your LLM API Key as a Secret -mb not needded
 
 Never hardcode API keys. Firebase Secrets Manager stores them securely.
 
@@ -207,7 +207,7 @@ Your Firebase Web API Key is in: Firebase Console → Project Settings → Gener
 
 ## What's Next
 
-- [ ] Replace `YOUR_FIREBASE_PROJECT_ID` in `.firebaserc`
-- [ ] Run `firebase deploy` from the `firebase/` folder
+- [check] Replace `YOUR_FIREBASE_PROJECT_ID` in `.firebaserc`
+- [check] Run `firebase deploy` from the `firebase/` folder
 - [ ] Write ESP32 code to POST questions and poll for answers via Firestore REST API
 - [ ] Wire Flutter app to listen to `/sessions/{id}/exchanges` in real-time

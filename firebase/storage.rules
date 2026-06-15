@@ -1,0 +1,15 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // TTS audio files: publicly readable, only Cloud Functions (admin SDK) can write
+    match /tts/{file} {
+      allow read:  if true;   // public — ESP32 downloads without auth
+      allow write: if false;  // admin SDK only (Cloud Function)
+    }
+
+    // Everything else is private
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
