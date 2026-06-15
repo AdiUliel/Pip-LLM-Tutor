@@ -3,27 +3,76 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId));
+    }
+
+    function ownsSession(sessionId) {
+      return signedIn()
+        && sessionDoc(sessionId).data.deviceId == request.auth.uid;
+    }
+
+    // ── Devices ──────────────────────────────────────────────────────────────
+    match /devices/{deviceId} {
+      allow read, write: if signedIn() && request.auth.uid == deviceId;
+    }
+
+    match /deviceState/{deviceId} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Children / Materials ─────────────────────────────────────────────────
+    // Parent app creates and edits these. Device reads the child profile and
+    // enabled materials during a learning session.
+    match /children/{childId} {
+      allow read, write: if signedIn();
+    }
+
+    match /materials/{materialId} {
+      allow read, write: if signedIn();
+    }
+
     // ── Sessions ─────────────────────────────────────────────────────────────
-    // Any authenticated user (ESP32 anonymous auth or Flutter app) can
-    // read and create sessions. The Cloud Function (admin SDK) can do anything.
     match /sessions/{sessionId} {
-      allow read:   if request.auth != null;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null;
+      allow read: if signedIn();
 
-      // ── Exchanges (subcollection) ─────────────────────────────────────────
-      // ESP32 creates exchanges (questions); Cloud Function writes answers.
+      // A device or the app may create a session. Cloud Functions may also create
+      // sessions through Admin SDK and bypass these rules.
+      allow create: if signedIn()
+                    && request.resource.data.keys().hasAll(['childId', 'deviceId', 'subject', 'startedAt']);
+
+      // Device/app can update lightweight session state. LLM fields are usually
+      // written by Cloud Functions, but allowing signed-in updates keeps ESP32
+      // integration simple for the prototype.
+      allow update: if signedIn();
+      allow delete: if false;
+
+      // ── Exchanges ─────────────────────────────────────────────────────────
+      // New LLM tutor flow:
+      //   Device writes {type:'learning_turn', childAnswer:'...', status:'pending'}.
+      // Legacy helper flow:
+      //   Device writes {question:'...', status:'pending'}.
+      // Cloud Functions write answers using Admin SDK.
       match /exchanges/{exchangeId} {
-        allow read: if request.auth != null;
+        allow read: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.status == 'pending'
+                      && (
+                        request.resource.data.childAnswer is string ||
+                        request.resource.data.childAnswerTranscript is string ||
+                        request.resource.data.question is string
+                      );
+        allow update, delete: if false;
+      }
 
-        // Device can create a new pending exchange
-        allow create: if request.auth != null
-                      && request.resource.data.keys().hasAll(['question', 'status', 'askedAt'])
-                      && request.resource.data.status == 'pending';
-
-        // Answers are written by Cloud Functions (admin SDK — bypasses rules)
-        allow update: if false;
-        allow delete: if false;
+      // Per-question logs used by Reports / Session detail screens.
+      match /questions/{questionId} {
+        allow read: if signedIn();
+        allow create, update, delete: if false;
       }
     }
   }

@@ -242,6 +242,19 @@ class _LoginScreenState extends State<LoginScreen> {
                             : (_signup ? 'יצירת חשבון' : 'כניסה'),
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Expanded(child: Divider()),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Text('או', style: AppTextStyles.hint(context)),
+                        ),
+                        const Expanded(child: Divider()),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _GoogleButton(busy: busy),
                   ],
                 ),
               ),
@@ -337,6 +350,104 @@ class _Field extends StatelessWidget {
           onChanged: (_) => onChange?.call(),
         ),
       ],
+    );
+  }
+}
+
+class _GoogleLogo extends StatelessWidget {
+  const _GoogleLogo();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 20,
+      height: 20,
+      child: CustomPaint(painter: _GoogleLogoPainter()),
+    );
+  }
+}
+
+class _GoogleLogoPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final r = size.width / 2;
+
+    // Background circle
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r,
+      Paint()..color = Colors.white,
+    );
+
+    // Draw the four-color "G"
+    const segments = [
+      (0.0, 0.5, Color(0xFF4285F4)),   // blue — right
+      (0.5, 0.75, Color(0xFF34A853)),  // green — bottom-right
+      (0.75, 0.875, Color(0xFFFBBC05)), // yellow — bottom-left
+      (0.875, 1.0, Color(0xFFEA4335)), // red — top-left
+    ];
+
+    for (final (start, end, color) in segments) {
+      final paint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = size.width * 0.22
+        ..strokeCap = StrokeCap.butt;
+      canvas.drawArc(
+        Rect.fromCircle(center: Offset(cx, cy), radius: r * 0.65),
+        (start * 2 - 0.5) * 3.14159,
+        (end - start) * 2 * 3.14159,
+        false,
+        paint,
+      );
+    }
+
+    // White horizontal bar for the crossbar of the G
+    canvas.drawRect(
+      Rect.fromLTWH(cx, cy - size.height * 0.11, r * 0.85, size.height * 0.22),
+      Paint()..color = const Color(0xFF4285F4),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter old) => false;
+}
+
+class _GoogleButton extends StatelessWidget {
+  const _GoogleButton({required this.busy});
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton(
+      onPressed: busy
+          ? null
+          : () => context.read<AuthProvider>().signInWithGoogle(),
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 13),
+        side: const BorderSide(color: Color(0xFFDADCE0)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadii.sm),
+        ),
+        backgroundColor: Colors.white,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const _GoogleLogo(),
+          const SizedBox(width: 10),
+          const Text(
+            'המשך עם Google',
+            style: TextStyle(
+              color: Color(0xFF3C4043),
+              fontWeight: FontWeight.w600,
+              fontSize: 15,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
