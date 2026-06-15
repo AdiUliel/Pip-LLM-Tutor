@@ -51,6 +51,13 @@ class AppConstants {
   // --- UI ---
   static const String defaultLocale = 'he'; // Hebrew RTL
 
+  // --- Cloud region ---
+  // All Cloud Functions deploy to europe-west10. The app currently talks to
+  // the backend purely through Firestore/Storage, but if you ever call a
+  // callable function use this region:
+  //   FirebaseFunctions.instanceFor(region: AppConstants.functionsRegion)
+  static const String functionsRegion = 'europe-west10';
+
   // --- Firestore collection names (shared with the ESP32 device) ---
   static const String colParents = 'parents';
   static const String colChildren = 'children';

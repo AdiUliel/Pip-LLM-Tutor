@@ -104,16 +104,48 @@ The Cloud Function will update the same document with:
   "emotion": "happy",
   "nextQuestion": "כמה זה 6 ועוד 3?",
   "expectedAnswer": "9",
-  "shouldTakeBreak": false
+  "shouldTakeBreak": false,
+  "audioUrl": "https://storage.googleapis.com/<bucket>/tts/<exchangeId>.wav"
 }
 ```
 
+`audioUrl` is a 16 kHz LINEAR16 WAV containing **spokenFeedback + nextQuestion**
+spoken together, synthesized by the function *before* it flips `status` to
+`done` (so the polling device never reads a done doc with an empty URL).
+
 The device should then:
 
-1. Speak `spokenFeedback`.
-2. Display face according to `emotion`.
-3. Speak/display `nextQuestion`.
+1. Display the pip_face emotion from `emotion`.
+2. Play `audioUrl` (feedback then the next question).
+3. Treat `nextQuestion` as the new current question.
 4. Wait for the next child answer.
+
+### First question
+
+The device does **not** speak the very first question from an exchange — it is
+seeded on the session itself by the `onSessionCreated` trigger:
+
+```text
+sessions/{sessionId}
+  status: "active"
+  currentQuestion: "כמה זה 4 ועוד 5?"
+  currentExpectedAnswer: "9"
+  currentQuestionAudioUrl: "https://storage.googleapis.com/<bucket>/tts/<sessionId>_q0.wav"
+```
+
+### Live device status for the app
+
+The device also writes `deviceState/{deviceId}` (deviceId == its anon UID) on
+every state change and every ~10s as a heartbeat, so the Flutter device monitor
+shows it live:
+
+```text
+deviceState/{deviceId}
+  status: "idle" | "asking" | "listening" | "feedback" | "break" | "error"
+  lastHeartbeat: <server/NTP timestamp>   // freshness drives "online"
+  currentQuestion: string
+  activeSubject: "math" | "english"
+```
 
 ## Callable Functions for testing / Flutter
 
@@ -184,6 +216,21 @@ cd ..
 firebase deploy --only functions,firestore:rules
 ```
 
+## Region
+
+All Cloud Functions deploy to **europe-west10**, set once at the top of
+`index.js`:
+
+```js
+const { setGlobalOptions } = require("firebase-functions/v2");
+setGlobalOptions({ region: "europe-west10" });
+```
+
+This covers `answerQuestion`, `onSessionCreated`, `startLearningSession`,
+`submitChildAnswer` and `transcribeAudio`. The ESP32 builds the STT URL from
+`CLOUD_FUNCTIONS_REGION` in `secrets.h` (already `europe-west10`), and the
+Flutter app uses `AppConstants.functionsRegion`.
+
 ## Gemini / Vertex AI notes
 
 The code uses `@google/genai` with Vertex AI mode:
@@ -192,18 +239,27 @@ The code uses `@google/genai` with Vertex AI mode:
 new GoogleGenAI({
   vertexai: true,
   project: process.env.GCLOUD_PROJECT,
-  location: process.env.GEMINI_LOCATION || "us-central1"
+  location: process.env.GEMINI_LOCATION || "global"
 });
 ```
 
-That means the function uses the Cloud Function service account instead of a public API key.
+The function uses the Cloud Function service account instead of a public API key.
 Make sure Vertex AI / Gemini is enabled in the Firebase Google Cloud project.
+
+We use the Vertex **`global`** endpoint for Gemini because model availability is
+not uniform across regions (Berlin/europe-west10 does not serve every Gemini
+model). The *functions* still run in europe-west10; only the model endpoint is
+global. To pin a specific region instead, set `GEMINI_LOCATION`.
+
+The previous model `gemini-2.0-flash-001` was discontinued (404). Default is now
+`gemini-2.5-flash`.
 
 Optional environment variables:
 
 ```text
-GEMINI_MODEL=gemini-2.0-flash-001
-GEMINI_LOCATION=us-central1
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_LOCATION=global
+FUNCTIONS_REGION=europe-west10
 ```
 
 ## Why the LLM is behind Cloud Functions

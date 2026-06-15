@@ -51,6 +51,13 @@ Go to [console.firebase.google.com](https://console.firebase.google.com) and ope
 - Click **Get started** and follow the prompt
 - ⚠️ Cloud Functions requires the **Blaze (pay-as-you-go)** plan.
   At homework-assistant scale the cost is essentially $0, but a billing account is required.
+- **Region:** all functions in this project deploy to **`europe-west10`**
+  (set via `setGlobalOptions` in `functions/index.js`). The ESP32
+  (`CLOUD_FUNCTIONS_REGION`) and the Flutter app (`AppConstants.functionsRegion`)
+  must match. Note: `europe-west10` must support Eventarc/Firestore triggers in
+  your project — if `firebase deploy` rejects the region for the trigger,
+  set `FUNCTIONS_REGION` to a nearby supported region (e.g. `europe-west1`) and
+  update the two client constants to match.
 
 ---
 

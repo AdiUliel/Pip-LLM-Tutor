@@ -2,17 +2,32 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <time.h>
 #include "secrets.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Firebase REST client
-// Handles: anonymous sign-in, token refresh, Firestore read/write
+// Firebase REST client — connects the device to the team's tutor backend.
+//
+// Handles: anonymous sign-in, token refresh, child auto-detect, rules-compliant
+// session creation, the learning-turn protocol, polling, and deviceState
+// heartbeats so the Flutter app's device monitor shows the device live.
+//
+// Edge-to-edge protocol (matches firebase/functions):
+//   1. firestoreCreateSession()  -> writes {childId,deviceId,subject,startedAt,
+//                                    status:"starting", awaitingFirstQuestion:true}
+//      onSessionCreated() generates the first question + audio.
+//   2. firestoreWaitForCurrentQuestion() -> reads currentQuestion + audio url
+//   3. firestorePostLearningTurn(answer) -> {type:"learning_turn",childAnswer,
+//                                    status:"pending"}
+//   4. firestorePollForTurnResult() -> spokenFeedback, emotion, nextQuestion,
+//                                    expectedAnswer, audioUrl, shouldTakeBreak
 // ─────────────────────────────────────────────────────────────────────────────
 
 static String g_idToken      = "";
 static String g_refreshToken = "";
 static String g_sessionId    = "";
-static String g_firebaseUid  = "";  // Firebase anonymous UID (from sign-in response)
+static String g_childId      = "";   // resolved child profile (may be empty)
+static String g_firebaseUid  = "";   // Firebase anonymous UID == deviceId
 
 // Shared SSL client — setInsecure() skips cert verification (fine for IoT prototypes)
 static WiFiClientSecure _sslClient;
@@ -22,9 +37,21 @@ static void _initSSL() {
   _sslClient.setInsecure();  // no CA bundle needed
 }
 
+// ── ISO-8601 UTC timestamp (needs NTP synced; see syncClock() in the sketch) ──
+// Firestore timestampValue must be RFC-3339 / ISO-8601. The deviceState
+// heartbeat freshness drives the app's online indicator, so this must be a real
+// wall-clock time, not a placeholder.
+static String isoNow() {
+  time_t now = time(nullptr);
+  if (now < 1000000000) return "2000-01-01T00:00:00Z"; // clock not synced yet
+  struct tm tm_utc;
+  gmtime_r(&now, &tm_utc);
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+  return String(buf);
+}
+
 // ── Anonymous sign-in via Firebase Auth REST API ──────────────────────────────
-// Returns the idToken, stores refreshToken globally.
-// The idToken expires after 1 hour — call firebaseRefreshToken() to renew.
 String firebaseSignIn() {
   _initSSL();
   HTTPClient http;
@@ -81,10 +108,71 @@ String firebaseRefreshToken() {
   return g_idToken;
 }
 
-// ── Create a session document in Firestore ────────────────────────────────────
+// ── Resolve which child profile this device serves ───────────────────────────
+// Strategy (matches the "auto-detect, fallback to config" decision):
+//   1. runQuery children where deviceId == our UID -> use the first match.
+//   2. else, if CHILD_ID is set in secrets.h, use it.
+//   3. else, "" (backend runs generic, non-personalised questions).
+// Returns the child document id (possibly "").
+String firestoreResolveChildId() {
+  // 1. structured query by deviceId
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents:runQuery";
+
+  JsonDocument q;
+  q["structuredQuery"]["from"][0]["collectionId"] = "children";
+  q["structuredQuery"]["where"]["fieldFilter"]["field"]["fieldPath"] = "deviceId";
+  q["structuredQuery"]["where"]["fieldFilter"]["op"] = "EQUAL";
+  q["structuredQuery"]["where"]["fieldFilter"]["value"]["stringValue"] = g_firebaseUid;
+  q["structuredQuery"]["limit"] = 1;
+
+  String body;
+  serializeJson(q, body);
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  int code = http.POST(body);
+
+  if (code == 200) {
+    JsonDocument resp;
+    deserializeJson(resp, http.getString());
+    http.end();
+    // runQuery returns an array; the first element has .document.name if matched.
+    if (resp.is<JsonArray>() && resp.size() > 0 && resp[0]["document"]["name"].is<const char*>()) {
+      String name = resp[0]["document"]["name"].as<String>();
+      String childId = name.substring(name.lastIndexOf('/') + 1);
+      Serial.println("[Firestore] Auto-detected child: " + childId);
+      return childId;
+    }
+  } else {
+    Serial.printf("[Firestore] child runQuery HTTP %d\n", code);
+    http.end();
+  }
+
+  // 2. fallback to configured CHILD_ID
+  String configured = String(CHILD_ID);
+  if (configured.length() > 0) {
+    Serial.println("[Firestore] Using configured CHILD_ID: " + configured);
+    return configured;
+  }
+
+  // 3. none
+  Serial.println("[Firestore] No child profile — generic session.");
+  return "";
+}
+
+// ── Create a rules-compliant session document ────────────────────────────────
+// Security rules require keys: childId, deviceId, subject, startedAt.
+// awaitingFirstQuestion:true asks onSessionCreated() to seed the first question.
 // Returns the auto-generated session document ID.
-String firestoreCreateSession() {
+String firestoreCreateSession(const String& subject = SESSION_SUBJECT) {
   if (g_idToken.isEmpty()) return "";
+
+  g_childId = firestoreResolveChildId();
 
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
@@ -96,11 +184,14 @@ String firestoreCreateSession() {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + g_idToken);
 
-  // Build session document
   JsonDocument body;
-  body["fields"]["deviceId"]["stringValue"] = g_firebaseUid;  // Firebase UID (matches auth.uid)
-  body["fields"]["createdAt"]["timestampValue"] = "2000-01-01T00:00:00Z"; // placeholder
-  body["fields"]["lastActivity"]["timestampValue"] = "2000-01-01T00:00:00Z";
+  body["fields"]["childId"]["stringValue"]   = g_childId;          // "" allowed
+  body["fields"]["deviceId"]["stringValue"]  = g_firebaseUid;      // == auth.uid (rules + ownership)
+  body["fields"]["subject"]["stringValue"]   = subject;            // "math" | "english"
+  body["fields"]["status"]["stringValue"]    = "starting";
+  body["fields"]["awaitingFirstQuestion"]["booleanValue"] = true;
+  body["fields"]["startedAt"]["timestampValue"]    = isoNow();
+  body["fields"]["lastActivity"]["timestampValue"] = isoNow();
 
   String bodyStr;
   serializeJson(body, bodyStr);
@@ -116,20 +207,62 @@ String firestoreCreateSession() {
   deserializeJson(resp, http.getString());
   http.end();
 
-  // Document name format: "projects/.../databases/.../documents/sessions/SESSION_ID"
   String name = resp["name"].as<String>();
   String sessionId = name.substring(name.lastIndexOf('/') + 1);
   Serial.println("[Firestore] Session created: " + sessionId);
   return sessionId;
 }
 
-// ── Post a question as a new exchange document ────────────────────────────────
-// Returns the auto-generated exchange document ID.
-String firestorePostQuestion(const String& sessionId, const String& question) {
+// ── Wait until onSessionCreated() has seeded the first question ───────────────
+// Polls the session doc until status=="active" with a currentQuestion, then
+// returns the question text + its audio URL (via out-params).
+bool firestoreWaitForCurrentQuestion(const String& sessionId,
+                                     String& questionOut,
+                                     String& audioUrlOut,
+                                     uint32_t timeoutMs = 30000) {
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
-  url += "/databases/(default)/documents/sessions/";
-  url += sessionId + "/exchanges";
+  url += "/databases/(default)/documents/sessions/" + sessionId;
+
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    _initSSL();
+    HTTPClient http;
+    http.begin(_sslClient, url);
+    http.addHeader("Authorization", "Bearer " + g_idToken);
+    int code = http.GET();
+    if (code == 401) { firebaseRefreshToken(); http.end(); continue; }
+    if (code != 200) { Serial.printf("[Firestore] session GET HTTP %d\n", code); http.end(); delay(1500); continue; }
+
+    JsonDocument resp;
+    deserializeJson(resp, http.getString());
+    http.end();
+
+    String status = resp["fields"]["status"]["stringValue"].as<String>();
+    String q      = resp["fields"]["currentQuestion"]["stringValue"].as<String>();
+    if (status == "error") {
+      Serial.println("[Firestore] session init error: " +
+                     resp["fields"]["error"]["stringValue"].as<String>());
+      return false;
+    }
+    if ((status == "active" || status == "break") && q.length() > 0) {
+      questionOut = q;
+      audioUrlOut = resp["fields"]["currentQuestionAudioUrl"]["stringValue"].as<String>();
+      return true;
+    }
+    Serial.println("[Firestore] waiting for first question (status=" + status + ")");
+    delay(1500);
+  }
+  Serial.println("[Firestore] Timed out waiting for first question.");
+  return false;
+}
+
+// ── Post the child's spoken answer as a learning-turn exchange ────────────────
+// Returns the auto-generated exchange document ID.
+String firestorePostLearningTurn(const String& sessionId, const String& childAnswer) {
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/sessions/" + sessionId + "/exchanges";
 
   _initSSL();
   HTTPClient http;
@@ -138,18 +271,17 @@ String firestorePostQuestion(const String& sessionId, const String& question) {
   http.addHeader("Authorization", "Bearer " + g_idToken);
 
   JsonDocument body;
-  body["fields"]["question"]["stringValue"] = question;
-  body["fields"]["answer"]["nullValue"]     = nullptr;
-  body["fields"]["status"]["stringValue"]   = "pending";
-  // Use server timestamp via REST field transform (simplified: use fixed string)
-  body["fields"]["askedAt"]["timestampValue"] = "2000-01-01T00:00:00Z";
+  body["fields"]["type"]["stringValue"]        = "learning_turn";
+  body["fields"]["childAnswer"]["stringValue"] = childAnswer;
+  body["fields"]["status"]["stringValue"]      = "pending";
+  body["fields"]["askedAt"]["timestampValue"]  = isoNow();
 
   String bodyStr;
   serializeJson(body, bodyStr);
 
   int code = http.POST(bodyStr);
   if (code != 200) {
-    Serial.printf("[Firestore] postQuestion failed: HTTP %d\n", code);
+    Serial.printf("[Firestore] postLearningTurn failed: HTTP %d — %s\n", code, http.getString().c_str());
     http.end();
     return "";
   }
@@ -160,26 +292,31 @@ String firestorePostQuestion(const String& sessionId, const String& question) {
 
   String name = resp["name"].as<String>();
   String exchangeId = name.substring(name.lastIndexOf('/') + 1);
-  Serial.println("[Firestore] Question posted, exchange: " + exchangeId);
+  Serial.println("[Firestore] Learning turn posted, exchange: " + exchangeId);
   return exchangeId;
 }
 
-// ── Poll until status == "done", then return answer text + audioUrl ───────────
-// answer   : output — the LLM's text answer
-// audioUrl : output — public Firebase Storage URL to the WAV file (may be "")
-// Returns true if an answer was received, false on timeout/error.
-bool firestorePollForAnswer(const String& sessionId,
-                             const String& exchangeId,
-                             String&       answer,
-                             String&       audioUrl,
-                             uint32_t      timeoutMs = 30000) {
+// ── Result of a processed learning turn ──────────────────────────────────────
+struct TurnResult {
+  bool   ok            = false;
+  String spokenFeedback;   // what to say first
+  String nextQuestion;     // becomes the new current question
+  String emotion;          // happy|neutral|encouraging|concerned|celebrating
+  String audioUrl;         // WAV of (feedback + next question)
+  bool   shouldTakeBreak = false;
+  bool   isCorrect       = false;
+};
+
+// ── Poll the exchange until the Cloud Function finishes the turn ──────────────
+bool firestorePollForTurnResult(const String& sessionId,
+                                const String& exchangeId,
+                                TurnResult& out,
+                                uint32_t timeoutMs = 30000) {
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
-  url += "/databases/(default)/documents/sessions/";
-  url += sessionId + "/exchanges/" + exchangeId;
+  url += "/databases/(default)/documents/sessions/" + sessionId + "/exchanges/" + exchangeId;
 
   uint32_t start = millis();
-
   while (millis() - start < timeoutMs) {
     _initSSL();
     HTTPClient http;
@@ -187,41 +324,96 @@ bool firestorePollForAnswer(const String& sessionId,
     http.addHeader("Authorization", "Bearer " + g_idToken);
 
     int code = http.GET();
-    if (code == 401) {
-      // Token expired — refresh and retry
-      Serial.println("[Firestore] Token expired, refreshing...");
-      firebaseRefreshToken();
-      http.end();
-      continue;
-    }
-    if (code != 200) {
-      Serial.printf("[Firestore] poll failed: HTTP %d\n", code);
-      http.end();
-      delay(2000);
-      continue;
-    }
+    if (code == 401) { firebaseRefreshToken(); http.end(); continue; }
+    if (code != 200) { Serial.printf("[Firestore] poll HTTP %d\n", code); http.end(); delay(2000); continue; }
 
     JsonDocument resp;
     deserializeJson(resp, http.getString());
     http.end();
 
     String status = resp["fields"]["status"]["stringValue"].as<String>();
-    Serial.println("[Firestore] status = " + status);
+    Serial.println("[Firestore] turn status = " + status);
 
     if (status == "done") {
-      answer   = resp["fields"]["answer"]["stringValue"].as<String>();
-      audioUrl = resp["fields"]["audioUrl"]["stringValue"].as<String>();
+      out.ok             = true;
+      out.spokenFeedback = resp["fields"]["spokenFeedback"]["stringValue"].as<String>();
+      out.nextQuestion   = resp["fields"]["nextQuestion"]["stringValue"].as<String>();
+      out.emotion        = resp["fields"]["emotion"]["stringValue"].as<String>();
+      out.audioUrl       = resp["fields"]["audioUrl"]["stringValue"].as<String>();
+      out.shouldTakeBreak= resp["fields"]["shouldTakeBreak"]["booleanValue"].as<bool>();
+      out.isCorrect      = resp["fields"]["isCorrect"]["booleanValue"].as<bool>();
       return true;
     }
     if (status == "error") {
-      String errMsg = resp["fields"]["error"]["stringValue"].as<String>();
-      Serial.println("[Firestore] Cloud Function reported an error: " + errMsg);
+      Serial.println("[Firestore] turn error: " +
+                     resp["fields"]["error"]["stringValue"].as<String>());
       return false;
     }
-
-    delay(2000); // poll every 2 seconds
+    delay(2000);
   }
-
-  Serial.println("[Firestore] Timed out waiting for answer.");
+  Serial.println("[Firestore] Timed out waiting for turn result.");
   return false;
+}
+
+// ── deviceState/{deviceId}: live status for the Flutter app ───────────────────
+// The app reads deviceState/{uid}.status + lastHeartbeat (freshness => online),
+// currentQuestion and activeSubject. Rules allow any signed-in user to write.
+// Call writeDeviceState() on every status change and periodically (heartbeat).
+void firestoreWriteDeviceState(const String& status,
+                               const String& currentQuestion = "",
+                               const String& subject = SESSION_SUBJECT) {
+  if (g_firebaseUid.isEmpty()) return;
+
+  // PATCH with an updateMask so we only touch the fields we own.
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
+  url += "?updateMask.fieldPaths=status";
+  url += "&updateMask.fieldPaths=lastHeartbeat";
+  url += "&updateMask.fieldPaths=currentQuestion";
+  url += "&updateMask.fieldPaths=activeSubject";
+
+  JsonDocument body;
+  body["fields"]["status"]["stringValue"]        = status;       // idle|asking|listening|feedback|break|error
+  body["fields"]["lastHeartbeat"]["timestampValue"] = isoNow();
+  if (currentQuestion.length() > 0)
+    body["fields"]["currentQuestion"]["stringValue"] = currentQuestion;
+  else
+    body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
+  body["fields"]["activeSubject"]["stringValue"]   = subject;
+
+  String bodyStr;
+  serializeJson(body, bodyStr);
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  int code = http.sendRequest("PATCH", bodyStr);
+  if (code != 200) {
+    Serial.printf("[Firestore] deviceState PATCH HTTP %d\n", code);
+  }
+  http.end();
+}
+
+// ── Read a pending remote command (start/stop) from the app, if any ──────────
+// Returns "start" | "stop" | "none".
+String firestoreReadCommand() {
+  if (g_firebaseUid.isEmpty()) return "none";
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  int code = http.GET();
+  if (code != 200) { http.end(); return "none"; }
+  JsonDocument resp;
+  deserializeJson(resp, http.getString());
+  http.end();
+  String cmd = resp["fields"]["command"]["stringValue"].as<String>();
+  return cmd.length() ? cmd : "none";
 }
