@@ -3,35 +3,53 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // parents/{uid} — a parent can only read/write their own document.
-    match /parents/{parentId} {
-      allow read, write: if request.auth != null && request.auth.uid == parentId;
+    function signedIn() {
+      return request.auth != null;
     }
 
-    // children, materials — any authenticated user (parent app uses
-    // email/password; the ESP32 device uses anonymous auth). Authorization
-    // is enforced by the app (children.parentId == auth.uid is queried
-    // client-side); tighten when device auth model is finalised.
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId));
+    }
+
+    match /devices/{deviceId} {
+      allow read, write: if signedIn() && request.auth.uid == deviceId;
+    }
+
+    match /deviceState/{deviceId} {
+      allow read, write: if signedIn();
+    }
+
     match /children/{childId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if signedIn();
     }
 
     match /materials/{materialId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if signedIn();
     }
 
-    // sessions — written by the device, read by the parent app.
     match /sessions/{sessionId} {
-      allow read, write: if request.auth != null;
+      allow read: if signedIn();
+      allow create: if signedIn()
+                    && request.resource.data.keys().hasAll(['childId', 'deviceId', 'subject', 'startedAt']);
+      allow update: if signedIn();
+      allow delete: if false;
+
+      match /exchanges/{exchangeId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.status == 'pending'
+                      && (
+                        request.resource.data.childAnswer is string ||
+                        request.resource.data.childAnswerTranscript is string ||
+                        request.resource.data.question is string
+                      );
+        allow update, delete: if false;
+      }
 
       match /questions/{questionId} {
-        allow read, write: if request.auth != null;
+        allow read: if signedIn();
+        allow create, update, delete: if false;
       }
-    }
-
-    // deviceState — written by the device, read by the parent app.
-    match /deviceState/{deviceId} {
-      allow read, write: if request.auth != null;
     }
   }
 }

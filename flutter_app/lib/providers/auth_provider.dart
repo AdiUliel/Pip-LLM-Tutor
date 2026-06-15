@@ -3,6 +3,7 @@
 
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../models/parent_user.dart';
 import '../services/firebase_service.dart';
@@ -98,6 +99,60 @@ class AuthProvider extends ChangeNotifier {
         uid: cred.user!.uid,
         email: email,
         displayName: name,
+      );
+      _status = AuthStatus.authenticated;
+    } on fb.FirebaseAuthException catch (e) {
+      _errorMessage = _heFromAuthError(e.code);
+      _status = AuthStatus.error;
+    } catch (_) {
+      _errorMessage = 'אירעה שגיאה לא צפויה';
+      _status = AuthStatus.error;
+    }
+    notifyListeners();
+  }
+
+  Future<void> signInWithGoogle() async {
+    _status = AuthStatus.authenticating;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      fb.UserCredential cred;
+
+      if (kIsWeb) {
+        final provider = fb.GoogleAuthProvider();
+        cred = await fb.FirebaseAuth.instance.signInWithPopup(provider);
+      } else {
+        final googleUser = await GoogleSignIn().signIn();
+        if (googleUser == null) {
+          // User cancelled the picker.
+          _status = AuthStatus.unauthenticated;
+          notifyListeners();
+          return;
+        }
+        final googleAuth = await googleUser.authentication;
+        final credential = fb.GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+        cred = await fb.FirebaseAuth.instance.signInWithCredential(credential);
+      }
+
+      final u = cred.user!;
+      // Save parent record on first sign-in (additionalUserInfo.isNewUser).
+      if (cred.additionalUserInfo?.isNewUser ?? false) {
+        await firebase.saveParent(ParentUser(
+          id: u.uid,
+          name: u.displayName ?? '',
+          email: u.email ?? '',
+          createdAt: DateTime.now(),
+        ));
+      }
+
+      _user = CurrentParent(
+        uid: u.uid,
+        email: u.email ?? '',
+        displayName: u.displayName,
       );
       _status = AuthStatus.authenticated;
     } on fb.FirebaseAuthException catch (e) {
