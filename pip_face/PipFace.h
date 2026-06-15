@@ -6,32 +6,30 @@
  *  off-screen sprite (~115 KB, requires PSRAM).
  *
  *  TFT_eSPI (Bodmer) is the only hard dependency. Configure
- *  TFT_eSPI/User_Setup.h for YOUR wiring. For the LCDWIKI 2.8" ESP32-S3 Display
- *  (this project's board) use the values below — a ready-to-copy file ships as
- *  pip_face/User_Setup_LCDWIKI.h. NOTE: do NOT use DC=9 / RST=8 (the old
- *  generic example): pin 8 is the I2S speaker line on this board.
+ *  TFT_eSPI/User_Setup.h for YOUR wiring — example for ESP32-S3:
  *
  *      #define ILI9341_DRIVER
  *      #define TFT_WIDTH  240
  *      #define TFT_HEIGHT 320
- *      #define TFT_MISO 13
  *      #define TFT_MOSI 11
  *      #define TFT_SCLK 12
  *      #define TFT_CS   10
- *      #define TFT_DC   46
- *      #define TFT_RST  -1     // tied to board reset; no dedicated GPIO
- *      // Backlight (GPIO45) is driven by the main firmware, not TFT_eSPI.
+ *      #define TFT_DC    9
+ *      #define TFT_RST   8
  *      #define SPI_FREQUENCY 40000000
  *
- *  Integration (5 lines in your main sketch):
+ *  Integration:
  *
  *      #include "PipFace.h"
- *      void setup() { Pip::begin(); }
+ *      void setup() { Pip::begin(); }              // spawns a render task
  *      void loop()  {
- *        pollFirebase();                          // your code
- *        Pip::setDeviceStatus(status, mood);      // when status changes
- *        Pip::tick();                             // drives the animation
+ *        pollFirebase();                           // your code
+ *        Pip::setDeviceStatus(status, mood);       // when status changes
  *      }
+ *
+ *  The face animates on its own FreeRTOS task — your main loop can be
+ *  blocked on HTTPS, STT, or audio for seconds at a time and the face
+ *  will stay smooth.
  * ========================================================================== */
 #pragma once
 
@@ -39,14 +37,18 @@
 
 namespace Pip {
 
-  // Call once from setup(). Initializes TFT_eSPI, allocates the 240x240
-  // sprite (PSRAM), paints an idle frame. Returns false if the sprite can't
-  // be allocated — usually means PSRAM is disabled in the board config.
+  // Call once from setup(). Initializes TFT_eSPI + the Hebrew text engine,
+  // allocates the 240x240 sprite (PSRAM), and spawns a low-priority
+  // FreeRTOS task that draws the face at ~30 fps for the lifetime of the
+  // program. Returns false if the sprite can't be allocated — usually
+  // means PSRAM is disabled in the board config; in that case the task is
+  // not started and the rest of the API becomes a no-op.
   bool begin();
 
-  // Call every loop iteration. Internally rate-limits to ~30 fps; cheap to
-  // call at high frequency. Re-renders the bottom status strip only when
-  // setStrip() has changed it since the last frame.
+  // No-op. The face renders on its own task spawned in begin(), so the
+  // main loop doesn't need to drive frames — it stays responsive even
+  // when the main loop is blocked on HTTPS, STT, audio recording, or
+  // playback. Kept in the API so existing call-sites still compile.
   void tick();
 
   // Direct setter — pick any of the 12 emotions by name when your tutoring

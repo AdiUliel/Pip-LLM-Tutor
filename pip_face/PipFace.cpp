@@ -12,6 +12,9 @@
  *      onto the 12-emotion enum (table in PipFace.h).
  *    - bottom strip now renders Hebrew (and any UTF-8) via u8g2's
  *      unifont_t_hebrew, with a tiny bidi-lite pass to handle RTL display.
+ *    - rendering moved to a FreeRTOS task so the face stays responsive
+ *      while the main loop is blocked on HTTPS / STT / audio playback /
+ *      I2S recording. tick() is now a no-op kept for API compatibility.
  * ========================================================================== */
 
 #include "PipFace.h"
@@ -35,13 +38,16 @@ enum PipState {
 };
 PipState state = IDLE;
 
-// Frame-pacing for tick() (~30 fps).
-uint32_t lastFrame = 0;
+// Cached strip — redrawn only when text or stars change. Protected by
+// stripMux because the writer (Pip::setStrip, called from the main task)
+// and the reader (the face task) live on different threads.
+char           stripText[64] = "";
+int            stripStars   = -1;   // sentinel: forces first paint
+bool           stripDirty   = true;
+portMUX_TYPE   stripMux     = portMUX_INITIALIZER_UNLOCKED;
 
-// Cached strip — redrawn only when text or stars change.
-char     stripText[64] = "";
-int      stripStars   = -1;   // sentinel: forces first paint
-bool     stripDirty   = true;
+// Handle for the background render task spawned in begin().
+TaskHandle_t   faceTaskHandle = nullptr;
 
 // Colours (RGB565), filled in begin().
 uint16_t BG, GLOW, GLOWD, GOLD, PINK, WHT, SCREEN_BG;
@@ -324,15 +330,16 @@ String bidiToVisual(const char* utf8) {
 // star icon + count on the left. Text rendered via u8g2's Hebrew unifont
 // so כמה זה 5 כפול 8? displays correctly; the star count uses the
 // built-in ASCII font 4 since it's just digits.
-void drawStrip() {
+// Takes snapshots so the render isn't racing with Pip::setStrip().
+void drawStrip(const char* textSnap, int starsSnap) {
   tft.fillRect(0, 240, 240, 80, SCREEN_BG);
   tft.drawFastHLine(0, 242, 240, GLOWD);
 
   // ---- stars + count, left side (less prominent badge in Hebrew layout) ----
   int leftCursor = 16;
-  if (stripStars >= 0) {
+  if (starsSnap >= 0) {
     fillStarTFT(22, 282, 10, GOLD);
-    char buf[8]; snprintf(buf, sizeof(buf), "%d", stripStars);
+    char buf[8]; snprintf(buf, sizeof(buf), "%d", starsSnap);
     tft.setTextColor(GOLD, SCREEN_BG);
     tft.setTextDatum(ML_DATUM);
     tft.drawString(buf, 38, 282, 4);
@@ -340,8 +347,8 @@ void drawStrip() {
   }
 
   // ---- question text, right side, bidi-reordered ----
-  if (stripText[0] != '\0') {
-    String visual = bidiToVisual(stripText);
+  if (textSnap[0] != '\0') {
+    String visual = bidiToVisual(textSnap);
     u8f.setFont(u8g2_font_unifont_t_hebrew);
     u8f.setForegroundColor(WHT);
     u8f.setBackgroundColor(SCREEN_BG);
@@ -350,6 +357,31 @@ void drawStrip() {
     if (x < leftCursor) x = leftCursor;
     u8f.setCursor(x, 290);          // baseline ~16 px above strip bottom
     u8f.print(visual);
+  }
+}
+
+// Background render task — drives the face at ~30 fps independently of the
+// main loop. This is what makes Pip responsive even when the partner's
+// main code is blocked on HTTPS, STT, audio playback, or recording.
+void faceTask(void*) {
+  for (;;) {
+    drawFace(millis());
+
+    // Strip: snapshot inside critical section, render outside.
+    bool render = false;
+    char textSnap[64];
+    int  starsSnap = -1;
+    portENTER_CRITICAL(&stripMux);
+    if (stripDirty) {
+      memcpy(textSnap, stripText, sizeof(textSnap));
+      starsSnap = stripStars;
+      stripDirty = false;
+      render = true;
+    }
+    portEXIT_CRITICAL(&stripMux);
+    if (render) drawStrip(textSnap, starsSnap);
+
+    vTaskDelay(pdMS_TO_TICKS(33));    // ~30 fps; yields the CPU
   }
 }
 
@@ -396,23 +428,25 @@ bool begin() {
   u8f.setFontMode(1);
   u8f.setFontDirection(0);
 
-  // Paint one frame immediately so the screen isn't blank between begin()
-  // and the first tick().
+  // Paint one frame synchronously so the screen isn't blank between
+  // begin() returning and the render task's first tick.
   drawFace(millis());
-  lastFrame = millis();
+
+  // Spawn the background render task on Core 1 (where Arduino's main loop
+  // lives — WiFi/network are on Core 0, so the face stays smooth even
+  // during network operations because FreeRTOS preempts blocked tasks).
+  // Low priority (1) so it never starves real work.
+  if (faceTaskHandle == nullptr) {
+    xTaskCreatePinnedToCore(
+      faceTask, "PipFace", 4096, nullptr, 1, &faceTaskHandle, 1);
+  }
   return true;
 }
 
 void tick() {
-  uint32_t now = millis();
-  if (now - lastFrame >= 33) {        // ~30 fps
-    drawFace(now);
-    lastFrame = now;
-  }
-  if (stripDirty) {
-    drawStrip();
-    stripDirty = false;
-  }
+  // No-op: the face renders on its own FreeRTOS task spawned in begin().
+  // Kept in the API so existing main loops that call Pip::tick() still
+  // compile and don't need editing.
 }
 
 void setEmotion(const char* label) {
@@ -437,12 +471,14 @@ void setDeviceStatus(const char* status, int mood) {
 
 void setStrip(const char* questionOrLabel, int stars) {
   const char* incoming = questionOrLabel ? questionOrLabel : "";
+  portENTER_CRITICAL(&stripMux);
   if (strcmp(stripText, incoming) != 0 || stripStars != stars) {
     strncpy(stripText, incoming, sizeof(stripText) - 1);
     stripText[sizeof(stripText) - 1] = '\0';
     stripStars = stars;
     stripDirty = true;
   }
+  portEXIT_CRITICAL(&stripMux);
 }
 
 }  // namespace Pip

@@ -40,7 +40,7 @@ Animated procedural face for the ESP32-S3 + ILI9341 tutor device. Twelve emotion
 #include "PipFace.h"
 
 void setup() {
-  Pip::begin();              // false return = PSRAM disabled
+  Pip::begin();              // spawns the render task; false = PSRAM disabled
 }
 
 void onDeviceStateUpdate(const char* status, int mood) {
@@ -48,12 +48,11 @@ void onDeviceStateUpdate(const char* status, int mood) {
 }
 
 void loop() {
-  pollFirebase();             // your code
-  Pip::tick();                // animates; ~30 fps internally
+  pollFirebase();             // your code — can block as long as it needs
 }
 ```
 
-`tick()` is cheap and non-blocking — call it from your main loop as often as you like.
+The face renders on its own low-priority **FreeRTOS task** spawned in `begin()`. The task ticks at ~30 fps independently of your `loop()`, so the face stays smooth even when your main code is blocked on HTTPS calls, STT, audio playback, or I2S recording. You don't need to call `tick()` — it's a no-op kept for backwards compatibility.
 
 ## Status → emotion mapping
 
