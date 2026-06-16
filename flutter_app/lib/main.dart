@@ -58,14 +58,18 @@ Future<void> main() async {
       SnackBar(content: Text(text)),
     );
   };
-  auth.addListener(() {
+  void evalFcm() {
     final uid = auth.user?.uid;
-    if (uid != null) {
+    if (uid != null && config.notificationsEnabled) {
       unawaited(fcm.attach(uid));
     } else {
       unawaited(fcm.detach());
     }
-  });
+  }
+  // Re-evaluate on either auth state change or the parent toggling the
+  // setting from the Settings screen.
+  auth.addListener(evalFcm);
+  config.addListener(evalFcm);
 
   runApp(
     MultiProvider(

@@ -13,10 +13,19 @@ class ConfigProvider extends ChangeNotifier {
   static const _kSessionMin = 'config.sessionMin';
   static const _kBreakMin = 'config.breakMin';
   static const _kDailyLimitMin = 'config.dailyLimitMin';
+  static const _kNotifEnabled = 'config.notificationsEnabled';
 
   int get sessionMinutes => _prefs.getInt(_kSessionMin) ?? AppConstants.defaultSessionMinutes;
   int get breakEveryMinutes => _prefs.getInt(_kBreakMin) ?? AppConstants.defaultBreakEveryMinutes;
   int get dailyLimitMinutes => _prefs.getInt(_kDailyLimitMin) ?? AppConstants.defaultDailyLimitMinutes;
+  /// Default true so existing users keep getting notifications after the
+  /// toggle ships; opt-out is explicit.
+  bool get notificationsEnabled => _prefs.getBool(_kNotifEnabled) ?? true;
+
+  Future<void> setNotificationsEnabled(bool v) async {
+    await _prefs.setBool(_kNotifEnabled, v);
+    notifyListeners();
+  }
 
   Future<void> setSessionMinutes(int v) async {
     await _prefs.setInt(_kSessionMin, v);
@@ -37,6 +46,7 @@ class ConfigProvider extends ChangeNotifier {
     await _prefs.remove(_kSessionMin);
     await _prefs.remove(_kBreakMin);
     await _prefs.remove(_kDailyLimitMin);
+    await _prefs.remove(_kNotifEnabled);
     notifyListeners();
   }
 }

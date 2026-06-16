@@ -110,6 +110,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const _Divider(),
                         _Row(
+                          icon: Icons.notifications_outlined,
+                          label: 'התראות',
+                          sub: 'תחילה / סיום שיעור · ניתוק מהתקן',
+                          trailing: Switch(
+                            value: context.watch<ConfigProvider>().notificationsEnabled,
+                            onChanged: (v) {
+                              context.read<ConfigProvider>().setNotificationsEnabled(v);
+                            },
+                          ),
+                        ),
+                        const _Divider(),
+                        _Row(
                           icon: Icons.admin_panel_settings_outlined,
                           label: 'מצב טכנאי',
                           sub: 'לוגים גולמיים ואבחון',
@@ -243,18 +255,23 @@ class _Row extends StatelessWidget {
     required this.label,
     this.sub,
     this.onTap,
+    this.trailing,
     this.danger = false,
   });
   final IconData icon;
   final String label;
   final String? sub;
   final VoidCallback? onTap;
+  /// Optional widget on the leading edge (left of the chevron). When set,
+  /// the chevron is suppressed so the row doesn't look both tappable and
+  /// switchable at once.
+  final Widget? trailing;
   final bool danger;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: onTap,
+      onTap: trailing == null ? onTap : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
         child: Row(
@@ -291,7 +308,9 @@ class _Row extends StatelessWidget {
                 ],
               ),
             ),
-            if (onTap != null)
+            if (trailing != null)
+              trailing!
+            else if (onTap != null)
               const Icon(Icons.chevron_left, color: AppColors.inkSoft),
           ],
         ),
