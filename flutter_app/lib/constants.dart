@@ -10,6 +10,15 @@ class AppConstants {
   static const int heartbeatTimeoutSec = 30;
   static const int mockDeviceTickSec = 2;
 
+  // --- Pairing (shared contract with ESP32 firmware) ---
+  // The ESP32 displays a 6-digit code derived deterministically from its MAC.
+  // The parent app types that code; deviceId is always `{deviceIdPrefix}{code}`.
+  // To allow a freshly-booted device a couple of heartbeats to land, the
+  // pairing flow accepts a heartbeat up to `pairingMaxHeartbeatAgeSec` old.
+  static const String deviceIdPrefix = 'TUTOR-';
+  static const int pairingCodeLength = 6;
+  static const int pairingMaxHeartbeatAgeSec = 60;
+
   // --- Offline queue ---
   static const int offlineQueueMaxOps = 100;
   static const int offlineRetryIntervalSec = 5;
@@ -56,7 +65,7 @@ class AppConstants {
   //   Firebase Console → Project Settings → Cloud Messaging
   //   → Web Push certificates → Generate key pair → copy the public key.
   // Leave empty to skip web push (Android push still works).
-  static const String fcmVapidKey = '';
+  static const String fcmVapidKey = 'BPeGUyxo3QpcedjZRoSHKlpcpZRKN9GFBFN1bq_RbwVWFtxaZd9RxBOzfotuaqxa6Md2f4_JDKDwafWW5Ck8Qks';
 
   // --- Firestore collection names (shared with the ESP32 device) ---
   static const String colParents = 'parents';

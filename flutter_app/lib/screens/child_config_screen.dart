@@ -16,6 +16,7 @@ import '../theme.dart';
 import '../widgets/gender_picker.dart';
 import '../widgets/p_card.dart';
 import '../widgets/p_stepper.dart';
+import '../widgets/pairing_sheet.dart';
 import '../widgets/screen_header.dart';
 
 class ChildConfigScreen extends StatefulWidget {
@@ -84,6 +85,8 @@ class _ChildConfigScreenState extends State<ChildConfigScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    _PairedDeviceCard(child: child),
+                    const SizedBox(height: 14),
                     PCard(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -536,6 +539,85 @@ class _LevelSeg extends StatelessWidget {
             color: selected ? AppColors.sky : AppColors.inkSoft,
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _PairedDeviceCard extends StatefulWidget {
+  const _PairedDeviceCard({required this.child});
+
+  final Child child;
+
+  @override
+  State<_PairedDeviceCard> createState() => _PairedDeviceCardState();
+}
+
+class _PairedDeviceCardState extends State<_PairedDeviceCard> {
+  bool _busy = false;
+
+  Future<void> _repair() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final childProv = context.read<ChildProvider>();
+
+    final newId = await showPairingSheet(context);
+    if (!mounted || newId == null || newId == widget.child.deviceId) return;
+
+    setState(() => _busy = true);
+    try {
+      final updated = widget.child.copyWith(deviceId: newId);
+      await childProv.save(updated);
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('ההתקן הוחלף בהצלחה')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('שמירת ההתקן נכשלה: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.tv, color: AppColors.sky, size: 20),
+              const SizedBox(width: 8),
+              Text('ההתקן המשויך', style: AppTextStyles.label(context)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: Text(
+              widget.child.deviceId.isEmpty ? '—' : widget.child.deviceId,
+              textAlign: TextAlign.right,
+              style: AppTextStyles.title(context).copyWith(
+                fontSize: 18,
+                letterSpacing: 2,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'אם החלפתם את ההתקן הפיזי, או שהקוד שעל המסך שלו אינו תואם, '
+            'הקלידו כאן את הקוד החדש.',
+            style: AppTextStyles.hint(context),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton(
+            onPressed: _busy ? null : _repair,
+            child: Text(_busy ? 'שומר…' : 'החלפת התקן'),
+          ),
+        ],
       ),
     );
   }

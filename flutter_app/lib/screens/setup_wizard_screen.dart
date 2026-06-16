@@ -15,6 +15,7 @@ import '../widgets/gender_picker.dart';
 import '../widgets/p_card.dart';
 import '../widgets/p_opt.dart';
 import '../widgets/p_stepper.dart';
+import '../widgets/pairing_sheet.dart';
 import '../widgets/robot_face.dart';
 import '../widgets/wizard_progress.dart';
 
@@ -38,16 +39,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     Subject.english: true,
   };
 
-  late final String _deviceId;
+  String? _deviceId;
   bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // Simulated auto-pair value (real device emits its own id over BLE/Wi-Fi).
-    _deviceId =
-        'TUTOR-${DateTime.now().millisecondsSinceEpoch.toRadixString(16).substring(6, 10).toUpperCase()}';
-  }
 
   @override
   void dispose() {
@@ -80,7 +73,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       topicFocus: {for (final s in enabled) s: const <String>[]},
       level: {for (final s in enabled) s: defaultLevel},
       settings: ChildSettings.defaults(),
-      deviceId: _deviceId,
+      deviceId: _deviceId!,
       createdAt: DateTime.now(),
     );
 
@@ -169,15 +162,19 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     );
   }
 
-  Widget _connect() {
-    // Simulate pairing 2.6 seconds after entering this step.
-    if (!_connected) {
-      Future.delayed(const Duration(milliseconds: 2600), () {
-        if (mounted && _step == 1 && !_connected) {
-          setState(() => _connected = true);
-        }
+  Future<void> _startPairing() async {
+    final id = await showPairingSheet(context);
+    if (!mounted) return;
+    if (id != null) {
+      setState(() {
+        _deviceId = id;
+        _connected = true;
       });
     }
+  }
+
+  Widget _connect() {
+    final paired = _connected && _deviceId != null;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
       child: Column(
@@ -186,16 +183,17 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           _header('חיבור ההתקן', 'צעד 1 מתוך 4'),
           Center(
             child: RobotFace(
-              emotion: _connected ? RobotEmotion.happy : RobotEmotion.listening,
+              emotion: paired ? RobotEmotion.happy : RobotEmotion.listening,
               size: 180,
             ),
           ),
           const SizedBox(height: 16),
           Center(
             child: DevChip(
-              label: _connected ? 'ההתקן מחובר ומוכן!' : 'מחפש את ההתקן...',
-              state:
-                  _connected ? DevChipState.online : DevChipState.searching,
+              label: paired
+                  ? 'ההתקן מחובר ומוכן!'
+                  : 'ממתין לחיבור התקן',
+              state: paired ? DevChipState.online : DevChipState.searching,
             ),
           ),
           const SizedBox(height: 18),
@@ -205,18 +203,44 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.wifi, color: AppColors.sky, size: 20),
+                    const Icon(Icons.tv, color: AppColors.sky, size: 20),
                     const SizedBox(width: 8),
                     Text(
-                      'חיבור ל-Wi-Fi',
+                      'הקוד מופיע על מסך ההתקן',
                       style: AppTextStyles.label(context),
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'ודאו שההתקן דולק ומחובר לאותה רשת Wi-Fi כמו הטלפון. הנורית על ההתקן תהבהב בכחול עד שיתחבר.',
+                  'ודאו שההתקן דולק ומחובר ל-Wi-Fi. על המסך יופיע קוד בן '
+                  '${AppConstants.pairingCodeLength} ספרות — הקלידו אותו כאן '
+                  'כדי לחבר את ההתקן לילד.',
                   style: AppTextStyles.hint(context),
+                ),
+                const SizedBox(height: 14),
+                if (paired)
+                  Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: Text(
+                      _deviceId!,
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.title(context).copyWith(
+                        fontSize: 18,
+                        letterSpacing: 3,
+                        color: AppColors.mint,
+                      ),
+                    ),
+                  ),
+                if (paired) const SizedBox(height: 10),
+                ElevatedButton(
+                  onPressed: _startPairing,
+                  style: paired
+                      ? OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.sky,
+                        )
+                      : null,
+                  child: Text(paired ? 'הקלידו קוד אחר' : 'הקלידו את הקוד'),
                 ),
               ],
             ),
@@ -483,7 +507,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
               onPressed: _connected
                   ? () => setState(() => _step = 2)
                   : null,
-              child: Text(_connected ? 'המשך' : 'מחבר...'),
+              child: const Text('המשך'),
             ),
           ),
         ];
