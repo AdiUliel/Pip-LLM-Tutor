@@ -51,12 +51,12 @@ class AppConstants {
   // --- UI ---
   static const String defaultLocale = 'he'; // Hebrew RTL
 
-  // --- Cloud region ---
-  // All Cloud Functions deploy to europe-west10. The app currently talks to
-  // the backend purely through Firestore/Storage, but if you ever call a
-  // callable function use this region:
-  //   FirebaseFunctions.instanceFor(region: AppConstants.functionsRegion)
-  static const String functionsRegion = 'europe-west10';
+  // --- FCM (push notifications) ---
+  // Web Push needs a VAPID public key from
+  //   Firebase Console → Project Settings → Cloud Messaging
+  //   → Web Push certificates → Generate key pair → copy the public key.
+  // Leave empty to skip web push (Android push still works).
+  static const String fcmVapidKey = '';
 
   // --- Firestore collection names (shared with the ESP32 device) ---
   static const String colParents = 'parents';

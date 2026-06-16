@@ -15,6 +15,14 @@ abstract class FirebaseService {
   Stream<ParentUser?> watchParent(String parentId);
   Future<void> saveParent(ParentUser parent);
 
+  /// Adds an FCM token to `parents/{parentId}.fcmTokens` (array union).
+  /// Idempotent — re-adding an existing token is a no-op.
+  Future<void> addParentFcmToken(String parentId, String token);
+
+  /// Removes an FCM token from `parents/{parentId}.fcmTokens` (array remove).
+  /// Called on sign-out so notifications stop reaching this device.
+  Future<void> removeParentFcmToken(String parentId, String token);
+
   // ── children ───────────────────────────────────────────────────────────
   Stream<Child?> watchChild(String childId);
   Stream<List<Child>> watchChildrenOfParent(String parentId);

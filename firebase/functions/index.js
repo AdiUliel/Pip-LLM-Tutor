@@ -41,6 +41,15 @@ const { GoogleGenAI } = require("@google/genai");
 
 const { createInitialQuestion, processLearningTurn } = require("./tutorEngine");
 
+// FCM push notifications for the parent app — re-exported so they deploy
+// alongside the existing tutor functions (`firebase deploy --only functions`).
+const {
+  notifyOnSessionStarted,
+  monitorTutor,
+} = require("./notifications");
+exports.notifyOnSessionStarted = notifyOnSessionStarted;
+exports.monitorTutor = monitorTutor;
+
 // ── Every function in this codebase deploys to europe-west10 ─────────────────
 const FUNCTIONS_REGION = process.env.FUNCTIONS_REGION || "europe-west10";
 setGlobalOptions({ region: FUNCTIONS_REGION });

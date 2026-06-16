@@ -18,6 +18,7 @@ import 'providers/stats_provider.dart';
 import 'utils/offline_queue.dart';
 import 'services/device_sync_service.dart';
 import 'services/device_sync_service_real.dart';
+import 'services/fcm_service.dart';
 import 'services/firebase_service.dart';
 import 'services/firebase_service_real.dart';
 
@@ -38,6 +39,34 @@ Future<void> main() async {
   // Drain any leftovers from a prior session. Failures stay queued.
   unawaited(offlineQueue.flush(firebaseService));
 
+  // Auth is constructed eagerly so we can hook FCM to its lifecycle.
+  final auth = AuthProvider(firebase: firebaseService);
+
+  // FCM — registers a token per signed-in parent so Cloud Functions
+  // (firebase/functions/notifications.js) can push session-start, session-end
+  // and device-offline alerts. Foreground messages surface as a SnackBar.
+  final fcm = FcmService(firebaseService);
+  fcm.onForegroundMessage = (msg) {
+    final ctx = _navKey.currentContext;
+    if (ctx == null) return;
+    final n = msg.notification;
+    if (n == null) return;
+    final title = n.title ?? '';
+    final body  = n.body  ?? '';
+    final text  = title.isEmpty ? body : (body.isEmpty ? title : '$title — $body');
+    ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+      SnackBar(content: Text(text)),
+    );
+  };
+  auth.addListener(() {
+    final uid = auth.user?.uid;
+    if (uid != null) {
+      unawaited(fcm.attach(uid));
+    } else {
+      unawaited(fcm.detach());
+    }
+  });
+
   runApp(
     MultiProvider(
       providers: [
@@ -45,9 +74,8 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: offlineQueue),
         Provider<FirebaseService>.value(value: firebaseService),
         Provider<DeviceSyncService>.value(value: deviceSync),
-        ChangeNotifierProvider(
-          create: (_) => AuthProvider(firebase: firebaseService),
-        ),
+        Provider<FcmService>.value(value: fcm),
+        ChangeNotifierProvider.value(value: auth),
         ChangeNotifierProvider(
           create: (_) => ChildProvider(firebaseService, prefs, offlineQueue: offlineQueue),
         ),

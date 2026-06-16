@@ -59,6 +59,16 @@ class FirebaseServiceReal implements FirebaseService {
   Future<void> saveParent(ParentUser parent) =>
       _parents.doc(parent.id).set(parent.toMap(), SetOptions(merge: true));
 
+  @override
+  Future<void> addParentFcmToken(String parentId, String token) => _parents
+      .doc(parentId)
+      .set({'fcmTokens': FieldValue.arrayUnion([token])}, SetOptions(merge: true));
+
+  @override
+  Future<void> removeParentFcmToken(String parentId, String token) => _parents
+      .doc(parentId)
+      .set({'fcmTokens': FieldValue.arrayRemove([token])}, SetOptions(merge: true));
+
   // ── children ───────────────────────────────────────────────────────────
   @override
   Stream<Child?> watchChild(String childId) =>
