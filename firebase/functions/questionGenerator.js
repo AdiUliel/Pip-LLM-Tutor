@@ -90,16 +90,16 @@ function generateMathQuestion({ age = 8, difficulty = 1, topics = [] } = {}) {
   let prompt;
   let expectedAnswer;
 
-  if (topic === "multiplication" || level >= 4) {
+  if (topic === "division" || level >= 6) {
+    b = randomInt(2, Math.min(9, 2 + level));
+    expectedAnswer = String(randomInt(2, Math.min(12, 3 + level)));
+    a = Number(expectedAnswer) * b;
+    prompt = `כמה זה ${a} חלקי ${b}?`;
+  } else if (topic === "multiplication" || level >= 4) {
     a = randomInt(2, Math.min(10, 3 + level));
     b = randomInt(2, Math.min(10, 3 + level));
     prompt = `כמה זה ${a} כפול ${b}?`;
     expectedAnswer = String(a * b);
-  } else if (topic === "division" || level >= 6) {
-    b = randomInt(2, Math.min(9, 3 + level));
-    expectedAnswer = String(randomInt(2, Math.min(10, 4 + level)));
-    a = Number(expectedAnswer) * b;
-    prompt = `כמה זה ${a} חלקי ${b}?`;
   } else if (topic === "subtraction" || level >= 2) {
     a = randomInt(6, Math.min(40, 10 + level * 4));
     b = randomInt(1, Math.min(a, 5 + level * 2));
@@ -127,7 +127,7 @@ function inferMathTopic(age, level) {
   if (level <= 1) return "addition";
   if (level <= 3) return "subtraction";
   if (level <= 5) return "multiplication";
-  return "division";
+  return "division"; // level 6+
 }
 
 function generateEnglishQuestion({ difficulty = 1, topics = [] } = {}) {

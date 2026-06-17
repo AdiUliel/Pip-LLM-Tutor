@@ -260,7 +260,13 @@ exports.onSessionCreated = onDocumentCreated(
       }
 
       const question = await createInitialQuestion(db, sessionRef, data, child);
-      const audioUrl = await safeSynthesize(question.prompt, `${sessionId}_q0`);
+
+      const childName = child?.name ? child.name : null;
+      const subjectLabel = (data.subject || "math") === "math" ? "מתמטיקה" : "אנגלית";
+      const greeting = childName
+        ? `שלום ${childName}! אני פיפ, המורה הרובוט שלך. היום נתרגל יחד ${subjectLabel}. מוכן${child?.gender === "girl" ? "ה" : ""}? הנה השאלה הראשונה:`
+        : `שלום! אני פיפ, המורה הרובוט שלך. היום נתרגל יחד ${subjectLabel}. מוכנים? הנה השאלה הראשונה:`;
+      const audioUrl = await safeSynthesize(`${greeting} ${question.prompt}`, `${sessionId}_q0`);
 
       await sessionRef.set(
         {
