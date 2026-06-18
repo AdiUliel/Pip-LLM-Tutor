@@ -40,10 +40,15 @@ service cloud.firestore {
     match /sessions/{sessionId} {
       allow read: if signedIn();
 
-      // A device or the app may create a session. Cloud Functions may also create
-      // sessions through Admin SDK and bypass these rules.
+      // A device or the app may create a session.
+      // Standard flow:  requires childId + subject (known upfront).
+      // Identifying flow: device doesn't know childId yet — only deviceId + startedAt required.
       allow create: if signedIn()
-                    && request.resource.data.keys().hasAll(['childId', 'deviceId', 'subject', 'startedAt']);
+                    && request.resource.data.keys().hasAll(['deviceId', 'startedAt'])
+                    && (
+                      request.resource.data.keys().hasAll(['childId', 'subject']) ||
+                      request.resource.data.status == 'identifying'
+                    );
 
       // Device/app can update lightweight session state. LLM fields are usually
       // written by Cloud Functions, but allowing signed-in updates keeps ESP32
@@ -64,7 +69,9 @@ service cloud.firestore {
                       && (
                         request.resource.data.childAnswer is string ||
                         request.resource.data.childAnswerTranscript is string ||
-                        request.resource.data.question is string
+                        request.resource.data.question is string ||
+                        request.resource.data.childNameTranscript is string ||
+                        request.resource.data.subjectTranscript is string
                       );
         allow update, delete: if false;
       }

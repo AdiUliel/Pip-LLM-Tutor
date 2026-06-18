@@ -40,6 +40,60 @@ const SYSTEM_PROMPT = `אתה פיפ — מורה רובוט חם ומעודד �
   "shouldTakeBreak": boolean
 }`;
 
+// ── Exit-intent detection ─────────────────────────────────────────────────────
+const EXIT_PHRASES = [
+  "לסיים", "רוצה לסיים", "נגמרנו", "נגמר", "סיום", "להפסיק",
+  "עייף", "עייפה", "לא רוצה", "stop", "finish", "bye", "done", "quit",
+];
+
+function detectExitIntent(text) {
+  const t = String(text || "").toLowerCase().trim();
+  return EXIT_PHRASES.some((p) => t.includes(p));
+}
+
+// ── Material-based question fetching ─────────────────────────────────────────
+// If the child's profile has useUploadedMaterials:true, pull an unused question
+// from the parent's enabled material docs. Falls back to the deterministic
+// generator if no eligible material questions remain.
+async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
+  if (!child?.useUploadedMaterials) return null;
+  const parentId = session.parentId;
+  if (!parentId) return null;
+
+  const usedSnap = await db
+    .collection("sessions").doc(sessionId)
+    .collection("questions").get();
+  const usedPrompts = new Set(usedSnap.docs.map((d) => d.data().prompt));
+
+  const materialsSnap = await db.collection("materials")
+    .where("parentId", "==", parentId)
+    .where("subject", "==", subject)
+    .where("enabled", "==", true)
+    .get();
+
+  const candidates = [];
+  materialsSnap.forEach((doc) => {
+    (doc.data().questions || []).forEach((q) => {
+      if (q.prompt && q.expectedAnswer && !usedPrompts.has(q.prompt)) {
+        candidates.push(q);
+      }
+    });
+  });
+
+  if (!candidates.length) return null;
+
+  const q = candidates[Math.floor(Math.random() * candidates.length)];
+  return {
+    subject,
+    prompt: q.prompt,
+    expectedAnswer: String(q.expectedAnswer),
+    topic: q.topic || subject,
+    difficulty: session.currentDifficulty || 1,
+    answerVariants: [String(q.expectedAnswer).toLowerCase().trim()],
+    fromMaterial: true,
+  };
+}
+
 function subjectTopicsFromChild(child, subject) {
   const raw = child.topicFocus || {};
   const topics = raw[subject];
@@ -254,6 +308,32 @@ async function processLearningTurn({
   }
 
   const childAnswer = exchangeData.childAnswer || exchangeData.childAnswerTranscript || exchangeData.question || "";
+
+  // ── Exit intent ─────────────────────────────────────────────────────────────
+  if (detectExitIntent(childAnswer)) {
+    const childName = child?.name || "";
+    const farewellText = childName
+      ? `כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
+      : `כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+
+    const audioUrl = synthesize ? await synthesize(farewellText, `${exchangeId}_farewell`) : "";
+    const now = FieldValue.serverTimestamp();
+
+    await db.runTransaction(async (tx) => {
+      tx.update(exchangeRef, {
+        status: "done",
+        sessionEnded: true,
+        spokenFeedback: farewellText,
+        audioUrl,
+        emotion: "happy",
+        answeredAt: now,
+      });
+      tx.set(sessionRef, { status: "ended", endedAt: now, lastActivity: now }, { merge: true });
+    });
+
+    return { sessionEnded: true, spokenFeedback: farewellText, audioUrl };
+  }
+
   const isCorrect = checkAnswer(expectedAnswer, childAnswer);
   const previousWrong = Number(session.consecutiveWrong || 0);
   const previousCorrect = Number(session.consecutiveCorrect || 0);
@@ -314,12 +394,9 @@ async function processLearningTurn({
 
   const subject = session.subject || "math";
   const topics = subjectTopicsFromChild(child || {}, subject);
-  const nextQuestion = generateQuestion({
-    subject,
-    age: child?.age || 8,
-    difficulty: nextDifficulty,
-    topics,
-  });
+  const nextQuestion =
+    (await fetchMaterialQuestion(db, sessionId, session, child, subject)) ||
+    generateQuestion({ subject, age: child?.age || 8, difficulty: nextDifficulty, topics });
 
   const mood = moodFromEmotion(feedback.emotion);
   const now = FieldValue.serverTimestamp();
