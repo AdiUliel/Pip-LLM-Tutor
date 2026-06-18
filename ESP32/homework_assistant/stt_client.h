@@ -51,11 +51,19 @@ char* base64EncodePSRAM(const uint8_t* data, size_t len, size_t& outLen) {
 }
 
 // ── Send audio to the Cloud Function STT proxy ────────────────────────────────
-// audio     : raw PCM bytes (16-bit, 16kHz, mono)
-// audioLen  : number of bytes
-// idToken   : Firebase anonymous auth token
+// audio        : raw PCM bytes (16-bit, 16kHz, mono)
+// audioLen     : number of bytes
+// idToken      : Firebase anonymous auth token
+// languageCode : BCP-47 code Google STT recognises ("he-IL", "en-US", ...).
+//                Pass nullptr (default) to fall back to STT_LANGUAGE_CODE
+//                from secrets.h. The Cloud Function forwards whatever code
+//                we send straight to Google STT, so adding new languages
+//                needs no server change.
 // Returns the transcribed text, or "" on failure.
-String transcribeAudio(const uint8_t* audio, size_t audioLen, const String& idToken) {
+String transcribeAudio(const uint8_t* audio, size_t audioLen,
+                       const String& idToken,
+                       const char* languageCode = nullptr) {
+  const char* lang = (languageCode && languageCode[0]) ? languageCode : STT_LANGUAGE_CODE;
   // Build the Cloud Function URL
   // Format: https://{region}-{projectId}.cloudfunctions.net/transcribeAudio
   // OR (Gen 2): https://transcribeaudio-{hash}-{region}.a.run.app
@@ -74,10 +82,13 @@ String transcribeAudio(const uint8_t* audio, size_t audioLen, const String& idTo
   }
   Serial.printf("[STT] Base64 size: %u chars\n", b64Len);
 
-  // Build JSON body in PSRAM — prefix + b64 + suffix
+  // Build JSON body in PSRAM — prefix + b64 + suffix (with languageCode
+  // chosen at runtime so we can switch he-IL ↔ en-US per session).
   const char* prefix = "{\"audio\":\"";
-  const char* suffix = "\",\"languageCode\":\"" STT_LANGUAGE_CODE "\"}";
-  size_t bodyLen = strlen(prefix) + b64Len + strlen(suffix);
+  char suffix[64];
+  snprintf(suffix, sizeof(suffix), "\",\"languageCode\":\"%s\"}", lang);
+  size_t suffixLen = strlen(suffix);
+  size_t bodyLen = strlen(prefix) + b64Len + suffixLen;
   char* bodyBuf = (char*)ps_malloc(bodyLen + 1);
   if (!bodyBuf) {
     free(b64buf);
@@ -86,8 +97,9 @@ String transcribeAudio(const uint8_t* audio, size_t audioLen, const String& idTo
   }
   memcpy(bodyBuf,                          prefix, strlen(prefix));
   memcpy(bodyBuf + strlen(prefix),         b64buf, b64Len);
-  memcpy(bodyBuf + strlen(prefix) + b64Len, suffix, strlen(suffix) + 1);
+  memcpy(bodyBuf + strlen(prefix) + b64Len, suffix, suffixLen + 1);
   free(b64buf);  // b64 copy now lives inside bodyBuf
+  Serial.printf("[STT] languageCode: %s\n", lang);
 
   WiFiClientSecure sslClient;
   sslClient.setInsecure();

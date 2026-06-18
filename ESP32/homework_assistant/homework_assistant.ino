@@ -60,6 +60,11 @@ size_t   recordBytes = 0;
 
 // ── Tutor loop state ──────────────────────────────────────────────────────────
 String g_currentQuestion = "";
+// Subject of the active session. Seeded from SESSION_SUBJECT, but the
+// kid's voice-pick during identify_subject overwrites the session doc in
+// Firestore, and firestoreWaitForCurrentQuestion reads that value back
+// into this global so STT/UI logic uses the actual chosen subject.
+String g_currentSubject = SESSION_SUBJECT;
 int    g_stars           = 0;     // running correct-answer count (shown on strip)
 bool   g_haveFace        = false; // pip_face initialised OK
 
@@ -253,7 +258,7 @@ void setup() {
   Serial.println("[Tutor] Waiting for the first question from the backend...");
   faceEmotion("thinking");
   String firstAudio;
-  if (!firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio)) {
+  if (!firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio, 30000, &g_currentSubject)) {
     Serial.println("❌ No first question. Check the Cloud Functions / Vertex AI setup.");
     faceStatus("error");
     firestoreWriteDeviceState("error");
@@ -352,10 +357,14 @@ void loop() {
         }
       }
 
-      // STT.
+      // STT — pick language by the SESSION's subject (read from Firestore
+      // after identify_subject), not the compile-time SESSION_SUBJECT.
+      // So an English lesson is recognised as English even when the device
+      // was flashed with SESSION_SUBJECT="math".
       faceEmotion("thinking");
       faceTick();
-      String answer = transcribeAudio(recordBuf, recordBytes, g_idToken);
+      const char* sttLang = g_currentSubject.equalsIgnoreCase("english") ? "en-US" : "he-IL";
+      String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
       if (answer.isEmpty()) {
         Serial.println("[Main] STT returned empty transcript.");
         state = IDLE;

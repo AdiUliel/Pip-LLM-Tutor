@@ -216,10 +216,15 @@ String firestoreCreateSession(const String& subject = SESSION_SUBJECT) {
 // ── Wait until onSessionCreated() has seeded the first question ───────────────
 // Polls the session doc until status=="active" with a currentQuestion, then
 // returns the question text + its audio URL (via out-params).
+// subjectOut is optional — when non-null, the resolved subject ("math" |
+// "english") from the session doc is written there. The cloud function
+// updates this field after `identify_subject`, so the device knows which
+// subject the kid actually chose by voice.
 bool firestoreWaitForCurrentQuestion(const String& sessionId,
                                      String& questionOut,
                                      String& audioUrlOut,
-                                     uint32_t timeoutMs = 30000) {
+                                     uint32_t timeoutMs = 30000,
+                                     String* subjectOut = nullptr) {
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
   url += "/databases/(default)/documents/sessions/" + sessionId;
@@ -248,6 +253,10 @@ bool firestoreWaitForCurrentQuestion(const String& sessionId,
     if ((status == "active" || status == "break") && q.length() > 0) {
       questionOut = q;
       audioUrlOut = resp["fields"]["currentQuestionAudioUrl"]["stringValue"].as<String>();
+      if (subjectOut) {
+        String s = resp["fields"]["subject"]["stringValue"].as<String>();
+        if (s.length() > 0) *subjectOut = s;
+      }
       return true;
     }
     Serial.println("[Firestore] waiting for first question (status=" + status + ")");
