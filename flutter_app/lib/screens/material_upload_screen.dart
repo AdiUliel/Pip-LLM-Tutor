@@ -483,6 +483,11 @@ class _MaterialTile extends StatelessWidget {
     final count = material.items.length;
     final when = _heAgo(material.uploadedAt);
     final disabled = !material.enabled;
+    // While the Cloud Function is still parsing the uploaded file, show a
+    // friendlier line than "0 שאלות".
+    final subtitle = material.isExtractionPending
+        ? 'מעבד שאלות… · $when'
+        : '$count שאלות · $when';
     return Opacity(
       opacity: disabled ? 0.55 : 1,
       child: PCard(
@@ -515,7 +520,7 @@ class _MaterialTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis),
                       const SizedBox(height: 2),
                       Text(
-                        '$count שאלות · $when',
+                        subtitle,
                         style: AppTextStyles.hint(context)
                             .copyWith(fontSize: 12.5),
                       ),

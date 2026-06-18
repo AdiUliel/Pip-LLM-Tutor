@@ -50,6 +50,10 @@ const {
 exports.notifyOnSessionStarted = notifyOnSessionStarted;
 exports.monitorTutor = monitorTutor;
 
+// PDF / image / text material → Q&A pairs via Gemini multimodal.
+const { extractQuestionsFromMaterial } = require("./extractQuestions");
+exports.extractQuestionsFromMaterial = extractQuestionsFromMaterial;
+
 // ── Every function in this codebase deploys to europe-west10 ─────────────────
 const FUNCTIONS_REGION = process.env.FUNCTIONS_REGION || "europe-west10";
 setGlobalOptions({ region: FUNCTIONS_REGION });

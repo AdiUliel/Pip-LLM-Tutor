@@ -29,6 +29,14 @@ class MaterialDoc {
   /// When false, the ESP32 device should skip this material during practice
   /// without the parent having to delete it. Legacy docs (no field) → true.
   final bool enabled;
+  /// Set by the `extractQuestionsFromMaterial` Cloud Function once it has
+  /// attempted to parse the uploaded file. Null while extraction is still
+  /// pending → UI shows "מעבד שאלות…". Non-null with empty [items] means
+  /// extraction completed but found nothing (or hit [extractionError]).
+  final DateTime? itemsGeneratedAt;
+  /// Non-null when extraction failed (download or Gemini error). Used for
+  /// surfacing a hint in the UI; safe to ignore.
+  final String? extractionError;
 
   const MaterialDoc({
     required this.id,
@@ -39,7 +47,15 @@ class MaterialDoc {
     this.fileUrl,
     required this.uploadedAt,
     this.enabled = true,
+    this.itemsGeneratedAt,
+    this.extractionError,
   });
+
+  /// True when a file was uploaded but extraction hasn't finished yet —
+  /// the UI uses this to show "מעבד שאלות…" instead of "0 שאלות".
+  bool get isExtractionPending =>
+      fileUrl != null && fileUrl!.isNotEmpty &&
+      items.isEmpty && itemsGeneratedAt == null;
 
   factory MaterialDoc.fromMap(String id, Map<String, dynamic> m) => MaterialDoc(
         id: id,
@@ -58,6 +74,10 @@ class MaterialDoc {
             ? m['uploadedAt'] as DateTime
             : DateTime.now(),
         enabled: (m['enabled'] as bool?) ?? true,
+        itemsGeneratedAt: m['itemsGeneratedAt'] is DateTime
+            ? m['itemsGeneratedAt'] as DateTime
+            : null,
+        extractionError: m['extractionError'] as String?,
       );
 
   Map<String, dynamic> toMap() => {
@@ -79,5 +99,7 @@ class MaterialDoc {
         fileUrl: fileUrl,
         uploadedAt: uploadedAt,
         enabled: enabled ?? this.enabled,
+        itemsGeneratedAt: itemsGeneratedAt,
+        extractionError: extractionError,
       );
 }
