@@ -15,6 +15,16 @@
  *    - rendering moved to a FreeRTOS task so the face stays responsive
  *      while the main loop is blocked on HTTPS / STT / audio playback /
  *      I2S recording. tick() is now a no-op kept for API compatibility.
+ *    - per-state drawing refreshed to match the new vector design:
+ *        HAPPY      pink cheek blush dots
+ *        LISTENING  two phased expanding sound rings (+ pulsing eyes)
+ *        ENCOURAGING  single slow warm ring
+ *        SPEAKING   ellipse mouth with rx/ry lip-sync (was rect)
+ *        SLEEPY     yawning ellipse (was round-rect)
+ *        OOPS       wide oval mouth + spark lines (was sweat drop)
+ *        CONCERNED  straight diagonal worry brows (was curves)
+ *        PROUD      4-point twinkle stars (was 5-pt stars)
+ *        CELEBRATING confetti + twinkle flourish stars
  * ========================================================================== */
 
 #include "PipFace.h"
@@ -104,6 +114,46 @@ void happyEye(int ex,int y) { glowCurve(ex-16,y+7, ex,y-9, ex+16,y+7, 9); }
 // open capsule eye
 void capsuleEye(int ex,int y) { glowRoundRect(ex-15, y-21, 30, 42, 15); }
 
+// pink "blush" dot — used on HAPPY's cheeks (matches the new vector design).
+void drawBlush(int cx, int cy, int r) {
+  face.fillCircle(cx, cy, r+1, GLOWD);   // soft halo
+  face.fillCircle(cx, cy, r,   PINK);
+}
+
+// Glowing filled ellipse — same halo trick as glowRoundRect / glowCircle.
+// Used by SPEAKING (morphing mouth), SLEEPY (yawn), OOPS (wide mouth).
+void glowEllipse(int cx, int cy, int rx, int ry) {
+  if (rx < 1) rx = 1;
+  if (ry < 1) ry = 1;
+  face.fillEllipse(cx, cy, rx+2, ry+2, GLOWD);
+  face.fillEllipse(cx, cy, rx,   ry,   GLOW);
+}
+
+// Expanding sound ring used by LISTENING (two phased rings) and
+// ENCOURAGING (single slow ring). phase ∈ [0,1) — 0 = freshly born at
+// [startR], 1 = faded out at [endR]. Dims the stroke past phase 0.5
+// so the ring appears to fade as it grows.
+void drawSoundRing(int cx, int cy, int startR, int endR, float phase) {
+  int r = startR + (int)((endR - startR) * phase);
+  uint16_t col = (phase < 0.55f) ? GLOW : GLOWD;
+  // Thick ring approximated by 3 adjacent unfilled circles.
+  face.drawCircle(cx, cy, r,     col);
+  face.drawCircle(cx, cy, r + 1, col);
+  face.drawCircle(cx, cy, r - 1, col);
+}
+
+// 4-point "twinkle" sparkle — sharper than the 5-pt fillStar.
+// Used by PROUD's overlay and CELEBRATING flourish stars.
+void drawTwinkle(int cx, int cy, int r, uint16_t col) {
+  int v = (int)(r * 0.42f); if (v < 1) v = 1;
+  // vertical lens
+  face.fillTriangle(cx, cy - r, cx - v, cy, cx, cy + r, col);
+  face.fillTriangle(cx, cy - r, cx + v, cy, cx, cy + r, col);
+  // horizontal lens
+  face.fillTriangle(cx - r, cy, cx, cy - v, cx + r, cy, col);
+  face.fillTriangle(cx - r, cy, cx, cy + v, cx + r, cy, col);
+}
+
 // ================================ the face ================================
 void drawAntenna(int dy, uint32_t t) {
   uint16_t bulb = (state==PROUD||state==CELEBRATING) ? GOLD : GLOW;
@@ -135,8 +185,13 @@ void drawEyes(int dy, uint32_t t) {
       glowCircle(EX_L+gx,y-6,12); glowCircle(EX_R+gx,y-6,12); break; }
     case CONCERNED:
       glowCircle(EX_L,y,11); glowCircle(EX_R,y,11);
-      glowCurve(EX_L-14,y-22, EX_L,y-30, EX_L+16,y-26, 6);   // worried brows
-      glowCurve(EX_R+14,y-22, EX_R,y-30, EX_R-16,y-26, 6); break;
+      // Straight diagonal worry brows — outer-top down to inner-low
+      // (was a curve; new vector design draws this as a line).
+      face.drawWideLine(66,  98+dy, 98,  88+dy, 10, GLOWD);
+      face.drawWideLine(66,  98+dy, 98,  88+dy, 7,  GLOW);
+      face.drawWideLine(174, 98+dy, 142, 88+dy, 10, GLOWD);
+      face.drawWideLine(174, 98+dy, 142, 88+dy, 7,  GLOW);
+      break;
     case OOPS:
       glowCircle(EX_L,y,18); glowCircle(EX_R,y,18);
       glowCurve(EX_L-16,y-26, EX_L,y-34, EX_L+16,y-28, 6);   // raised brows
@@ -154,9 +209,14 @@ void drawEyes(int dy, uint32_t t) {
 void drawMouth(int dy, uint32_t t) {
   int y = MY + dy;
   switch (state) {
-    case SPEAKING: {                                     // talking: height pulses
-      int h = 10 + (int)(9*fabs(sin(t/120.0)));
-      glowRoundRect(MX-18, y-h/2, 36, h, 8); break; }
+    case SPEAKING: {
+      // Ellipse mouth — rx + ry pulse independently (lip-sync feel).
+      // Was a rect — the new vector design uses an animated ellipse.
+      int rx = 17 + (int)(6 * fabs(cos(t / 180.0)));
+      int ry =  5 + (int)(9 * fabs(sin(t / 120.0)));
+      glowEllipse(MX, y, rx, ry);
+      break;
+    }
     case LISTENING:
       glowCircle(MX, y, 10); break;
     case THINKING:
@@ -166,14 +226,20 @@ void drawMouth(int dy, uint32_t t) {
     case PROUD: case ENCOURAGING:
       glowCurve(MX-22,y-6, MX,y+20, MX+22,y-6, 10); break;
     case CONCERNED:
-      glowCurve(MX-22,y+6, MX,y-8, MX+22,y+6, 9); break;    // gentle frown
+      glowCurve(MX-26,y+6, MX,y-8, MX+26,y+6, 9); break;    // gentle frown
     case PLAYFUL:
       glowCurve(MX-22,y-6, MX,y+22, MX+22,y-6, 10);
       face.fillRoundRect(MX-9, y+8, 18, 14, 6, PINK); break; // tongue
-    case SLEEPY:
-      glowRoundRect(MX-9, y-9, 18, 18, 9); break;           // yawn
+    case SLEEPY: {
+      // Yawning ellipse — height oscillates wide.
+      int ry = 7 + (int)(13 * fabs(sin(t / 1500.0)));
+      glowEllipse(MX, y + 4, 14, ry);
+      break;
+    }
     case OOPS:
-      glowCircle(MX, y+2, 11); break;
+      // Wide oval mouth (was a small circle) — looks startled.
+      glowEllipse(MX, y + 4, 13, 15);
+      break;
     case IDLE: default:
       glowCurve(MX-20,y-2, MX,y+18, MX+20,y-2, 9); break;   // calm smile
   }
@@ -181,30 +247,61 @@ void drawMouth(int dy, uint32_t t) {
 
 void drawOverlay(int dy, uint32_t t) {
   switch (state) {
-    case THINKING: {                                     // rising "..." dots
+    case HAPPY:
+      // Pink cheek blush dots — matches the new vector design.
+      drawBlush(52,  150 + dy, 12);
+      drawBlush(188, 150 + dy, 12);
+      break;
+    case LISTENING: {
+      // Two expanding sound rings, phased so they overlap nicely.
+      float p1 = (float)((t       ) % 1800) / 1800.0f;
+      float p2 = (float)((t + 900 ) % 1800) / 1800.0f;
+      drawSoundRing(120, 120 + dy, 92, 118, p1);
+      drawSoundRing(120, 120 + dy, 92, 118, p2);
+      break;
+    }
+    case ENCOURAGING: {
+      // Single slower warm ring.
+      float p = (float)(t % 2400) / 2400.0f;
+      drawSoundRing(120, 120 + dy, 96, 124, p);
+      break;
+    }
+    case THINKING: {
       int n = (t / 350) % 4;
       for (int i = 0; i < 3; i++) if (i < n) glowCircle(196+i*15, 70-i*6+dy, 5+i);
-      break; }
+      break;
+    }
     case SLEEPY: {
       face.setTextColor(GLOW);
       face.drawString("z", 196, 70+dy, 2);
       face.drawString("Z", 214, 50+dy, 4);
-      break; }
-    case PROUD:
-      fillStar(56,90+dy,8,GOLD); fillStar(196,104+dy,7,GOLD); fillStar(186,58+dy,6,GOLD);
       break;
-    case CELEBRATING: {                                  // simple confetti
+    }
+    case PROUD: {
+      // 4-point twinkle stars (was 5-pt fillStar). Sharper, more "spark".
+      drawTwinkle(56,  90  + dy, 9, GOLD);
+      drawTwinkle(196, 104 + dy, 8, GOLD);
+      drawTwinkle(186, 58  + dy, 7, GOLD);
+      break;
+    }
+    case CELEBRATING: {                                  // confetti + twinkles
       int yy = (t/6) % 220;
       uint16_t cs[3] = { GOLD, PINK, GLOW };
       for (int i = 0; i < 6; i++) {
         int cx = 30 + i*34, cy = (yy + i*36) % 220;
         face.fillRect(cx, cy, 9, 9, cs[i % 3]);
       }
-      fillStar(44,64+dy,9,GOLD); fillStar(200,78+dy,8,GOLD);
-      break; }
-    case OOPS:                                           // friendly sweat drop
-      face.fillCircle(190, 92+dy, 7, rgb(0x8F,0xD3,0xF2));
+      drawTwinkle(44,  64 + dy, 10, GOLD);
+      drawTwinkle(200, 78 + dy, 9,  GOLD);
       break;
+    }
+    case OOPS: {
+      // Small "spark" lines around the face — was a sweat-drop circle.
+      face.drawWideLine(40,  110 + dy, 28,  104 + dy, 4, GOLD);
+      face.drawWideLine(200, 110 + dy, 212, 104 + dy, 4, GOLD);
+      face.drawWideLine(44,  140 + dy, 32,  144 + dy, 4, GOLD);
+      break;
+    }
     default: break;
   }
 }
