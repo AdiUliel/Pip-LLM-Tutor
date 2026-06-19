@@ -251,6 +251,7 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
   Future<void> _saveManual() async {
     final child = _child;
     if (child == null) return;
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _saving = true);
     final items = [
       for (final p in _pairs)
@@ -265,19 +266,27 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
       items: items,
       uploadedAt: DateTime.now(),
     );
-    await context.read<FirebaseService>().uploadMaterial(doc);
-    if (!mounted) return;
-    setState(() {
-      _saving = false;
-      _titleCtrl.clear();
-      for (final p in _pairs) {
-        p.dispose();
-      }
-      _pairs
-        ..clear()
-        ..add(_QARow());
-      _tab = _MaterialTab.list;
-    });
+    try {
+      await context.read<FirebaseService>().uploadMaterial(doc);
+      if (!mounted) return;
+      setState(() {
+        _titleCtrl.clear();
+        for (final p in _pairs) {
+          p.dispose();
+        }
+        _pairs
+          ..clear()
+          ..add(_QARow());
+        _tab = _MaterialTab.list;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('שמירת החומר נכשלה: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   // ─────────────────────────── FILE tab ───────────────────────────
@@ -397,6 +406,7 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
     final child = _child;
     final f = _file;
     if (child == null || f == null) return;
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _saving = true);
     final doc = MaterialDoc(
       id: '',
@@ -406,17 +416,25 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
       items: const [],
       uploadedAt: DateTime.now(),
     );
-    await context.read<FirebaseService>().uploadMaterial(
-          doc,
-          fileBytes: f.bytes,
-          fileName: f.name,
-        );
-    if (!mounted) return;
-    setState(() {
-      _saving = false;
-      _file = null;
-      _tab = _MaterialTab.list;
-    });
+    try {
+      await context.read<FirebaseService>().uploadMaterial(
+            doc,
+            fileBytes: f.bytes,
+            fileName: f.name,
+          );
+      if (!mounted) return;
+      setState(() {
+        _file = null;
+        _tab = _MaterialTab.list;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('העלאת הקובץ נכשלה: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 }
 

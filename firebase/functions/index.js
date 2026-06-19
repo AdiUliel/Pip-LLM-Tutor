@@ -192,7 +192,8 @@ async function safeSynthesize(text, fileId) {
   try {
     return await synthesizeAudio(text, fileId);
   } catch (err) {
-    console.warn("[TTS] synthesis failed (continuing without audio):", err.message);
+    const snippet = String(text || "").slice(0, 40);
+    console.warn(`[TTS] synthesis failed for ${fileId} "${snippet}":`, err.message);
     return "";
   }
 }
@@ -550,6 +551,9 @@ exports.startLearningSession = onCall(async (request) => {
   if (!childSnap.exists) throw new HttpsError("not-found", "Child was not found.");
 
   const child = { id: childSnap.id, ...childSnap.data() };
+  if (child.parentId && child.parentId !== request.auth.uid) {
+    throw new HttpsError("permission-denied", "Not your child.");
+  }
   const sessionRef = db.collection("sessions").doc();
   await sessionRef.set({
     childId,

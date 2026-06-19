@@ -7,13 +7,8 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function sessionDoc(sessionId) {
-      return get(/databases/$(database)/documents/sessions/$(sessionId));
-    }
-
-    function ownsSession(sessionId) {
-      return signedIn()
-        && sessionDoc(sessionId).data.deviceId == request.auth.uid;
+    function childParentForId(childId) {
+      return get(/databases/$(database)/documents/children/$(childId)).data.parentId;
     }
 
     // ── Devices ──────────────────────────────────────────────────────────────
@@ -21,47 +16,77 @@ service cloud.firestore {
       allow read, write: if signedIn() && request.auth.uid == deviceId;
     }
 
+    // deviceState rules left loose intentionally; tighten in a follow-up
+    // (low impact: spoof heartbeat / online status only).
     match /deviceState/{deviceId} {
       allow read, write: if signedIn();
     }
 
-    // ── Children / Materials ─────────────────────────────────────────────────
-    // Parent app creates and edits these. Device reads the child profile and
-    // enabled materials during a learning session.
+    // ── Parents (FCM tokens etc.) ───────────────────────────────────────────
+    // Each parent reads/writes only their own doc.
+    match /parents/{parentId} {
+      allow read, write: if signedIn() && request.auth.uid == parentId;
+    }
+
+    // ── Children ────────────────────────────────────────────────────────────
+    // Parent owns the doc via `parentId`; the paired device may also read its
+    // own child profile via `deviceId == auth.uid` (used by the ESP32 to
+    // resolve which child it's serving).
     match /children/{childId} {
-      allow read, write: if signedIn();
+      allow read: if signedIn() && (
+        resource.data.parentId == request.auth.uid ||
+        resource.data.deviceId == request.auth.uid
+      );
+      allow create: if signedIn()
+                    && request.resource.data.parentId == request.auth.uid;
+      allow update: if signedIn()
+                    && resource.data.parentId == request.auth.uid
+                    && request.resource.data.parentId == request.auth.uid;
+      allow delete: if signedIn()
+                    && resource.data.parentId == request.auth.uid;
     }
 
+    // ── Materials ───────────────────────────────────────────────────────────
+    // Reads stay loose for now — Flutter's `watchMaterials(childId)` query
+    // doesn't carry parentId, and tightening would need a composite-index
+    // change + client refactor. Writes are locked down via the child doc's
+    // parentId so cross-tenant tampering is blocked.
     match /materials/{materialId} {
-      allow read, write: if signedIn();
+      allow read: if signedIn();
+      allow create: if signedIn()
+                    && childParentForId(request.resource.data.childId) == request.auth.uid;
+      allow update, delete: if signedIn()
+                    && childParentForId(resource.data.childId) == request.auth.uid;
     }
 
-    // ── Sessions ─────────────────────────────────────────────────────────────
+    // ── Sessions ────────────────────────────────────────────────────────────
+    // Reads stay loose for now (same reason as materials). Writes are owner-
+    // checked: only the device that created the session, or the parent listed
+    // on it, can update. Creates restricted to device-uid + sensible shape so
+    // a random signed-in user can't fabricate sessions in someone else's
+    // collection.
     match /sessions/{sessionId} {
       allow read: if signedIn();
 
-      // A device or the app may create a session.
-      // Standard flow:  requires childId + subject (known upfront).
-      // Identifying flow: device doesn't know childId yet — only deviceId + startedAt required.
       allow create: if signedIn()
+                    && request.resource.data.deviceId == request.auth.uid
                     && request.resource.data.keys().hasAll(['deviceId', 'startedAt'])
                     && (
                       request.resource.data.keys().hasAll(['childId', 'subject']) ||
-                      request.resource.data.status == 'identifying'
+                      request.resource.data.status in ['identifying', 'identifying_child']
                     );
 
-      // Device/app can update lightweight session state. LLM fields are usually
-      // written by Cloud Functions, but allowing signed-in updates keeps ESP32
-      // integration simple for the prototype.
-      allow update: if signedIn();
+      allow update: if signedIn() && (
+        resource.data.deviceId == request.auth.uid ||
+        (resource.data.parentId is string && resource.data.parentId == request.auth.uid)
+      );
+
       allow delete: if false;
 
       // ── Exchanges ─────────────────────────────────────────────────────────
-      // New LLM tutor flow:
-      //   Device writes {type:'learning_turn', childAnswer:'...', status:'pending'}.
-      // Legacy helper flow:
-      //   Device writes {question:'...', status:'pending'}.
-      // Cloud Functions write answers using Admin SDK.
+      // Cloud Functions write answers using Admin SDK (bypasses rules).
+      // Device/app may create a pending exchange; updates/deletes are blocked
+      // so the device can't tamper with the cloud's answers.
       match /exchanges/{exchangeId} {
         allow read: if signedIn();
         allow create: if signedIn()
@@ -77,6 +102,7 @@ service cloud.firestore {
       }
 
       // Per-question logs used by Reports / Session detail screens.
+      // Read-only from clients — only Cloud Functions write these.
       match /questions/{questionId} {
         allow read: if signedIn();
         allow create, update, delete: if false;

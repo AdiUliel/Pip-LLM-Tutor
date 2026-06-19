@@ -296,6 +296,15 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
     Serial.printf("[Identify] matched: %s (%s)\n",
                   child.matchedChildName.c_str(), child.matchedChildId.c_str());
     if (child.matchedChildId.length() > 0) break;
+    // Cloud signals the device isn't paired yet (its anonymous UID isn't in
+    // any children.deviceId). Play the cloud's "ask the parent to pair me"
+    // prompt once and bail to the legacy generic-session fallback — retrying
+    // here would just keep saying "I didn't recognize the name" pointlessly.
+    if (child.needsPairing) {
+      if (!child.audioUrl.isEmpty()) { faceEmotion("speaking"); speakAudio(child.audioUrl); }
+      Serial.println("[Identify] device not paired — falling back to legacy path.");
+      return false;
+    }
     if (attempt == 2) {
       Serial.println("[Identify] giving up after 3 unknown-name attempts.");
       return false;

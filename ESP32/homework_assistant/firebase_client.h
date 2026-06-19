@@ -386,7 +386,8 @@ bool firestorePollForTurnResult(const String& sessionId,
 
 // ── Result of an identify exchange ───────────────────────────────────────────
 struct IdentifyResult {
-  bool   ok        = false;
+  bool   ok           = false;
+  bool   needsPairing = false;  // cloud sets when device.deviceId isn't paired
   String audioUrl;        // WAV of the cloud's spoken response
   String promptText;      // the text that was synthesized (for logging)
   String matchedChildName;
@@ -486,6 +487,7 @@ bool firestorePollForIdentifyResult(const String& sessionId,
       out.matchedChildId    = resp["fields"]["matchedChildId"]["stringValue"].as<String>();
       out.subject           = resp["fields"]["subject"]["stringValue"].as<String>();
       out.nextQuestion      = resp["fields"]["nextQuestion"]["stringValue"].as<String>();
+      out.needsPairing      = resp["fields"]["needsPairing"]["booleanValue"].as<bool>();
       return true;
     }
     if (status == "error") {
