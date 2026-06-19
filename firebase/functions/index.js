@@ -121,39 +121,26 @@ function parseSubject(transcript) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: synthesizeAudio
 //
-// Calls Google Text-to-Speech (via ADC — no API key needed) and returns the
-// resulting WAV file as a base64 string. This is written INLINE into the
-// exchange / session doc (`audioData` field) so the ESP32 fetches it as part
-// of its normal Firestore poll — no Storage upload, no makePublic, no extra
-// HTTPS GET on the device. Saves ~1.5-3 s per robot reply.
+// Calls Google Text-to-Speech (via ADC — no API key needed), uploads the WAV
+// to Storage under `tts/<fileId>.wav`, and returns a public HTTPS URL the
+// ESP32 streams chunk-by-chunk through speakFromUrl(). Inline base64 was
+// tried (commit 5c1a252) but 200–550 KB stringValues overflow Arduino-String
+// heap on the device and silently land as a too-short field, so the device
+// would skip the audio entirely. URL playback is the proven path.
 //
 // ⚠️  Before this works you must:
 //   1. Enable the TTS API: console.cloud.google.com/apis/library/texttospeech.googleapis.com
+//   2. Bucket lifecycle: set 1-day TTL on the `tts/` prefix so files don't
+//      accumulate. One-shot, outside this code:
+//        gsutil lifecycle set tts-lifecycle.json gs://<bucket>
 //
 // The device plays this WAV directly (streams raw 16 kHz LINEAR16 PCM and
 // skips the 44-byte WAV header), so the audioConfig below must stay in sync
 // with tts_player.h on the ESP32.
-//
-// `fileId` is kept as a function parameter for symmetry with the old API
-// (and as a useful log tag), but no Storage object is created.
 // ─────────────────────────────────────────────────────────────────────────────
 async function synthesizeAudio(text, fileId) {
-  let speech = String(text || "").trim();
+  const speech = String(text || "").trim();
   if (!speech) return "";
-
-  // Firestore caps documents at 1 MiB. LINEAR16 mono 16 kHz ≈ 43 KB/sec base64,
-  // so anything past ~380 Hebrew chars (~15 s) risks pushing the exchange doc
-  // over the limit and silently failing the update. Truncate at a sentence or
-  // word boundary and log it so we can spot it in Cloud Logs.
-  const MAX_TTS_CHARS = 380;
-  if (speech.length > MAX_TTS_CHARS) {
-    const head = speech.slice(0, MAX_TTS_CHARS);
-    let cut = head.lastIndexOf(".");
-    if (cut < MAX_TTS_CHARS / 2) cut = head.lastIndexOf(" ");
-    if (cut < MAX_TTS_CHARS / 2) cut = MAX_TTS_CHARS;
-    console.warn(`[TTS] truncated ${speech.length} → ${cut} chars to fit Firestore doc`);
-    speech = speech.slice(0, cut) + "...";
-  }
 
   const tokenRes = await fetch(
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
@@ -186,10 +173,17 @@ async function synthesizeAudio(text, fileId) {
   }
 
   const { audioContent } = await ttsRes.json();
-  // audioContent is already base64; google's TTS returns LINEAR16 wrapped in
-  // a RIFF/WAV container, so the ESP32 can play it as-is after skipping 44B.
-  console.log(`[TTS] Synthesised "${speech.slice(0, 40)}..." (${audioContent.length} base64 chars) for ${fileId}`);
-  return audioContent;
+  const buf = Buffer.from(audioContent, "base64");
+
+  const bucket = getStorage().bucket();
+  const objectPath = `tts/${fileId}.wav`;
+  const file = bucket.file(objectPath);
+  await file.save(buf, { contentType: "audio/wav", resumable: false });
+  await file.makePublic();
+
+  const url = `https://storage.googleapis.com/${bucket.name}/${objectPath}`;
+  console.log(`[TTS] Synthesised "${speech.slice(0, 40)}..." → ${url} (${buf.length} bytes)`);
+  return url;
 }
 
 // Wrapper passed into the tutor engine. Never throws — audio is best-effort so a
@@ -639,7 +633,10 @@ exports.submitChildAnswer = onCall(async (request) => {
 //
 // Request:  POST  { text: "...", id?: "optional-storage-id" }
 // Headers:  Authorization: Bearer <Firebase idToken>
-// Response: { audioBase64: "<base64 WAV>" }
+// Response: { audioBase64: "<https url>" }
+//   (Field name kept for ESP32 firmware compatibility — cloudSynthesizeSpeech
+//    reads `audioBase64` and passes it to speakAudio() which dispatches on
+//    `https://` prefix. The value is now a Storage URL, not base64.)
 // ─────────────────────────────────────────────────────────────────────────────
 exports.synthesizeSpeech = onRequest(
   { cors: false, timeoutSeconds: 30 },
