@@ -138,8 +138,22 @@ function parseSubject(transcript) {
 // (and as a useful log tag), but no Storage object is created.
 // ─────────────────────────────────────────────────────────────────────────────
 async function synthesizeAudio(text, fileId) {
-  const speech = String(text || "").trim();
+  let speech = String(text || "").trim();
   if (!speech) return "";
+
+  // Firestore caps documents at 1 MiB. LINEAR16 mono 16 kHz ≈ 43 KB/sec base64,
+  // so anything past ~380 Hebrew chars (~15 s) risks pushing the exchange doc
+  // over the limit and silently failing the update. Truncate at a sentence or
+  // word boundary and log it so we can spot it in Cloud Logs.
+  const MAX_TTS_CHARS = 380;
+  if (speech.length > MAX_TTS_CHARS) {
+    const head = speech.slice(0, MAX_TTS_CHARS);
+    let cut = head.lastIndexOf(".");
+    if (cut < MAX_TTS_CHARS / 2) cut = head.lastIndexOf(" ");
+    if (cut < MAX_TTS_CHARS / 2) cut = MAX_TTS_CHARS;
+    console.warn(`[TTS] truncated ${speech.length} → ${cut} chars to fit Firestore doc`);
+    speech = speech.slice(0, cut) + "...";
+  }
 
   const tokenRes = await fetch(
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
@@ -218,7 +232,25 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
       if (parentId) await sessionRef.set({ parentId }, { merge: true });
     }
   }
-  if (!parentId) throw new Error("Session has no parentId — device is not paired to any child");
+  if (!parentId) {
+    // Device's anonymous UID isn't in any children.deviceId — the parent hasn't
+    // paired the device yet. Don't throw (that bubbles up as exchange.error and
+    // the kid hears silence); instead finish the exchange cleanly with a spoken
+    // prompt explaining what's wrong. The device-side flow will see matchedChildId=""
+    // and fall back to the legacy "awaitingFirstQuestion" path.
+    console.warn(`[identify] device ${session.deviceId} not paired to any child`);
+    const promptText = "ההתקן הזה לא מקושר עדיין. בקשי מההורה לפתוח את האפליקציה כדי לחבר אותי.";
+    const audioData = await safeSynthesize(promptText, `${exchangeId}_unpaired`);
+    await exchangeRef.set({
+      status: "done",
+      matchedChildId: "",
+      matchedChildName: "",
+      needsPairing: true,
+      promptText,
+      audioData,
+    }, { merge: true });
+    return;
+  }
 
   const childrenSnap = await db.collection("children")
     .where("parentId", "==", parentId)

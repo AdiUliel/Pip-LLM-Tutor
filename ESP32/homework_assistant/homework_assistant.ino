@@ -287,11 +287,29 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   String childExchange = firestorePostIdentifyChild(g_sessionId, nameTranscript);
   if (childExchange.isEmpty()) return false;
 
+  // Poll the cloud and retry up to 3 times if the name wasn't recognised.
+  // Without this guard the flow proceeds to subject selection with an empty
+  // g_childId, so the kid's lesson silently gets attributed to nobody.
   IdentifyResult child;
-  if (!firestorePollForIdentifyResult(g_sessionId, childExchange, child)) return false;
-  Serial.printf("[Identify] matched: %s (%s)\n",
-                child.matchedChildName.c_str(), child.matchedChildId.c_str());
-  if (child.matchedChildId.length() > 0) g_childId = child.matchedChildId;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (!firestorePollForIdentifyResult(g_sessionId, childExchange, child)) return false;
+    Serial.printf("[Identify] matched: %s (%s)\n",
+                  child.matchedChildName.c_str(), child.matchedChildId.c_str());
+    if (child.matchedChildId.length() > 0) break;
+    if (attempt == 2) {
+      Serial.println("[Identify] giving up after 3 unknown-name attempts.");
+      return false;
+    }
+    String retryUrl = cloudSynthesizeSpeech("לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.");
+    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
+    if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
+    faceEmotion("thinking");
+    String again = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
+    if (again.isEmpty()) return false;
+    childExchange = firestorePostIdentifyChild(g_sessionId, again);
+    if (childExchange.isEmpty()) return false;
+  }
+  g_childId = child.matchedChildId;
 
   // ── Step 2 — speak greeting + ask for subject, record answer ──────────────
   if (!child.audioUrl.isEmpty()) {
