@@ -222,22 +222,6 @@ void speakFromBase64(const String& b64) {
     return;
   }
 
-  // Standard base64 alphabet decode table.
-  static const int8_t dec[256] = {
-    [0 ... 255] = -1,
-    ['A']= 0,['B']= 1,['C']= 2,['D']= 3,['E']= 4,['F']= 5,['G']= 6,['H']= 7,
-    ['I']= 8,['J']= 9,['K']=10,['L']=11,['M']=12,['N']=13,['O']=14,['P']=15,
-    ['Q']=16,['R']=17,['S']=18,['T']=19,['U']=20,['V']=21,['W']=22,['X']=23,
-    ['Y']=24,['Z']=25,
-    ['a']=26,['b']=27,['c']=28,['d']=29,['e']=30,['f']=31,['g']=32,['h']=33,
-    ['i']=34,['j']=35,['k']=36,['l']=37,['m']=38,['n']=39,['o']=40,['p']=41,
-    ['q']=42,['r']=43,['s']=44,['t']=45,['u']=46,['v']=47,['w']=48,['x']=49,
-    ['y']=50,['z']=51,
-    ['0']=52,['1']=53,['2']=54,['3']=55,['4']=56,['5']=57,['6']=58,['7']=59,
-    ['8']=60,['9']=61,
-    ['+']=62,['/']=63,
-  };
-
   const char* p = b64.c_str();
   size_t outLen = 0;
   uint32_t v = 0;
@@ -245,8 +229,13 @@ void speakFromBase64(const String& b64) {
   for (size_t i = 0; i < b64Len; i++) {
     uint8_t c = (uint8_t)p[i];
     if (c == '=' || c == '\n' || c == '\r' || c == ' ') continue;
-    int8_t d = dec[c];
-    if (d < 0) continue;        // skip stray chars
+    int8_t d;
+    if      (c >= 'A' && c <= 'Z') d = c - 'A';
+    else if (c >= 'a' && c <= 'z') d = c - 'a' + 26;
+    else if (c >= '0' && c <= '9') d = c - '0' + 52;
+    else if (c == '+')             d = 62;
+    else if (c == '/')             d = 63;
+    else                           continue;  // skip stray chars
     v = (v << 6) | (uint32_t)d;
     bits += 6;
     if (bits >= 8) {

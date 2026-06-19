@@ -139,8 +139,12 @@ exports.notifyOnSessionStarted = onDocumentCreated(
 //   • detect offline devices, write notifiedOfflineAt, notify
 // ──────────────────────────────────────────────────────────────────────────────
 
+// Scheduled triggers must use a region that Cloud Scheduler supports — and
+// europe-west10 (Berlin) is not one of them. europe-west3 (Frankfurt) is the
+// closest supported region, so this single function overrides the global
+// europe-west10 to keep the Cloud Scheduler job happy.
 exports.monitorTutor = onSchedule(
-  { schedule: "every 1 minutes" },
+  { schedule: "every 1 minutes", region: "europe-west3" },
   async () => {
     const db = getFirestore();
     const now = Timestamp.now();
