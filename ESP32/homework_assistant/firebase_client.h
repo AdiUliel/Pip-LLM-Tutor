@@ -167,9 +167,14 @@ String firestoreResolveChildId() {
 
 // ── Create a rules-compliant session document ────────────────────────────────
 // Security rules require keys: childId, deviceId, subject, startedAt.
-// awaitingFirstQuestion:true asks onSessionCreated() to seed the first question.
+// When [awaitFirstQuestion] is true (default), sets awaitingFirstQuestion:true
+// so onSessionCreated() seeds the first question right away. Set it to false
+// when the device intends to run the voice identification flow first
+// (identify_child → identify_subject); in that case the first question is
+// created by handleIdentifySubject once the kid picks a subject by voice.
 // Returns the auto-generated session document ID.
-String firestoreCreateSession(const String& subject = SESSION_SUBJECT) {
+String firestoreCreateSession(const String& subject = SESSION_SUBJECT,
+                              bool awaitFirstQuestion = true) {
   if (g_idToken.isEmpty()) return "";
 
   g_childId = firestoreResolveChildId();
@@ -188,8 +193,10 @@ String firestoreCreateSession(const String& subject = SESSION_SUBJECT) {
   body["fields"]["childId"]["stringValue"]   = g_childId;          // "" allowed
   body["fields"]["deviceId"]["stringValue"]  = g_firebaseUid;      // == auth.uid (rules + ownership)
   body["fields"]["subject"]["stringValue"]   = subject;            // "math" | "english"
-  body["fields"]["status"]["stringValue"]    = "starting";
-  body["fields"]["awaitingFirstQuestion"]["booleanValue"] = true;
+  body["fields"]["status"]["stringValue"]    = awaitFirstQuestion ? "starting" : "identifying_child";
+  if (awaitFirstQuestion) {
+    body["fields"]["awaitingFirstQuestion"]["booleanValue"] = true;
+  }
   body["fields"]["startedAt"]["timestampValue"]    = isoNow();
   body["fields"]["lastActivity"]["timestampValue"] = isoNow();
 
@@ -362,6 +369,149 @@ bool firestorePollForTurnResult(const String& sessionId,
   }
   Serial.println("[Firestore] Timed out waiting for turn result.");
   return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//   Voice identification flow (boot-time): kid says name + picks subject
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Result of an identify exchange ───────────────────────────────────────────
+struct IdentifyResult {
+  bool   ok        = false;
+  String audioUrl;        // WAV of the cloud's spoken response
+  String promptText;      // the text that was synthesized (for logging)
+  String matchedChildName;
+  String matchedChildId;
+  String subject;         // only set by identify_subject ("math" | "english")
+  String nextQuestion;    // only set by identify_subject — first question text
+};
+
+// ── Post an identify_child exchange ──────────────────────────────────────────
+String firestorePostIdentifyChild(const String& sessionId, const String& nameTranscript) {
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/sessions/" + sessionId + "/exchanges";
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+
+  JsonDocument body;
+  body["fields"]["type"]["stringValue"]                  = "identify_child";
+  body["fields"]["childNameTranscript"]["stringValue"]   = nameTranscript;
+  body["fields"]["status"]["stringValue"]                = "pending";
+  body["fields"]["askedAt"]["timestampValue"]            = isoNow();
+
+  String bodyStr; serializeJson(body, bodyStr);
+  int code = http.POST(bodyStr);
+  if (code != 200) {
+    Serial.printf("[Firestore] identify_child post HTTP %d — %s\n", code, http.getString().c_str());
+    http.end(); return "";
+  }
+  JsonDocument resp; deserializeJson(resp, http.getString()); http.end();
+  String name = resp["name"].as<String>();
+  return name.substring(name.lastIndexOf('/') + 1);
+}
+
+// ── Post an identify_subject exchange ────────────────────────────────────────
+String firestorePostIdentifySubject(const String& sessionId, const String& subjectTranscript) {
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/sessions/" + sessionId + "/exchanges";
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+
+  JsonDocument body;
+  body["fields"]["type"]["stringValue"]                  = "identify_subject";
+  body["fields"]["subjectTranscript"]["stringValue"]     = subjectTranscript;
+  body["fields"]["status"]["stringValue"]                = "pending";
+  body["fields"]["askedAt"]["timestampValue"]            = isoNow();
+
+  String bodyStr; serializeJson(body, bodyStr);
+  int code = http.POST(bodyStr);
+  if (code != 200) {
+    Serial.printf("[Firestore] identify_subject post HTTP %d — %s\n", code, http.getString().c_str());
+    http.end(); return "";
+  }
+  JsonDocument resp; deserializeJson(resp, http.getString()); http.end();
+  String name = resp["name"].as<String>();
+  return name.substring(name.lastIndexOf('/') + 1);
+}
+
+// ── Poll an identify exchange until status==done ─────────────────────────────
+bool firestorePollForIdentifyResult(const String& sessionId,
+                                    const String& exchangeId,
+                                    IdentifyResult& out,
+                                    uint32_t timeoutMs = 30000) {
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/sessions/" + sessionId + "/exchanges/" + exchangeId;
+
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    _initSSL();
+    HTTPClient http;
+    http.begin(_sslClient, url);
+    http.addHeader("Authorization", "Bearer " + g_idToken);
+    int code = http.GET();
+    if (code == 401) { firebaseRefreshToken(); http.end(); continue; }
+    if (code != 200) { Serial.printf("[Firestore] identify poll HTTP %d\n", code); http.end(); delay(1500); continue; }
+
+    JsonDocument resp; deserializeJson(resp, http.getString()); http.end();
+    String status = resp["fields"]["status"]["stringValue"].as<String>();
+    if (status == "done") {
+      out.ok                = true;
+      out.audioUrl          = resp["fields"]["audioUrl"]["stringValue"].as<String>();
+      out.promptText        = resp["fields"]["promptText"]["stringValue"].as<String>();
+      out.matchedChildName  = resp["fields"]["matchedChildName"]["stringValue"].as<String>();
+      out.matchedChildId    = resp["fields"]["matchedChildId"]["stringValue"].as<String>();
+      out.subject           = resp["fields"]["subject"]["stringValue"].as<String>();
+      out.nextQuestion      = resp["fields"]["nextQuestion"]["stringValue"].as<String>();
+      return true;
+    }
+    if (status == "error") {
+      Serial.println("[Firestore] identify error: " +
+                     resp["fields"]["error"]["stringValue"].as<String>());
+      return false;
+    }
+    delay(1500);
+  }
+  Serial.println("[Firestore] Timed out waiting for identify result.");
+  return false;
+}
+
+// ── Cloud Function /synthesizeSpeech: text → WAV audioUrl ────────────────────
+// Used by the identify flow for the very first prompt ("מי כאן?") since
+// there's no on-device TTS and no pre-recorded audio files on the ESP32.
+String cloudSynthesizeSpeech(const String& text) {
+  if (g_idToken.isEmpty()) return "";
+  String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
+               ".cloudfunctions.net/synthesizeSpeech";
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  http.setTimeout(30000);
+
+  JsonDocument body;
+  body["text"] = text;
+  String bodyStr; serializeJson(body, bodyStr);
+
+  int code = http.POST(bodyStr);
+  if (code != 200) {
+    Serial.printf("[TTS] HTTP %d — %s\n", code, http.getString().c_str());
+    http.end(); return "";
+  }
+  JsonDocument resp; deserializeJson(resp, http.getString()); http.end();
+  return resp["audioUrl"].as<String>();
 }
 
 // ── deviceState/{deviceId}: live status for the Flutter app ───────────────────

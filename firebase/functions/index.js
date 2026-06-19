@@ -202,8 +202,21 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
   if (!sessionSnap.exists) throw new Error("Session not found");
   const session = sessionSnap.data();
 
-  const parentId = session.parentId;
-  if (!parentId) throw new Error("Session has no parentId");
+  // Derive parentId from the paired device when the session doesn't
+  // carry it (the ESP32 signs in anonymously and doesn't know the parent
+  // until the parent has paired it to at least one child in the app).
+  let parentId = session.parentId;
+  if (!parentId && session.deviceId) {
+    const pairedSnap = await db.collection("children")
+      .where("deviceId", "==", session.deviceId)
+      .limit(1)
+      .get();
+    if (!pairedSnap.empty) {
+      parentId = pairedSnap.docs[0].data().parentId;
+      if (parentId) await sessionRef.set({ parentId }, { merge: true });
+    }
+  }
+  if (!parentId) throw new Error("Session has no parentId — device is not paired to any child");
 
   const childrenSnap = await db.collection("children")
     .where("parentId", "==", parentId)
@@ -582,6 +595,47 @@ exports.submitChildAnswer = onCall(async (request) => {
 // Headers:  Authorization: Bearer <Firebase idToken>
 // Response: { transcript: "the transcribed text" }
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Cloud Function: synthesizeSpeech
+//
+// HTTP endpoint used by the ESP32 to get a TTS audio URL on demand —
+// needed by the identification flow ("מי כאן?", "מה תרצה ללמוד היום?")
+// where the device has no pre-recorded prompts and no on-device TTS.
+//
+// Request:  POST  { text: "...", id?: "optional-storage-id" }
+// Headers:  Authorization: Bearer <Firebase idToken>
+// Response: { audioUrl: "https://..." }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.synthesizeSpeech = onRequest(
+  { cors: false, timeoutSeconds: 30 },
+  async (req, res) => {
+    if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+
+    const authHeader = req.headers.authorization || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing auth token" });
+    }
+    try {
+      await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
+    } catch {
+      return res.status(401).json({ error: "Invalid auth token" });
+    }
+
+    const { text, id } = req.body || {};
+    if (!text || typeof text !== "string") {
+      return res.status(400).json({ error: "No text provided" });
+    }
+
+    try {
+      const audioUrl = await synthesizeAndStore(text, id || `tts_${Date.now()}`);
+      return res.json({ audioUrl });
+    } catch (err) {
+      console.error("[synthesizeSpeech] failed:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 exports.transcribeAudio = onRequest(
   { cors: false, timeoutSeconds: 30 },
   async (req, res) => {

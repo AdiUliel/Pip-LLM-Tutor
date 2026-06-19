@@ -173,6 +173,157 @@ void faceTick() {
 #endif
 }
 
+// Post-process the audio in recordBuf in-place: pick the channel that
+// actually carries the mic, strip to mono, and reject near-silence.
+// Returns true if the audio is usable for STT; false if too short / silent.
+// recordBytes is updated to the mono-stripped length on success.
+bool processRecordedAudio() {
+  if (recordBytes < 1000) {
+    Serial.println("[Audio] too short, ignoring.");
+    return false;
+  }
+  // Pick the louder stereo channel (the codec is mono on one side).
+  int micChannel = 0;
+  {
+    int16_t* raw = (int16_t*)recordBuf;
+    size_t frames = recordBytes / 4;
+    int64_t sumSq0 = 0, sumSq1 = 0;
+    for (size_t i = 0; i < frames; i++) {
+      sumSq0 += (int64_t)raw[i*2]   * raw[i*2];
+      sumSq1 += (int64_t)raw[i*2+1] * raw[i*2+1];
+    }
+    float rms0 = sqrt((float)(sumSq0 / (int64_t)frames));
+    float rms1 = sqrt((float)(sumSq1 / (int64_t)frames));
+    micChannel = (rms1 > rms0) ? 1 : 0;
+    Serial.printf("[Audio] ch0 RMS: %.0f  ch1 RMS: %.0f  -> ch%d\n", rms0, rms1, micChannel);
+  }
+  // Strip to mono.
+  {
+    int16_t* src = (int16_t*)recordBuf;
+    int16_t* dst = (int16_t*)recordBuf;
+    size_t frames = recordBytes / 4;
+    for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2 + micChannel];
+    recordBytes = frames * 2;
+  }
+  // Silence reject.
+  {
+    int16_t* samples = (int16_t*)recordBuf;
+    int64_t sumSq = 0; size_t n = recordBytes / 2;
+    for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
+    float rms = sqrt((float)(sumSq / (int64_t)n));
+    Serial.printf("[Audio] mono RMS: %.0f\n", rms);
+    if (rms < 100) {
+      Serial.println("[Audio] near-silence; speak closer.");
+      return false;
+    }
+  }
+  return true;
+}
+
+// Blocking record: face listens, waits for button press, captures while
+// held, stops on release. Used by the boot-time identify flow before the
+// main state-machine loop takes over button handling.
+bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
+  Serial.println("[Identify] Press the button and answer...");
+  faceEmotion("listening");
+  uint32_t waitStart = millis();
+  while (digitalRead(PIN_BTN) != LOW) {
+    faceTick();
+    if (millis() - waitStart > maxWaitMs) {
+      Serial.println("[Identify] No button press within timeout.");
+      return false;
+    }
+    delay(20);
+  }
+  Serial.println("[Identify] Recording...");
+  recordBytes = 0;
+  i2s_start_recording();
+  while (digitalRead(PIN_BTN) == LOW && recordBytes < RECORD_BUF_SIZE) {
+    size_t bytesRead = 0;
+    i2s_read(I2S_PORT,
+             recordBuf + recordBytes,
+             min((size_t)1024, RECORD_BUF_SIZE - recordBytes),
+             &bytesRead, portMAX_DELAY);
+    recordBytes += bytesRead;
+  }
+  i2s_stop_recording();
+  Serial.printf("[Identify] Recorded %u bytes (%.1f s)\n",
+                recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
+  return true;
+}
+
+// Boot-time voice identification flow:
+//   1. Robot asks "מי כאן?" → kid speaks name → identify_child exchange
+//   2. Robot replies "שלום X, מה נלמד היום?" → kid says "חשבון" or "אנגלית"
+//      → identify_subject exchange
+//   3. The identify_subject reply also contains the FIRST question — so
+//      after this returns, the main loop is ready to start practising.
+// Returns true on success; on failure the caller can fall back to the
+// legacy "awaitingFirstQuestion" flow.
+bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
+  // ── Step 1 — ask "who's here?" ────────────────────────────────────────────
+  String welcomeUrl = cloudSynthesizeSpeech("היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.");
+  if (welcomeUrl.isEmpty()) {
+    Serial.println("[Identify] TTS welcome failed.");
+    return false;
+  }
+  faceEmotion("speaking");
+  speakFromUrl(welcomeUrl);
+
+  if (!recordOneAnswerBlocking()) return false;
+  if (!processRecordedAudio()) {
+    // Speak a gentle retry prompt then try once more.
+    String retryUrl = cloudSynthesizeSpeech("לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.");
+    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakFromUrl(retryUrl); }
+    if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
+  }
+  faceEmotion("thinking");
+  String nameTranscript = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
+  if (nameTranscript.isEmpty()) {
+    Serial.println("[Identify] empty name transcript.");
+    return false;
+  }
+
+  String childExchange = firestorePostIdentifyChild(g_sessionId, nameTranscript);
+  if (childExchange.isEmpty()) return false;
+
+  IdentifyResult child;
+  if (!firestorePollForIdentifyResult(g_sessionId, childExchange, child)) return false;
+  Serial.printf("[Identify] matched: %s (%s)\n",
+                child.matchedChildName.c_str(), child.matchedChildId.c_str());
+  if (child.matchedChildId.length() > 0) g_childId = child.matchedChildId;
+
+  // ── Step 2 — speak greeting + ask for subject, record answer ──────────────
+  if (!child.audioUrl.isEmpty()) {
+    faceEmotion("speaking");
+    speakFromUrl(child.audioUrl);
+  }
+
+  if (!recordOneAnswerBlocking()) return false;
+  if (!processRecordedAudio()) {
+    String retryUrl = cloudSynthesizeSpeech("לא שמעתי. חשבון או אנגלית?");
+    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakFromUrl(retryUrl); }
+    if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
+  }
+  faceEmotion("thinking");
+  String subjectTranscript = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
+  if (subjectTranscript.isEmpty()) {
+    Serial.println("[Identify] empty subject transcript.");
+    return false;
+  }
+
+  String subjectExchange = firestorePostIdentifySubject(g_sessionId, subjectTranscript);
+  if (subjectExchange.isEmpty()) return false;
+
+  IdentifyResult subj;
+  if (!firestorePollForIdentifyResult(g_sessionId, subjectExchange, subj)) return false;
+  Serial.printf("[Identify] subject: %s\n", subj.subject.c_str());
+  if (subj.subject.length() > 0) g_currentSubject = subj.subject;
+  firstQuestionOut  = subj.nextQuestion;
+  firstAudioUrlOut  = subj.audioUrl;
+  return true;
+}
+
 // Speak the current question and move into the "waiting for the child" state.
 void askCurrentQuestion(const String& audioUrl) {
   Serial.println("[Tutor] Question: " + g_currentQuestion);
@@ -245,8 +396,15 @@ void setup() {
     while (true) { faceTick(); delay(200); }
   }
 
-  // Create session (auto-detects the child) and wait for the first question.
-  g_sessionId = firestoreCreateSession(SESSION_SUBJECT);
+  // Two boot paths:
+  //   A) CHILD_ID hardcoded → legacy fast path: cloud auto-creates the first
+  //      question via onSessionCreated(awaitingFirstQuestion:true).
+  //   B) CHILD_ID empty     → voice identification flow:
+  //      "מי כאן?" → identify_child → "חשבון או אנגלית?" → identify_subject
+  //      → first question is created by handleIdentifySubject.
+  const bool useIdentifyFlow = (String(CHILD_ID).length() == 0);
+
+  g_sessionId = firestoreCreateSession(SESSION_SUBJECT, !useIdentifyFlow);
   if (g_sessionId.isEmpty()) {
     Serial.println("❌ Could not create Firestore session.");
     faceStatus("error");
@@ -255,11 +413,25 @@ void setup() {
   }
   firestoreWriteDeviceState("idle");
 
-  Serial.println("[Tutor] Waiting for the first question from the backend...");
-  faceEmotion("thinking");
   String firstAudio;
-  if (!firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio, 30000, &g_currentSubject)) {
-    Serial.println("❌ No first question. Check the Cloud Functions / Vertex AI setup.");
+  bool ready = false;
+
+  if (useIdentifyFlow) {
+    Serial.println("[Tutor] Running voice identification flow...");
+    ready = runIdentifyFlow(g_currentQuestion, firstAudio);
+    if (!ready) {
+      Serial.println("⚠️  Identify flow failed — falling back to legacy generic-session path.");
+      // Recreate the session in legacy mode so onSessionCreated kicks in.
+      g_sessionId = firestoreCreateSession(SESSION_SUBJECT, true);
+    }
+  }
+  if (!ready) {
+    Serial.println("[Tutor] Waiting for the first question from the backend...");
+    faceEmotion("thinking");
+    ready = firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio, 30000, &g_currentSubject);
+  }
+  if (!ready) {
+    Serial.println("❌ No first question. Check Cloud Functions / Vertex AI setup.");
     faceStatus("error");
     firestoreWriteDeviceState("error");
     while (true) { faceTick(); delay(200); }
