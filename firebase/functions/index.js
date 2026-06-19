@@ -8,19 +8,19 @@
  *        { childId, deviceId, subject, startedAt, status:"starting",
  *          awaitingFirstQuestion:true }
  *   2. `onSessionCreated` generates the first question (tutorEngine),
- *      synthesizes it to a WAV in Storage, and writes:
+ *      synthesizes it to base64-encoded WAV (no Storage), and writes:
  *        { status:"active", currentQuestion, currentExpectedAnswer,
- *          currentQuestionAudioUrl }
- *   3. Device speaks `currentQuestionAudioUrl`, then records the child's
- *      spoken answer and writes a learning turn:
+ *          currentQuestionAudioData }
+ *   3. Device decodes `currentQuestionAudioData`, speaks it, then records
+ *      the child's spoken answer and writes a learning turn:
  *        /sessions/{sessionId}/exchanges/{exchangeId}
  *        { type:"learning_turn", status:"pending", childAnswer:"..." }
  *   4. `answerQuestion` (Firestore trigger) checks the answer, asks Gemini for
  *      emotional feedback, generates the next question, synthesizes
- *      feedback+next-question to a WAV, and writes back:
+ *      feedback+next-question to a base64 WAV, and writes back:
  *        { status:"done", isCorrect, spokenFeedback, emotion, nextQuestion,
- *          expectedAnswer, shouldTakeBreak, audioUrl }
- *   5. Device speaks `audioUrl`, shows the matching pip_face emotion, and
+ *          expectedAnswer, shouldTakeBreak, audioData }
+ *   5. Device speaks `audioData`, shows the matching pip_face emotion, and
  *      loops back to step 3 for the next answer.
  *
  * Backward compatibility:
@@ -116,20 +116,25 @@ function parseSubject(transcript) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: synthesizeAndStore
+// Helper: synthesizeAudio
 //
-// Calls Google Text-to-Speech (via ADC — no API key needed) and uploads the
-// resulting WAV file to Firebase Storage. Returns the public download URL.
+// Calls Google Text-to-Speech (via ADC — no API key needed) and returns the
+// resulting WAV file as a base64 string. This is written INLINE into the
+// exchange / session doc (`audioData` field) so the ESP32 fetches it as part
+// of its normal Firestore poll — no Storage upload, no makePublic, no extra
+// HTTPS GET on the device. Saves ~1.5-3 s per robot reply.
 //
 // ⚠️  Before this works you must:
-//   1. Enable Firebase Storage in Firebase Console → Build → Storage
-//   2. Enable the TTS API: console.cloud.google.com/apis/library/texttospeech.googleapis.com
+//   1. Enable the TTS API: console.cloud.google.com/apis/library/texttospeech.googleapis.com
 //
-// The device plays this WAV directly (it streams raw 16 kHz LINEAR16 PCM and
+// The device plays this WAV directly (streams raw 16 kHz LINEAR16 PCM and
 // skips the 44-byte WAV header), so the audioConfig below must stay in sync
 // with tts_player.h on the ESP32.
+//
+// `fileId` is kept as a function parameter for symmetry with the old API
+// (and as a useful log tag), but no Storage object is created.
 // ─────────────────────────────────────────────────────────────────────────────
-async function synthesizeAndStore(text, fileId) {
+async function synthesizeAudio(text, fileId) {
   const speech = String(text || "").trim();
   if (!speech) return "";
 
@@ -164,23 +169,17 @@ async function synthesizeAndStore(text, fileId) {
   }
 
   const { audioContent } = await ttsRes.json();
-  const wavBuffer = Buffer.from(audioContent, "base64");
-
-  const bucket = getStorage().bucket();
-  const file   = bucket.file(`tts/${fileId}.wav`);
-  await file.save(wavBuffer, { contentType: "audio/wav", resumable: false });
-  await file.makePublic();
-
-  const publicUrl = `https://storage.googleapis.com/${bucket.name}/tts/${fileId}.wav`;
-  console.log(`[TTS] Uploaded ${wavBuffer.length} bytes → ${publicUrl}`);
-  return publicUrl;
+  // audioContent is already base64; google's TTS returns LINEAR16 wrapped in
+  // a RIFF/WAV container, so the ESP32 can play it as-is after skipping 44B.
+  console.log(`[TTS] Synthesised "${speech.slice(0, 40)}..." (${audioContent.length} base64 chars) for ${fileId}`);
+  return audioContent;
 }
 
 // Wrapper passed into the tutor engine. Never throws — audio is best-effort so a
 // TTS hiccup can't block the text answer from being written.
 async function safeSynthesize(text, fileId) {
   try {
-    return await synthesizeAndStore(text, fileId);
+    return await synthesizeAudio(text, fileId);
   } catch (err) {
     console.warn("[TTS] synthesis failed (continuing without audio):", err.message);
     return "";
@@ -243,7 +242,7 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
     matchedChildId: matched?.id || null,
     matchedChildName: matched?.name || null,
     promptText,
-    audioUrl,
+    audioData: audioUrl,
     answeredAt: FieldValue.serverTimestamp(),
   });
 }
@@ -282,14 +281,15 @@ async function handleIdentifySubject(sessionId, exchangeId, data) {
   const audioUrl = await safeSynthesize(spokenText, `${exchangeId}_subject`);
 
   await sessionRef.set(
-    { currentQuestionAudioUrl: audioUrl, status: "active", lastActivity: FieldValue.serverTimestamp() },
+    { currentQuestionAudioData: audioUrl, status: "active", lastActivity: FieldValue.serverTimestamp() },
     { merge: true }
   );
   await exchangeRef.update({
     status: "done",
     subject,
     promptText: spokenText,
-    audioUrl,
+    audioData: audioUrl,
+    nextQuestion: question.prompt,
     answeredAt: FieldValue.serverTimestamp(),
   });
 }
@@ -349,14 +349,14 @@ async function answerFreeTextQuestion(sessionId, exchangeId, data) {
 
   const answer = String(result.text || "").trim();
 
-  // Synthesize BEFORE marking done so the device never polls a done doc with an
-  // empty audioUrl.
+  // Synthesize BEFORE marking done so the device never polls a done doc with
+  // empty audio.
   const audioUrl = await safeSynthesize(answer, exchangeId);
 
   await exchangeRef.update({
     answer,
     spokenFeedback: answer,
-    audioUrl,
+    audioData: audioUrl,
     status: "done",
     emotion: "encouraging",
     answeredAt: FieldValue.serverTimestamp(),
@@ -388,7 +388,7 @@ exports.onSessionCreated = onDocumentCreated(
       const greetingText = "שלום! אני פיפ, המורה הרובוט שלך. מי אתה? תגיד לי את שמך!";
       const audioUrl = await safeSynthesize(greetingText, `${sessionId}_greeting`);
       await sessionRef.set(
-        { greetingAudioUrl: audioUrl, lastActivity: FieldValue.serverTimestamp() },
+        { greetingAudioData: audioUrl, lastActivity: FieldValue.serverTimestamp() },
         { merge: true }
       );
       console.log(`[${sessionId}] identifying session — greeting ready`);
@@ -416,7 +416,7 @@ exports.onSessionCreated = onDocumentCreated(
       await sessionRef.set(
         {
           status: "active",
-          currentQuestionAudioUrl: audioUrl,
+          currentQuestionAudioData: audioUrl,
           awaitingFirstQuestion: false,
           lastActivity: FieldValue.serverTimestamp(),
         },
@@ -542,13 +542,13 @@ exports.startLearningSession = onCall(async (request) => {
 
   const question = await createInitialQuestion(db, sessionRef, { childId, subject }, child);
   const audioUrl = await safeSynthesize(question.prompt, `${sessionRef.id}_q0`);
-  await sessionRef.set({ currentQuestionAudioUrl: audioUrl }, { merge: true });
+  await sessionRef.set({ currentQuestionAudioData: audioUrl }, { merge: true });
 
   return {
     sessionId: sessionRef.id,
     currentQuestion: question.prompt,
     expectedAnswer: question.expectedAnswer,
-    currentQuestionAudioUrl: audioUrl,
+    currentQuestionAudioData: audioUrl,
     difficulty: question.difficulty,
   };
 });
@@ -604,7 +604,7 @@ exports.submitChildAnswer = onCall(async (request) => {
 //
 // Request:  POST  { text: "...", id?: "optional-storage-id" }
 // Headers:  Authorization: Bearer <Firebase idToken>
-// Response: { audioUrl: "https://..." }
+// Response: { audioBase64: "<base64 WAV>" }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.synthesizeSpeech = onRequest(
   { cors: false, timeoutSeconds: 30 },
@@ -627,8 +627,8 @@ exports.synthesizeSpeech = onRequest(
     }
 
     try {
-      const audioUrl = await synthesizeAndStore(text, id || `tts_${Date.now()}`);
-      return res.json({ audioUrl });
+      const audioBase64 = await synthesizeAudio(text, id || `tts_${Date.now()}`);
+      return res.json({ audioBase64 });
     } catch (err) {
       console.error("[synthesizeSpeech] failed:", err);
       return res.status(500).json({ error: err.message });

@@ -259,7 +259,12 @@ bool firestoreWaitForCurrentQuestion(const String& sessionId,
     }
     if ((status == "active" || status == "break") && q.length() > 0) {
       questionOut = q;
-      audioUrlOut = resp["fields"]["currentQuestionAudioUrl"]["stringValue"].as<String>();
+      // Inline base64 WAV (preferred, no Storage round-trip). Falls back to
+      // legacy URL if the doc was written by an older Cloud Function build.
+      String b64 = resp["fields"]["currentQuestionAudioData"]["stringValue"].as<String>();
+      audioUrlOut = b64.length() > 0
+        ? b64
+        : resp["fields"]["currentQuestionAudioUrl"]["stringValue"].as<String>();
       if (subjectOut) {
         String s = resp["fields"]["subject"]["stringValue"].as<String>();
         if (s.length() > 0) *subjectOut = s;
@@ -355,7 +360,11 @@ bool firestorePollForTurnResult(const String& sessionId,
       out.spokenFeedback = resp["fields"]["spokenFeedback"]["stringValue"].as<String>();
       out.nextQuestion   = resp["fields"]["nextQuestion"]["stringValue"].as<String>();
       out.emotion        = resp["fields"]["emotion"]["stringValue"].as<String>();
-      out.audioUrl       = resp["fields"]["audioUrl"]["stringValue"].as<String>();
+      // Prefer inline base64 audio; fall back to URL for old Cloud builds.
+      String b64         = resp["fields"]["audioData"]["stringValue"].as<String>();
+      out.audioUrl       = b64.length() > 0
+        ? b64
+        : resp["fields"]["audioUrl"]["stringValue"].as<String>();
       out.shouldTakeBreak= resp["fields"]["shouldTakeBreak"]["booleanValue"].as<bool>();
       out.isCorrect      = resp["fields"]["isCorrect"]["booleanValue"].as<bool>();
       return true;
@@ -467,7 +476,11 @@ bool firestorePollForIdentifyResult(const String& sessionId,
     String status = resp["fields"]["status"]["stringValue"].as<String>();
     if (status == "done") {
       out.ok                = true;
-      out.audioUrl          = resp["fields"]["audioUrl"]["stringValue"].as<String>();
+      // Prefer inline base64; legacy URL is the fallback.
+      String b64            = resp["fields"]["audioData"]["stringValue"].as<String>();
+      out.audioUrl          = b64.length() > 0
+        ? b64
+        : resp["fields"]["audioUrl"]["stringValue"].as<String>();
       out.promptText        = resp["fields"]["promptText"]["stringValue"].as<String>();
       out.matchedChildName  = resp["fields"]["matchedChildName"]["stringValue"].as<String>();
       out.matchedChildId    = resp["fields"]["matchedChildId"]["stringValue"].as<String>();
@@ -486,9 +499,12 @@ bool firestorePollForIdentifyResult(const String& sessionId,
   return false;
 }
 
-// ── Cloud Function /synthesizeSpeech: text → WAV audioUrl ────────────────────
+// ── Cloud Function /synthesizeSpeech: text → base64 WAV audio ────────────────
 // Used by the identify flow for the very first prompt ("מי כאן?") since
 // there's no on-device TTS and no pre-recorded audio files on the ESP32.
+// Returns the base64-encoded WAV ready for speakFromBase64() — no Storage
+// upload involved, saving ~1.5-3 s per round.
+// Falls back to the legacy {audioUrl: "..."} shape for older Cloud builds.
 String cloudSynthesizeSpeech(const String& text) {
   if (g_idToken.isEmpty()) return "";
   String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
@@ -511,6 +527,8 @@ String cloudSynthesizeSpeech(const String& text) {
     http.end(); return "";
   }
   JsonDocument resp; deserializeJson(resp, http.getString()); http.end();
+  String b64 = resp["audioBase64"].as<String>();
+  if (b64.length() > 0) return b64;
   return resp["audioUrl"].as<String>();
 }
 

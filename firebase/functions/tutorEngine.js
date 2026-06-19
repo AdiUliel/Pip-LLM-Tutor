@@ -336,14 +336,14 @@ async function processLearningTurn({
         status: "done",
         sessionEnded: true,
         spokenFeedback: farewellText,
-        audioUrl,
+        audioData: audioUrl,
         emotion: "happy",
         answeredAt: now,
       });
       tx.set(sessionRef, { status: "ended", endedAt: now, lastActivity: now }, { merge: true });
     });
 
-    return { sessionEnded: true, spokenFeedback: farewellText, audioUrl };
+    return { sessionEnded: true, spokenFeedback: farewellText, audioData: audioUrl };
   }
 
   const isCorrect = checkAnswer(expectedAnswer, childAnswer);
@@ -484,7 +484,7 @@ async function processLearningTurn({
       isCorrect,
       answer: feedback.spokenFeedback,
       spokenFeedback: feedback.spokenFeedback,
-      audioUrl,
+      audioData: audioUrl,
       emotion: feedback.emotion,
       shouldTakeBreak: feedback.shouldTakeBreak,
       nextQuestion: nextQuestion.prompt,

@@ -268,13 +268,13 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
     return false;
   }
   faceEmotion("speaking");
-  speakFromUrl(welcomeUrl);
+  speakAudio(welcomeUrl);
 
   if (!recordOneAnswerBlocking()) return false;
   if (!processRecordedAudio()) {
     // Speak a gentle retry prompt then try once more.
     String retryUrl = cloudSynthesizeSpeech("לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.");
-    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakFromUrl(retryUrl); }
+    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
     if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
   }
   faceEmotion("thinking");
@@ -296,13 +296,13 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // ── Step 2 — speak greeting + ask for subject, record answer ──────────────
   if (!child.audioUrl.isEmpty()) {
     faceEmotion("speaking");
-    speakFromUrl(child.audioUrl);
+    speakAudio(child.audioUrl);
   }
 
   if (!recordOneAnswerBlocking()) return false;
   if (!processRecordedAudio()) {
     String retryUrl = cloudSynthesizeSpeech("לא שמעתי. חשבון או אנגלית?");
-    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakFromUrl(retryUrl); }
+    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
     if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
   }
   faceEmotion("thinking");
@@ -333,7 +333,7 @@ void askCurrentQuestion(const String& audioUrl) {
   faceTick();
 
   state = SPEAKING;
-  speakFromUrl(audioUrl);            // releases I2S when done
+  speakAudio(audioUrl);            // releases I2S when done
 
   // Now listen.
   state = IDLE;
@@ -568,7 +568,7 @@ void loop() {
       faceStrip(turn.nextQuestion);
 
       state = SPEAKING;
-      speakFromUrl(turn.audioUrl);
+      speakAudio(turn.audioUrl);
 
       // The next question is now current.
       g_currentQuestion = turn.nextQuestion;
