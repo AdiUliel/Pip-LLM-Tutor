@@ -22,6 +22,20 @@ service cloud.firestore {
       allow read, write: if signedIn();
     }
 
+    // ── Pairing codes ───────────────────────────────────────────────────────
+    // `pairingCodes/TUTOR-XXXXXX = { firebaseUid }` — the device publishes
+    // this on every boot so the Flutter pairing sheet can translate the
+    // user-visible 6-digit code into the device's Firebase UID. Reads are
+    // public-to-any-signed-in-parent (you can't pair without it); writes are
+    // locked to the device claiming its own uid so one device can't squat
+    // on another's code.
+    match /pairingCodes/{codeId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+                    && request.resource.data.firebaseUid == request.auth.uid;
+      allow delete: if false;
+    }
+
     // ── Parents (FCM tokens etc.) ───────────────────────────────────────────
     // Each parent reads/writes only their own doc.
     match /parents/{parentId} {

@@ -423,6 +423,10 @@ void setup() {
     while (true) { faceTick(); delay(200); }
   }
 
+  // Publish the user-visible pairing code → this device's UID so the parent app
+  // can pair against the right Firebase identity. Cheap (one PATCH) and idempotent.
+  firestoreWritePairingCode();
+
   // Two boot paths:
   //   A) CHILD_ID hardcoded → legacy fast path: cloud auto-creates the first
   //      question via onSessionCreated(awaitingFirstQuestion:true).

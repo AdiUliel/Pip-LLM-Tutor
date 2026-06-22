@@ -1,13 +1,16 @@
 // PairingSheet — 6-digit code entry that resolves to a deviceId.
 //
-// The ESP32 displays a 6-digit code on its screen (derived from its MAC, so
-// stable across boots). The parent types it here; we look up
-// `deviceState/{deviceIdPrefix}{code}` in Firestore and accept the pairing
-// only if the doc exists *and* its `lastHeartbeat` is within
-// `pairingMaxHeartbeatAgeSec` — i.e. the device is alive right now.
+// The ESP32 displays a 6-digit code derived from its MAC (stable across boots)
+// and publishes `pairingCodes/{deviceIdPrefix}{code} = { firebaseUid }`. The
+// parent types the code here; we resolve it to the device's Firebase UID
+// (which is what `children.deviceId` must hold so the cloud's identify-child
+// flow matches), then verify `deviceState/{firebaseUid}.lastHeartbeat` is
+// within `pairingMaxHeartbeatAgeSec` — i.e. the device is alive right now.
 //
-// Returns the resolved deviceId via [showPairingSheet] (or null on cancel).
+// Returns the resolved deviceId (= the Firebase UID) via [showPairingSheet]
+// (or null on cancel).
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -61,21 +64,48 @@ class _PairingSheetState extends State<_PairingSheet> {
   Future<void> _submit() async {
     if (!_isComplete || _checking) return;
     final code = _ctrl.text;
-    final deviceId = '${AppConstants.deviceIdPrefix}$code';
+    final pairingDocId = '${AppConstants.deviceIdPrefix}$code';
     setState(() {
       _checking = true;
       _error = null;
     });
 
     try {
+      // Resolve the user-visible code to the device's Firebase UID via the
+      // pairingCodes mapping the device publishes on every boot.
+      final pairingSnap = await FirebaseFirestore.instance
+          .collection('pairingCodes')
+          .doc(pairingDocId)
+          .get();
+
+      if (!mounted) return;
+
+      if (!pairingSnap.exists) {
+        setState(() {
+          _error = 'לא נמצא התקן עם הקוד הזה. ודאו שהמכשיר דולק ומחובר ל-Wi-Fi.';
+          _checking = false;
+        });
+        return;
+      }
+      final firebaseUid = pairingSnap.data()?['firebaseUid'] as String?;
+      if (firebaseUid == null || firebaseUid.isEmpty) {
+        setState(() {
+          _error = 'הקוד תקין אך ההתקן עוד לא הזדהה. נסו שוב בעוד רגע.';
+          _checking = false;
+        });
+        return;
+      }
+
+      // Verify the device is actually alive right now by checking heartbeat
+      // freshness on its deviceState doc (keyed by the Firebase UID).
       final svc = context.read<DeviceSyncService>();
-      final state = await svc.tryFetch(deviceId);
+      final state = await svc.tryFetch(firebaseUid);
 
       if (!mounted) return;
 
       if (state == null || state.lastHeartbeat == null) {
         setState(() {
-          _error = 'לא נמצא התקן עם הקוד הזה. ודאו שהמכשיר דולק ומחובר ל-Wi-Fi.';
+          _error = 'ההתקן נמצא, אבל לא דיווח עדכני. ודאו שהוא דולק ונסו שוב בעוד רגע.';
           _checking = false;
         });
         return;
@@ -90,7 +120,7 @@ class _PairingSheetState extends State<_PairingSheet> {
         return;
       }
 
-      Navigator.of(context).pop(deviceId);
+      Navigator.of(context).pop(firebaseUid);
     } catch (_) {
       if (!mounted) return;
       setState(() {

@@ -79,6 +79,58 @@ String firebaseSignIn() {
   return g_idToken;
 }
 
+// ── Pairing code (TUTOR-XXXXXX) ──────────────────────────────────────────────
+// Derived deterministically from the chip's eFuse MAC, so it's stable across
+// reboots without any flash storage. The Flutter pairing sheet reads the
+// `pairingCodes/TUTOR-XXXXXX` doc to map the user-visible code to this device's
+// (random, opaque) Firebase anonymous UID, which is what actually ends up on
+// the child's profile as `deviceId`.
+static String devicePairingDocId() {
+  uint64_t mac = ESP.getEfuseMac();
+  uint32_t code = (uint32_t)(mac % 1000000ULL);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "TUTOR-%06u", (unsigned)code);
+  return String(buf);
+}
+
+// Write pairingCodes/TUTOR-XXXXXX = { firebaseUid, updatedAt }.
+// Call once after sign-in. Rules require firebaseUid == auth.uid so only the
+// device can publish (or overwrite) its own mapping. The doc is what closes
+// the loop between the user-visible 6-digit code and the device's auth uid;
+// without it the Flutter pairing sheet has no way to translate the code into
+// the value `children.deviceId` must hold.
+void firestoreWritePairingCode() {
+  if (g_idToken.isEmpty() || g_firebaseUid.isEmpty()) return;
+
+  const String docId = devicePairingDocId();
+
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/pairingCodes/" + docId;
+  url += "?updateMask.fieldPaths=firebaseUid";
+  url += "&updateMask.fieldPaths=updatedAt";
+
+  JsonDocument body;
+  body["fields"]["firebaseUid"]["stringValue"]   = g_firebaseUid;
+  body["fields"]["updatedAt"]["timestampValue"]  = isoNow();
+
+  String bodyStr;
+  serializeJson(body, bodyStr);
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  int code = http.sendRequest("PATCH", bodyStr);
+  if (code != 200) {
+    Serial.printf("[Firestore] pairingCodes PATCH HTTP %d — %s\n", code, http.getString().c_str());
+  } else {
+    Serial.println("[Firebase] Published pairing code: " + docId + " -> " + g_firebaseUid);
+  }
+  http.end();
+}
+
 // ── Refresh the idToken (call when you get a 401 from Firestore) ─────────────
 String firebaseRefreshToken() {
   if (g_refreshToken.isEmpty()) return firebaseSignIn();
