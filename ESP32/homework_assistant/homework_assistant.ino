@@ -416,7 +416,11 @@ void setup() {
   connectWiFi();
   syncClock();
 
-  g_idToken = firebaseSignIn();
+  // Boot-time auth: restores the saved anonymous UID from NVS when possible so
+  // a `children.deviceId` paired via the Flutter app keeps matching across
+  // device reboots. Falls back to a fresh signUp on the very first boot or if
+  // the saved refresh token has been invalidated.
+  g_idToken = firebaseBootAuth();
   if (g_idToken.isEmpty()) {
     Serial.println("❌ Firebase auth failed. Check FIREBASE_WEB_API_KEY in secrets.h");
     faceStatus("error");

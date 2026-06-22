@@ -2,6 +2,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <time.h>
 #include "secrets.h"
 
@@ -49,6 +50,36 @@ static String isoNow() {
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
   return String(buf);
+}
+
+// ── NVS-backed credential persistence ────────────────────────────────────────
+// Firebase Auth anonymous accounts:signUp creates a brand-new user each call,
+// so without persistence the UID would change every reboot — and any
+// `children.deviceId` paired to the old UID would stop matching. We save
+// {refreshToken, uid} after the first signUp and on every successful refresh,
+// then on the next boot we try refresh-first to keep the same UID.
+static Preferences g_authPrefs;
+
+static void firebaseLoadCreds() {
+  g_authPrefs.begin("firebase", true);
+  g_refreshToken = g_authPrefs.getString("refresh_token", "");
+  g_firebaseUid  = g_authPrefs.getString("uid", "");
+  g_authPrefs.end();
+}
+
+static void firebaseSaveCreds() {
+  g_authPrefs.begin("firebase", false);
+  g_authPrefs.putString("refresh_token", g_refreshToken);
+  g_authPrefs.putString("uid", g_firebaseUid);
+  g_authPrefs.end();
+}
+
+static void firebaseClearCreds() {
+  g_authPrefs.begin("firebase", false);
+  g_authPrefs.clear();
+  g_authPrefs.end();
+  g_refreshToken = "";
+  g_firebaseUid  = "";
 }
 
 // ── Anonymous sign-in via Firebase Auth REST API ──────────────────────────────
@@ -156,8 +187,38 @@ String firebaseRefreshToken() {
   http.end();
 
   g_idToken = doc["id_token"].as<String>();
+  // Google rotates the refresh_token on every successful exchange; capture it
+  // so the next refresh doesn't try to use a stale value.
+  const String newRefresh = doc["refresh_token"].as<String>();
+  if (!newRefresh.isEmpty()) g_refreshToken = newRefresh;
   Serial.println("[Firebase] Token refreshed.");
   return g_idToken;
+}
+
+// ── Boot-time auth ──────────────────────────────────────────────────────────
+// Tries to refresh from NVS-saved creds first to keep the anonymous UID stable
+// across reboots; falls back to a fresh signUp only when nothing's saved (or
+// the saved token has been invalidated). Persists creds on success so the
+// next boot picks up the same UID — required so that `children.deviceId`
+// paired through the Flutter app keeps matching `session.deviceId` after the
+// device reboots.
+String firebaseBootAuth() {
+  firebaseLoadCreds();
+
+  String idToken;
+  if (!g_refreshToken.isEmpty()) {
+    Serial.println("[Firebase] Restoring saved session. UID: " + g_firebaseUid);
+    idToken = firebaseRefreshToken();   // self-recovers via signUp on failure
+  } else {
+    Serial.println("[Firebase] No saved creds — signing up fresh.");
+    idToken = firebaseSignIn();
+  }
+
+  if (!idToken.isEmpty()) {
+    firebaseSaveCreds();
+    Serial.println("[Firebase] Auth ready. UID: " + g_firebaseUid);
+  }
+  return idToken;
 }
 
 // ── Resolve which child profile this device serves ───────────────────────────
