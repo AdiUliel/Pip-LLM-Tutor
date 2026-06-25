@@ -11,7 +11,9 @@
  *   2. Create a session (auto-detects the child profile by deviceId)
  *   3. Backend (onSessionCreated) generates the first question + its TTS audio
  *   4. Device SPEAKS the question (face: speaking) then LISTENS (face: listening)
- *   5. Child holds the button and answers → I2S capture → STT proxy
+ *   5. Child says the wake word "hey pip" and answers → I2S capture (ended on
+ *      silence) → STT proxy.  (Legacy push-to-talk button kept behind
+ *      USE_WAKE_WORD=0 — see wake_word.h / Documentation/WAKE_WORD.md.)
  *   6. Device posts a learning_turn → backend grades + Gemini feedback +
  *      next question + combined TTS audio
  *   7. Device shows the returned EMOTION on pip_face, SPEAKS feedback+next
@@ -20,6 +22,8 @@
  * Required libraries (Arduino IDE → Manage Libraries):
  *   - ArduinoJson      by Benoit Blanchon (v7.x)
  *   - TFT_eSPI         by Bodmer            (for pip_face; configure User_Setup)
+ *   (Wake word "hey pip" needs NO extra library — the model is bundled in
+ *    wake_word.h / ww_infer.h / hey_pip_model.h. See Documentation/WAKE_WORD.md.)
  *   See INTEGRATION.md for the TFT_eSPI User_Setup for this exact board.
  *
  * Board settings (Arduino IDE):
@@ -49,6 +53,18 @@
 #include "firebase_client.h"
 #include "stt_client.h"
 #include "tts_player.h"
+
+// ── Wake-word ("hey pip") on/off switch ───────────────────────────────────────
+// 1 = say "hey pip" to start an answer (REPLACES the button).
+// 0 = legacy push-to-talk button (kept intact below; we may still want it).
+// The model is fully self-contained (wake_word.h / ww_infer.h / hey_pip_model.h)
+// — NOTHING to install. See Documentation/WAKE_WORD.md for how it was trained + tuning.
+#ifndef USE_WAKE_WORD
+#define USE_WAKE_WORD 1
+#endif
+#if USE_WAKE_WORD
+  #include "wake_word.h"
+#endif
 
 // ── State machine ─────────────────────────────────────────────────────────────
 enum State { IDLE, RECORDING, PROCESSING, SPEAKING };
@@ -220,12 +236,79 @@ bool processRecordedAudio() {
   return true;
 }
 
-// Blocking record: face listens, waits for button press, captures while
-// held, stops on release. Used by the boot-time identify flow before the
-// main state-machine loop takes over button handling.
+// RMS above which a chunk counts as speech (computed over the interleaved
+// stereo stream — the silent codec channel halves it, so this sits a bit below
+// the mono speech levels the ES8311 produces). Used for silence endpointing.
+#define VOICE_RMS_THRESHOLD 300
+
+// Record an answer that ENDS ON SILENCE (the wake-word replacement for "record
+// while the button is held"). Fills recordBuf with stereo PCM and sets
+// recordBytes, exactly like the button capture, so processRecordedAudio() /
+// processCapturedAnswer() handle it unchanged. Installs and uninstalls I2S
+// itself. Returns true if speech was captured, false on timeout/too-short.
+//   startTimeoutMs : how long to wait for the child to START talking
+//   trailSilenceMs : how much trailing quiet ends the utterance
+bool recordUntilSilence(uint32_t startTimeoutMs = 6000, uint32_t trailSilenceMs = 1200) {
+  i2s_start_recording();
+  recordBytes = 0;
+  uint32_t startMs    = millis();
+  uint32_t lastVoice  = startMs;
+  bool     heardVoice = false;
+  const size_t CHUNK  = 1024;   // bytes per i2s_read (256 stereo frames)
+
+  while (recordBytes + CHUNK <= RECORD_BUF_SIZE) {
+    size_t br = 0;
+    i2s_read(I2S_PORT, recordBuf + recordBytes, CHUNK, &br, portMAX_DELAY);
+
+    // RMS of this chunk (both channels) → voice-activity decision.
+    int16_t* s = (int16_t*)(recordBuf + recordBytes);
+    size_t n = br / 2;
+    int64_t sumSq = 0;
+    for (size_t i = 0; i < n; i++) sumSq += (int64_t)s[i] * s[i];
+    float rms = (n > 0) ? sqrt((float)(sumSq / (int64_t)n)) : 0;
+    recordBytes += br;
+
+    uint32_t now = millis();
+    if (rms > VOICE_RMS_THRESHOLD) { heardVoice = true; lastVoice = now; }
+    faceTick();
+
+    if (heardVoice && (now - lastVoice) > trailSilenceMs) break;        // end of speech
+    if (!heardVoice && (now - startMs) > startTimeoutMs) break;         // nobody spoke
+    if ((now - startMs) > MAX_RECORD_MS) break;                          // hard cap
+  }
+  i2s_stop_recording();
+  Serial.printf("[Rec] %u bytes (%.1f s)%s\n", recordBytes,
+                recordBytes / (float)(SAMPLE_RATE * 2 * 2),
+                heardVoice ? "" : " — no speech");
+  return heardVoice && recordBytes > 1000;
+}
+
+// Blocking record: face listens, waits for the trigger, captures the answer.
+// In wake-word mode the trigger is the Hebrew wake word and capture ends on
+// silence; in button mode it is the original push-to-talk. Used by the
+// boot-time identify flow before the main state-machine loop takes over.
 bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
-  Serial.println("[Identify] Press the button and answer...");
   faceEmotion("listening");
+#if USE_WAKE_WORD
+  // Wake-word trigger: wait for "היי פיפ", then record until the child stops.
+  Serial.println("[Identify] Say \"היי פיפ\", then answer...");
+  wakeWordStartListening();
+  uint32_t waitStart = millis();
+  bool triggered = false;
+  while (millis() - waitStart < maxWaitMs) {
+    if (wakeWordPoll() == 1) { triggered = true; break; }
+    faceTick();
+  }
+  wakeWordStopListening();
+  if (!triggered) {
+    Serial.println("[Identify] No wake word within timeout.");
+    return false;
+  }
+  Serial.println("[Identify] Recording...");
+  return recordUntilSilence();
+#else
+  // ── Legacy push-to-talk (kept; we may still want the button) ──────────────
+  Serial.println("[Identify] Press the button and answer...");
   uint32_t waitStart = millis();
   while (digitalRead(PIN_BTN) != LOW) {
     faceTick();
@@ -250,6 +333,7 @@ bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
   Serial.printf("[Identify] Recorded %u bytes (%.1f s)\n",
                 recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
   return true;
+#endif
 }
 
 // Boot-time voice identification flow:
@@ -262,7 +346,11 @@ bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
 // legacy "awaitingFirstQuestion" flow.
 bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // ── Step 1 — ask "who's here?" ────────────────────────────────────────────
+#if USE_WAKE_WORD
+  String welcomeUrl = cloudSynthesizeSpeech("היי! מי כאן? תגיד \"היי פיפ\" ואז את השם שלך.");
+#else
   String welcomeUrl = cloudSynthesizeSpeech("היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.");
+#endif
   if (welcomeUrl.isEmpty()) {
     Serial.println("[Identify] TTS welcome failed.");
     return false;
@@ -273,7 +361,11 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   if (!recordOneAnswerBlocking()) return false;
   if (!processRecordedAudio()) {
     // Speak a gentle retry prompt then try once more.
+#if USE_WAKE_WORD
+    String retryUrl = cloudSynthesizeSpeech("לא שמעתי. תגיד \"היי פיפ\" ואז את השם שלך שוב.");
+#else
     String retryUrl = cloudSynthesizeSpeech("לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.");
+#endif
     if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
     if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
   }
@@ -366,7 +458,12 @@ void askCurrentQuestion(const String& audioUrl) {
   state = IDLE;
   faceStatus("listening");
   firestoreWriteDeviceState("listening", g_currentQuestion);
+#if USE_WAKE_WORD
+  Serial.println("\n🪄 Say \"היי פיפ\" then your answer.");
+  wakeWordStartListening();        // begin continuous wake-word detection
+#else
   Serial.println("\n🎤 Hold the button and say your answer.");
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -375,12 +472,17 @@ void setup() {
   delay(500);
   Serial.println("\n=== Homework Assistant (Emotional Tutor) Booting ===");
 
-  // Button — IO3 reads press, IO2 acts as GND (OUTPUT LOW).
+  // Button — COMMENTED OUT: the Hebrew wake word "היי פיפ" now triggers
+  // recording (see USE_WAKE_WORD). Kept here, compiled only when the wake word
+  // is disabled, so we can fall back to push-to-talk if we ever need it.
+#if !USE_WAKE_WORD
+  // IO3 reads press, IO2 acts as GND (OUTPUT LOW).
   // (If the IO3 expansion line is flaky on your unit, switch PIN_BTN to GPIO0 /
   //  the onboard BOOT button in pins.h — see INTEGRATION.md.)
   pinMode(PIN_BTN_GND, OUTPUT);
   digitalWrite(PIN_BTN_GND, LOW);
   pinMode(PIN_BTN, INPUT_PULLUP);
+#endif
 
   // Speaker amp — disabled until needed.
   pinMode(PIN_AUDIO_EN, OUTPUT);
@@ -411,6 +513,12 @@ void setup() {
 
   // ES8311 codec via I2C.
   if (!initES8311()) Serial.println("⚠️  ES8311 init failed. Audio may not work.");
+
+#if USE_WAKE_WORD
+  // Edge Impulse wake-word model ("היי פיפ"). Needs the codec up (shares the mic).
+  if (!wakeWordBegin())
+    Serial.println("⚠️  Wake-word model not ready — is the Edge Impulse library installed?");
+#endif
 
   // Network + time + auth.
   connectWiFi();
@@ -476,6 +584,126 @@ void setup() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Return to the IDLE "waiting for the child" state. In wake-word mode this also
+// re-arms continuous "היי פיפ" detection, so the device is never left deaf after
+// a turn or an early-out (empty STT, silence, backend hiccup).
+void backToListening() {
+  state = IDLE;
+  faceStatus("listening");
+#if USE_WAKE_WORD
+  wakeWordStartListening();
+#endif
+}
+
+// Process whatever is in recordBuf (stereo PCM, recordBytes long): strip to the
+// mic channel, reject silence, run STT, post the learning turn, speak feedback +
+// next question, then go back to listening. Shared by the wake-word path and the
+// legacy button path so the heavy logic lives in exactly one place.
+void processCapturedAnswer() {
+  if (recordBytes < 1000) {
+    Serial.println("[Main] Recording too short, ignoring.");
+    backToListening();
+    return;
+  }
+
+  // ── Pick the stereo slot that actually carries the mic (mono codec) ────────
+  int micChannel = 0;
+  {
+    int16_t* raw = (int16_t*)recordBuf;
+    size_t frames = recordBytes / 4;
+    int64_t sumSq0 = 0, sumSq1 = 0;
+    for (size_t i = 0; i < frames; i++) {
+      sumSq0 += (int64_t)raw[i*2]   * raw[i*2];
+      sumSq1 += (int64_t)raw[i*2+1] * raw[i*2+1];
+    }
+    float rms0 = sqrt((float)(sumSq0 / (int64_t)frames));
+    float rms1 = sqrt((float)(sumSq1 / (int64_t)frames));
+    micChannel = (rms1 > rms0) ? 1 : 0;
+    Serial.printf("[Main] ch0 RMS: %.0f  ch1 RMS: %.0f  -> ch%d\n", rms0, rms1, micChannel);
+  }
+  // Strip to mono (keep the mic channel).
+  {
+    int16_t* src = (int16_t*)recordBuf;
+    int16_t* dst = (int16_t*)recordBuf;
+    size_t frames = recordBytes / 4;
+    for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2 + micChannel];
+    recordBytes = frames * 2;
+  }
+
+  // Reject near-silence before paying for STT (STT hallucinates on noise).
+  {
+    int16_t* samples = (int16_t*)recordBuf;
+    int64_t sumSq = 0; size_t n = recordBytes / 2;
+    for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
+    float rms = sqrt((float)(sumSq / (int64_t)n));
+    Serial.printf("[Main] Answer RMS: %.0f\n", rms);
+    if (rms < 100) {
+      Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
+      backToListening();
+      return;
+    }
+  }
+
+  // STT — pick language by the SESSION's subject (read from Firestore after
+  // identify_subject), not the compile-time SESSION_SUBJECT. So an English
+  // lesson is recognised as English even when flashed with SESSION_SUBJECT="math".
+  faceEmotion("thinking");
+  faceTick();
+  const char* sttLang = g_currentSubject.equalsIgnoreCase("english") ? "en-US" : "he-IL";
+  String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
+  if (answer.isEmpty()) {
+    Serial.println("[Main] STT returned empty transcript.");
+    backToListening();
+    return;
+  }
+  Serial.println("[Main] Child answered: " + answer);
+
+  // Post learning turn → backend grades + feedback + next question + audio.
+  firestoreWriteDeviceState("feedback", g_currentQuestion);
+  String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
+  if (exchangeId.isEmpty()) { backToListening(); return; }
+
+  TurnResult turn;
+  if (!firestorePollForTurnResult(g_sessionId, exchangeId, turn, 30000)) {
+    backToListening();
+    return;
+  }
+
+  if (turn.isCorrect) g_stars++;
+  Serial.println("[Main] Feedback: " + turn.spokenFeedback);
+  Serial.println("[Main] Next:     " + turn.nextQuestion);
+  Serial.println("[Main] Emotion:  " + turn.emotion);
+
+  // Show emotion + speak feedback (audio already includes the next question).
+  faceEmotion(pipEmotionFor(turn.emotion));
+  firestoreWriteDeviceState("feedback", turn.nextQuestion);
+  faceStrip(turn.nextQuestion);
+
+  state = SPEAKING;
+  speakAudio(turn.audioUrl);          // installs its own I2S; releases it when done
+
+  // The next question is now current.
+  g_currentQuestion = turn.nextQuestion;
+
+  if (turn.shouldTakeBreak) {
+    Serial.println("[Main] Taking a short break.");
+    faceStatus("break");
+    firestoreWriteDeviceState("break", g_currentQuestion);
+    faceTick();
+    delay(4000);
+  }
+
+  // Ready for the next answer.
+  firestoreWriteDeviceState("listening", g_currentQuestion);
+#if USE_WAKE_WORD
+  Serial.println("\n🪄 Say \"היי פיפ\" then your answer.");
+#else
+  Serial.println("\n🎤 Hold the button and say your answer.");
+#endif
+  backToListening();                  // re-arms wake-word detection in wake mode
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 void loop() {
   faceTick();  // ~30fps internally; cheap to call every iteration
 
@@ -486,9 +714,31 @@ void loop() {
     firestoreWriteDeviceState(hb, g_currentQuestion);
   }
 
+#if USE_WAKE_WORD
+  // ── IDLE → listen for the Hebrew wake word "היי פיפ" ───────────────────────
+  // Replaces the button: each loop iteration feeds one audio slice to the Edge
+  // Impulse classifier. On a hit we hand I2S to the recorder, capture the answer
+  // (ended by silence), and process it through the shared pipeline.
+  if (state == IDLE) {
+    if (wakeWordPoll() == 1) {
+      Serial.println("[Main] 🪄 \"היי פיפ\" detected — listening for the answer.");
+      wakeWordStopListening();          // release I2S so the recorder can install it
+      faceEmotion("listening");
+      state = RECORDING;
+      if (recordUntilSilence()) {
+        state = PROCESSING;
+        processCapturedAnswer();        // returns to IDLE + re-arms the wake word
+      } else {
+        Serial.println("[Main] No speech after the wake word.");
+        backToListening();
+      }
+    }
+  }
+#else
+  // ── Legacy push-to-talk (kept; we may still want the button) ───────────────
   bool btnDown = (digitalRead(PIN_BTN) == LOW);
 
-  // ── IDLE → start recording the child's answer when button pressed ──────────
+  // IDLE → start recording the child's answer when the button is pressed.
   if (state == IDLE && btnDown) {
     Serial.println("[Main] Recording answer...");
     state = RECORDING;
@@ -497,7 +747,7 @@ void loop() {
     i2s_start_recording();
   }
 
-  // ── RECORDING → capture while button held ─────────────────────────────────
+  // RECORDING → capture while the button is held.
   if (state == RECORDING) {
     if (btnDown && recordBytes < RECORD_BUF_SIZE) {
       size_t bytesRead = 0;
@@ -517,110 +767,8 @@ void loop() {
       state = PROCESSING;
       Serial.printf("[Main] Recorded %u bytes (%.1f sec)\n",
                     recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
-
-      if (recordBytes < 1000) {
-        Serial.println("[Main] Recording too short, ignoring.");
-        state = IDLE;
-        faceStatus("listening");
-        return;
-      }
-
-      // ── Pick the stereo slot that actually carries the mic (mono codec) ────
-      int micChannel = 0;
-      {
-        int16_t* raw = (int16_t*)recordBuf;
-        size_t frames = recordBytes / 4;
-        int64_t sumSq0 = 0, sumSq1 = 0;
-        for (size_t i = 0; i < frames; i++) {
-          sumSq0 += (int64_t)raw[i*2]   * raw[i*2];
-          sumSq1 += (int64_t)raw[i*2+1] * raw[i*2+1];
-        }
-        float rms0 = sqrt((float)(sumSq0 / (int64_t)frames));
-        float rms1 = sqrt((float)(sumSq1 / (int64_t)frames));
-        micChannel = (rms1 > rms0) ? 1 : 0;
-        Serial.printf("[Main] ch0 RMS: %.0f  ch1 RMS: %.0f  -> ch%d\n", rms0, rms1, micChannel);
-      }
-      // Strip to mono (keep the mic channel).
-      {
-        int16_t* src = (int16_t*)recordBuf;
-        int16_t* dst = (int16_t*)recordBuf;
-        size_t frames = recordBytes / 4;
-        for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2 + micChannel];
-        recordBytes = frames * 2;
-      }
-
-      // Reject near-silence before paying for STT (STT hallucinates on noise).
-      {
-        int16_t* samples = (int16_t*)recordBuf;
-        int64_t sumSq = 0; size_t n = recordBytes / 2;
-        for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
-        float rms = sqrt((float)(sumSq / (int64_t)n));
-        Serial.printf("[Main] Answer RMS: %.0f\n", rms);
-        if (rms < 100) {
-          Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
-          state = IDLE;
-          faceStatus("listening");
-          return;
-        }
-      }
-
-      // STT — pick language by the SESSION's subject (read from Firestore
-      // after identify_subject), not the compile-time SESSION_SUBJECT.
-      // So an English lesson is recognised as English even when the device
-      // was flashed with SESSION_SUBJECT="math".
-      faceEmotion("thinking");
-      faceTick();
-      const char* sttLang = g_currentSubject.equalsIgnoreCase("english") ? "en-US" : "he-IL";
-      String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
-      if (answer.isEmpty()) {
-        Serial.println("[Main] STT returned empty transcript.");
-        state = IDLE;
-        faceStatus("listening");
-        return;
-      }
-      Serial.println("[Main] Child answered: " + answer);
-
-      // Post learning turn → backend grades + feedback + next question + audio.
-      firestoreWriteDeviceState("feedback", g_currentQuestion);
-      String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
-      if (exchangeId.isEmpty()) { state = IDLE; faceStatus("listening"); return; }
-
-      TurnResult turn;
-      if (!firestorePollForTurnResult(g_sessionId, exchangeId, turn, 30000)) {
-        state = IDLE;
-        faceStatus("listening");
-        return;
-      }
-
-      if (turn.isCorrect) g_stars++;
-      Serial.println("[Main] Feedback: " + turn.spokenFeedback);
-      Serial.println("[Main] Next:     " + turn.nextQuestion);
-      Serial.println("[Main] Emotion:  " + turn.emotion);
-
-      // Show emotion + speak feedback (audio already includes the next question).
-      faceEmotion(pipEmotionFor(turn.emotion));
-      firestoreWriteDeviceState("feedback", turn.nextQuestion);
-      faceStrip(turn.nextQuestion);
-
-      state = SPEAKING;
-      speakAudio(turn.audioUrl);
-
-      // The next question is now current.
-      g_currentQuestion = turn.nextQuestion;
-
-      if (turn.shouldTakeBreak) {
-        Serial.println("[Main] Taking a short break.");
-        faceStatus("break");
-        firestoreWriteDeviceState("break", g_currentQuestion);
-        faceTick();
-        delay(4000);
-      }
-
-      // Ready for the next answer.
-      state = IDLE;
-      faceStatus("listening");
-      firestoreWriteDeviceState("listening", g_currentQuestion);
-      Serial.println("\n🎤 Hold the button and say your answer.");
+      processCapturedAnswer();          // shared pipeline (same as wake-word path)
     }
   }
+#endif
 }
