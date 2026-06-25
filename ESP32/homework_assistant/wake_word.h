@@ -47,7 +47,23 @@
 #define WW_TARGET_PEAK 0.60f
 #endif
 #ifndef WW_MAX_GAIN
-#define WW_MAX_GAIN 40.0f
+#define WW_MAX_GAIN 20.0f          // was 40 — high gain on a silent room amplified noise into false fires
+#endif
+
+// ── False-fire suppression ────────────────────────────────────────────────────
+// NOISE GATE: ignore any window whose RAW peak is below this. A quiet room sits
+// around peak ~0.015; a real "hey pip" puts the window at ~0.07+. Gating below
+// WW_MIN_PEAK means silence is never amplified-then-scored, which is what caused
+// the 0.4–0.8 "ghost" scores. Raise it if you still get false fires; lower it if
+// a softly-spoken wake word gets ignored (watch the 'win' column in test mode).
+#ifndef WW_MIN_PEAK
+#define WW_MIN_PEAK 0.030f
+#endif
+// DEBOUNCE: a real wake word stays in the 1 s window for several polls, so it
+// scores high on WW_CONSEC polls in a row; stray noise blips don't. Require this
+// many consecutive over-threshold polls before firing.
+#ifndef WW_CONSEC
+#define WW_CONSEC 2
 #endif
 
 // New audio pulled in per poll (samples @16 kHz). 3200 = 200 ms → ~200 ms detect
@@ -64,6 +80,7 @@ void faceTick();
 // ── State / PSRAM scratch ─────────────────────────────────────────────────────
 static bool   ww_active = false;
 static int    ww_mic_ch = 0;
+static int    ww_consec = 0;       // consecutive over-threshold polls (debounce)
 static float* ww_ring = nullptr;   // rolling 1 s window  (WW_CLIP)
 static float* ww_sig  = nullptr;   // gain-normalized copy fed to inference (WW_CLIP)
 static float* ww_feat = nullptr;   // log-mel             (WW_FRAMES*WW_MELS)
@@ -121,14 +138,15 @@ inline void wakeWordStopListening(){
 // Scale a 1 s window to the training peak level (WW_TARGET_PEAK), capped at
 // WW_MAX_GAIN. Writes to `out` and never touches the rolling window, so the gain
 // can't compound across polls. Returns the gain applied (handy for logging).
-static float ww_normalize(const float* in, float* out){
+static float ww_normalize(const float* in, float* out, float* gainOut){
   float peak = 1e-6f;
   for(int i=0;i<WW_CLIP;i++){ float a = fabsf(in[i]); if(a>peak) peak=a; }
   float g = WW_TARGET_PEAK / peak;
   if(g > WW_MAX_GAIN) g = WW_MAX_GAIN;
   if(g < 1.0f)        g = 1.0f;     // already loud enough — leave as-is, never attenuate
   for(int i=0;i<WW_CLIP;i++) out[i] = in[i]*g;
-  return g;
+  if(gainOut) *gainOut = g;
+  return peak;                      // RAW window peak (pre-gain) — input to the noise gate
 }
 
 // Pull ~WW_HOP ms of new audio, slide the window, run one inference.
@@ -148,12 +166,18 @@ inline int wakeWordPoll(){
     faceTick();
   }
 
-  ww_normalize(ww_ring, ww_sig);                            // match training input level
+  float winpeak = ww_normalize(ww_ring, ww_sig, nullptr);   // normalize + get raw level
+  if(winpeak < WW_MIN_PEAK){ ww_consec = 0; return 0; }     // squelch: room too quiet to be speech
   float prob[WW_NCLASS];
   ww_infer(ww_sig, ww_feat, ww_b1, ww_b2, ww_b3, prob);     // prob[1] = "hey pip"
   if(prob[1] >= WAKE_WORD_THRESHOLD){
-    Serial.printf("[WakeWord] 'hey pip' %.2f  ✓\n", (double)prob[1]);
-    return 1;
+    if(++ww_consec >= WW_CONSEC){                            // sustained over several polls → real
+      ww_consec = 0;
+      Serial.printf("[WakeWord] 'hey pip' %.2f  ✓\n", (double)prob[1]);
+      return 1;
+    }
+  } else {
+    ww_consec = 0;
   }
   return 0;
 }
@@ -173,10 +197,11 @@ inline void wakeWordRunTestMode(){
   Serial.println("\n========== WAKE-WORD TEST MODE ==========");
   Serial.printf ("Threshold = %.2f. Say \"hey pip\" and watch 'score'/'max'.\n",
                  (double)WAKE_WORD_THRESHOLD);
-  Serial.println("  rms/peak ~0 while you speak   -> mic/I2S problem (no audio to the model)");
-  Serial.println("  gain = auto-boost applied to reach the model's training level (caps at 40x)");
-  Serial.println("  score spikes but < threshold  -> lower WAKE_WORD_THRESHOLD just under 'max'");
-  Serial.println("  score never moves at all      -> model/feature problem");
+  Serial.println("  win  = window peak BEFORE gain; quiet room ~0.015, real 'hey pip' ~0.07+");
+  Serial.println("  gain = auto-boost to the model's training level (caps at WW_MAX_GAIN)");
+  Serial.println("  [gated] = below WW_MIN_PEAK, ignored;  (arming)=1 hit;  FIRE=WW_CONSEC in a row");
+  Serial.println("  too many false fires  -> raise WW_MIN_PEAK / WAKE_WORD_THRESHOLD / WW_CONSEC");
+  Serial.println("  misses your wake word -> lower WAKE_WORD_THRESHOLD (watch 'max') or WW_MIN_PEAK");
   Serial.println("This loop never exits; reflash with WW_TEST_MODE 0 for normal use.\n");
 
   if(!ww_ring){
@@ -186,6 +211,7 @@ inline void wakeWordRunTestMode(){
 
   wakeWordStartListening();
   float maxScore = 0.0f;
+  int   tmConsec = 0;
   while(true){
     // Same window slide + mic read as wakeWordPoll(), but we also measure the
     // level and ALWAYS print (never gated on the threshold).
@@ -203,14 +229,20 @@ inline void wakeWordRunTestMode(){
       faceTick();
     }
     float rms = sqrtf(sumSq/(float)WW_HOP);
-    float gain = ww_normalize(ww_ring, ww_sig);   // same auto-gain as live detection
+    float gain; float winpeak = ww_normalize(ww_ring, ww_sig, &gain);   // same as live detection
     float prob[WW_NCLASS];
     ww_infer(ww_sig, ww_feat, ww_b1, ww_b2, ww_b3, prob);
     float score = prob[1];
     if(score > maxScore) maxScore = score;
-    Serial.printf("[WWTEST] ch=%d  rms=%.4f  peak=%.3f  gain=%4.1fx  score=%.3f  max=%.3f%s\n",
-                  ww_mic_ch, (double)rms, (double)peak, (double)gain,
-                  (double)score, (double)maxScore,
-                  score >= WAKE_WORD_THRESHOLD ? "   <<< WOULD FIRE" : "");
+    // Mirror the live gate + debounce so the display matches real behavior.
+    const char* tag = "";
+    if(winpeak < WW_MIN_PEAK){ tag = "  [gated: too quiet]"; tmConsec = 0; }
+    else if(score >= WAKE_WORD_THRESHOLD){
+      if(++tmConsec >= WW_CONSEC) tag = "  <<< FIRE";
+      else                        tag = "  (arming)";
+    } else { tmConsec = 0; }
+    Serial.printf("[WWTEST] ch=%d  rms=%.4f  win=%.3f  gain=%4.1fx  score=%.3f  max=%.3f%s\n",
+                  ww_mic_ch, (double)rms, (double)winpeak, (double)gain,
+                  (double)score, (double)maxScore, tag);
   }
 }
