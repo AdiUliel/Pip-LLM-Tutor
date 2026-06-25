@@ -62,6 +62,21 @@
 #ifndef USE_WAKE_WORD
 #define USE_WAKE_WORD 1
 #endif
+
+// ── Wake-word TEST MODE (threshold tuning / "it's unresponsive" debugging) ─────
+// Set to 1 to boot straight into a serial score printer: it SKIPS WiFi/Firebase
+// and, every ~200 ms, prints the live "hey pip" score plus the mic level so you
+// can see exactly why it isn't triggering. Set back to 0 for normal operation.
+// How to read the output (Serial Monitor @115200):
+//   • rms/peak stay ~0 while you speak  → mic/I2S problem (no audio reaching the model)
+//   • score spikes on "hey pip" but stays under the threshold → lower WAKE_WORD_THRESHOLD
+//   • score never moves at all          → model/feature problem
+// Once you know the score your real "hey pip" hits, set WAKE_WORD_THRESHOLD just
+// below it (in wake_word.h), flip this back to 0, and reflash.
+#ifndef WW_TEST_MODE
+#define WW_TEST_MODE 0
+#endif
+
 #if USE_WAKE_WORD
   #include "wake_word.h"
 #endif
@@ -515,9 +530,14 @@ void setup() {
   if (!initES8311()) Serial.println("⚠️  ES8311 init failed. Audio may not work.");
 
 #if USE_WAKE_WORD
-  // Edge Impulse wake-word model ("היי פיפ"). Needs the codec up (shares the mic).
+  // Self-contained "hey pip" model (no Edge Impulse). Needs the codec up (shares the mic).
   if (!wakeWordBegin())
-    Serial.println("⚠️  Wake-word model not ready — is the Edge Impulse library installed?");
+    Serial.println("⚠️  Wake-word model not ready — PSRAM allocation failed (enable OPI PSRAM).");
+  #if WW_TEST_MODE
+  // Diagnostic build: stream the live score for threshold tuning. Never returns,
+  // so we skip WiFi/Firebase entirely — just open the Serial Monitor @115200.
+  wakeWordRunTestMode();
+  #endif
 #endif
 
   // Network + time + auth.

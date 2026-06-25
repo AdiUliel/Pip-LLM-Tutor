@@ -126,3 +126,58 @@ inline int wakeWordPoll(){
   }
   return 0;
 }
+
+// ── On-device TEST MODE — live score printer for tuning / debugging ───────────
+// Never returns. Streams one line per ~WW_HOP of audio with everything you need
+// to diagnose an unresponsive wake word WITHOUT any cloud setup:
+//   ch    = which stereo slot the mic was found on (0 or 1)
+//   rms   = average level of this slice (0..1). Should jump up when you talk.
+//   peak  = loudest sample this slice (0..1). ~0 while speaking ⇒ no mic audio.
+//   score = model confidence for "hey pip" (0..1). Compare against the threshold.
+//   max   = highest score seen so far this run (the peak of your "hey pip").
+// Tuning recipe: say "hey pip" a few times, note the 'max', then set
+// WAKE_WORD_THRESHOLD a touch below it (e.g. max 0.74 → threshold 0.65).
+// Requires wakeWordBegin() to have run first (scratch buffers + codec up).
+inline void wakeWordRunTestMode(){
+  Serial.println("\n========== WAKE-WORD TEST MODE ==========");
+  Serial.printf ("Threshold = %.2f. Say \"hey pip\" and watch 'score'/'max'.\n",
+                 (double)WAKE_WORD_THRESHOLD);
+  Serial.println("  rms/peak ~0 while you speak   -> mic/I2S problem (no audio to the model)");
+  Serial.println("  score spikes but < threshold  -> lower WAKE_WORD_THRESHOLD just under 'max'");
+  Serial.println("  score never moves at all      -> model/feature problem");
+  Serial.println("This loop never exits; reflash with WW_TEST_MODE 0 for normal use.\n");
+
+  if(!ww_ring){
+    Serial.println("[WWTEST] scratch not allocated — wakeWordBegin() failed (PSRAM?). Halting.");
+    while(true){ faceTick(); delay(200); }
+  }
+
+  wakeWordStartListening();
+  float maxScore = 0.0f;
+  while(true){
+    // Same window slide + mic read as wakeWordPoll(), but we also measure the
+    // level and ALWAYS print (never gated on the threshold).
+    memmove(ww_ring, ww_ring+WW_HOP, (WW_CLIP-WW_HOP)*sizeof(float));
+    float* tail = ww_ring+(WW_CLIP-WW_HOP);
+    int got=0; int16_t st[256*2]; float sumSq=0.0f, peak=0.0f;
+    while(got<WW_HOP){
+      int want=WW_HOP-got, frames=want<256?want:256; size_t br=0;
+      i2s_read(I2S_PORT,(char*)st,frames*4,&br,portMAX_DELAY);
+      int f=br/4;
+      for(int i=0;i<f && got<WW_HOP;i++){
+        float s = st[i*2+ww_mic_ch]/32768.0f;
+        tail[got++]=s; sumSq+=s*s; if(fabsf(s)>peak) peak=fabsf(s);
+      }
+      faceTick();
+    }
+    float rms = sqrtf(sumSq/(float)WW_HOP);
+    float prob[WW_NCLASS];
+    ww_infer(ww_ring, ww_feat, ww_b1, ww_b2, ww_b3, prob);
+    float score = prob[1];
+    if(score > maxScore) maxScore = score;
+    Serial.printf("[WWTEST] ch=%d  rms=%.4f  peak=%.3f  score=%.3f  max=%.3f%s\n",
+                  ww_mic_ch, (double)rms, (double)peak,
+                  (double)score, (double)maxScore,
+                  score >= WAKE_WORD_THRESHOLD ? "   <<< WOULD FIRE" : "");
+  }
+}
