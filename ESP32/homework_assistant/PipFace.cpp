@@ -3,18 +3,34 @@
  * ----------------------------------------------------------------------------
  *  Lifted nearly byte-for-byte from the original Pip_ESP32.ino reference
  *  sketch — the drawing helpers and per-state logic are untouched so the
- *  visual output is identical to the design. The only structural changes:
+ *  visual output is identical to the design. Structural changes:
  *    - setup()/loop() removed; their bodies wrapped as Pip::begin/tick().
  *    - tick() is non-blocking — pacing via millis() instead of delay(33).
  *    - state-cycling demo loop dropped (lives in examples/PipDemo/ now).
  *    - bottom status strip cached + redrawn only on change.
  *    - new Pip::setDeviceStatus() maps the project's deviceState vocabulary
  *      onto the 12-emotion enum (table in PipFace.h).
+ *    - bottom strip now renders Hebrew (and any UTF-8) via u8g2's
+ *      unifont_t_hebrew, with a tiny bidi-lite pass to handle RTL display.
+ *    - rendering moved to a FreeRTOS task so the face stays responsive
+ *      while the main loop is blocked on HTTPS / STT / audio playback /
+ *      I2S recording. tick() is now a no-op kept for API compatibility.
+ *    - per-state drawing refreshed to match the new vector design:
+ *        HAPPY      pink cheek blush dots
+ *        LISTENING  two phased expanding sound rings (+ pulsing eyes)
+ *        ENCOURAGING  single slow warm ring
+ *        SPEAKING   ellipse mouth with rx/ry lip-sync (was rect)
+ *        SLEEPY     yawning ellipse (was round-rect)
+ *        OOPS       wide oval mouth + spark lines (was sweat drop)
+ *        CONCERNED  straight diagonal worry brows (was curves)
+ *        PROUD      4-point twinkle stars (was 5-pt stars)
+ *        CELEBRATING confetti + twinkle flourish stars
  * ========================================================================== */
 
 #include "PipFace.h"
 
 #include <TFT_eSPI.h>
+#include <U8g2_for_TFT_eSPI.h>
 #include <math.h>
 #include <string.h>
 
@@ -22,6 +38,7 @@ namespace {  // ---- private to this translation unit ----
 
 TFT_eSPI  tft  = TFT_eSPI();
 TFT_eSprite face = TFT_eSprite(&tft);     // 240x240 face buffer
+U8g2_for_TFT_eSPI u8f;                    // Unicode/Hebrew text engine
 
 enum PipState {
   IDLE, SPEAKING, LISTENING, THINKING,
@@ -31,13 +48,16 @@ enum PipState {
 };
 PipState state = IDLE;
 
-// Frame-pacing for tick() (~30 fps).
-uint32_t lastFrame = 0;
+// Cached strip — redrawn only when text or stars change. Protected by
+// stripMux because the writer (Pip::setStrip, called from the main task)
+// and the reader (the face task) live on different threads.
+char           stripText[64] = "";
+int            stripStars   = -1;   // sentinel: forces first paint
+bool           stripDirty   = true;
+portMUX_TYPE   stripMux     = portMUX_INITIALIZER_UNLOCKED;
 
-// Cached strip — redrawn only when text or stars change.
-char     stripText[64] = "";
-int      stripStars   = -1;   // sentinel: forces first paint
-bool     stripDirty   = true;
+// Handle for the background render task spawned in begin().
+TaskHandle_t   faceTaskHandle = nullptr;
 
 // Colours (RGB565), filled in begin().
 uint16_t BG, GLOW, GLOWD, GOLD, PINK, WHT, SCREEN_BG;
@@ -94,6 +114,46 @@ void happyEye(int ex,int y) { glowCurve(ex-16,y+7, ex,y-9, ex+16,y+7, 9); }
 // open capsule eye
 void capsuleEye(int ex,int y) { glowRoundRect(ex-15, y-21, 30, 42, 15); }
 
+// pink "blush" dot — used on HAPPY's cheeks (matches the new vector design).
+void drawBlush(int cx, int cy, int r) {
+  face.fillCircle(cx, cy, r+1, GLOWD);   // soft halo
+  face.fillCircle(cx, cy, r,   PINK);
+}
+
+// Glowing filled ellipse — same halo trick as glowRoundRect / glowCircle.
+// Used by SPEAKING (morphing mouth), SLEEPY (yawn), OOPS (wide mouth).
+void glowEllipse(int cx, int cy, int rx, int ry) {
+  if (rx < 1) rx = 1;
+  if (ry < 1) ry = 1;
+  face.fillEllipse(cx, cy, rx+2, ry+2, GLOWD);
+  face.fillEllipse(cx, cy, rx,   ry,   GLOW);
+}
+
+// Expanding sound ring used by LISTENING (two phased rings) and
+// ENCOURAGING (single slow ring). phase ∈ [0,1) — 0 = freshly born at
+// [startR], 1 = faded out at [endR]. Dims the stroke past phase 0.5
+// so the ring appears to fade as it grows.
+void drawSoundRing(int cx, int cy, int startR, int endR, float phase) {
+  int r = startR + (int)((endR - startR) * phase);
+  uint16_t col = (phase < 0.55f) ? GLOW : GLOWD;
+  // Thick ring approximated by 3 adjacent unfilled circles.
+  face.drawCircle(cx, cy, r,     col);
+  face.drawCircle(cx, cy, r + 1, col);
+  face.drawCircle(cx, cy, r - 1, col);
+}
+
+// 4-point "twinkle" sparkle — sharper than the 5-pt fillStar.
+// Used by PROUD's overlay and CELEBRATING flourish stars.
+void drawTwinkle(int cx, int cy, int r, uint16_t col) {
+  int v = (int)(r * 0.42f); if (v < 1) v = 1;
+  // vertical lens
+  face.fillTriangle(cx, cy - r, cx - v, cy, cx, cy + r, col);
+  face.fillTriangle(cx, cy - r, cx + v, cy, cx, cy + r, col);
+  // horizontal lens
+  face.fillTriangle(cx - r, cy, cx, cy - v, cx + r, cy, col);
+  face.fillTriangle(cx - r, cy, cx, cy + v, cx + r, cy, col);
+}
+
 // ================================ the face ================================
 void drawAntenna(int dy, uint32_t t) {
   uint16_t bulb = (state==PROUD||state==CELEBRATING) ? GOLD : GLOW;
@@ -125,8 +185,13 @@ void drawEyes(int dy, uint32_t t) {
       glowCircle(EX_L+gx,y-6,12); glowCircle(EX_R+gx,y-6,12); break; }
     case CONCERNED:
       glowCircle(EX_L,y,11); glowCircle(EX_R,y,11);
-      glowCurve(EX_L-14,y-22, EX_L,y-30, EX_L+16,y-26, 6);   // worried brows
-      glowCurve(EX_R+14,y-22, EX_R,y-30, EX_R-16,y-26, 6); break;
+      // Straight diagonal worry brows — outer-top down to inner-low
+      // (was a curve; new vector design draws this as a line).
+      face.drawWideLine(66,  98+dy, 98,  88+dy, 10, GLOWD);
+      face.drawWideLine(66,  98+dy, 98,  88+dy, 7,  GLOW);
+      face.drawWideLine(174, 98+dy, 142, 88+dy, 10, GLOWD);
+      face.drawWideLine(174, 98+dy, 142, 88+dy, 7,  GLOW);
+      break;
     case OOPS:
       glowCircle(EX_L,y,18); glowCircle(EX_R,y,18);
       glowCurve(EX_L-16,y-26, EX_L,y-34, EX_L+16,y-28, 6);   // raised brows
@@ -144,9 +209,14 @@ void drawEyes(int dy, uint32_t t) {
 void drawMouth(int dy, uint32_t t) {
   int y = MY + dy;
   switch (state) {
-    case SPEAKING: {                                     // talking: height pulses
-      int h = 10 + (int)(9*fabs(sin(t/120.0)));
-      glowRoundRect(MX-18, y-h/2, 36, h, 8); break; }
+    case SPEAKING: {
+      // Ellipse mouth — rx + ry pulse independently (lip-sync feel).
+      // Was a rect — the new vector design uses an animated ellipse.
+      int rx = 17 + (int)(6 * fabs(cos(t / 180.0)));
+      int ry =  5 + (int)(9 * fabs(sin(t / 120.0)));
+      glowEllipse(MX, y, rx, ry);
+      break;
+    }
     case LISTENING:
       glowCircle(MX, y, 10); break;
     case THINKING:
@@ -156,14 +226,20 @@ void drawMouth(int dy, uint32_t t) {
     case PROUD: case ENCOURAGING:
       glowCurve(MX-22,y-6, MX,y+20, MX+22,y-6, 10); break;
     case CONCERNED:
-      glowCurve(MX-22,y+6, MX,y-8, MX+22,y+6, 9); break;    // gentle frown
+      glowCurve(MX-26,y+6, MX,y-8, MX+26,y+6, 9); break;    // gentle frown
     case PLAYFUL:
       glowCurve(MX-22,y-6, MX,y+22, MX+22,y-6, 10);
       face.fillRoundRect(MX-9, y+8, 18, 14, 6, PINK); break; // tongue
-    case SLEEPY:
-      glowRoundRect(MX-9, y-9, 18, 18, 9); break;           // yawn
+    case SLEEPY: {
+      // Yawning ellipse — height oscillates wide.
+      int ry = 7 + (int)(13 * fabs(sin(t / 1500.0)));
+      glowEllipse(MX, y + 4, 14, ry);
+      break;
+    }
     case OOPS:
-      glowCircle(MX, y+2, 11); break;
+      // Wide oval mouth (was a small circle) — looks startled.
+      glowEllipse(MX, y + 4, 13, 15);
+      break;
     case IDLE: default:
       glowCurve(MX-20,y-2, MX,y+18, MX+20,y-2, 9); break;   // calm smile
   }
@@ -171,30 +247,61 @@ void drawMouth(int dy, uint32_t t) {
 
 void drawOverlay(int dy, uint32_t t) {
   switch (state) {
-    case THINKING: {                                     // rising "..." dots
+    case HAPPY:
+      // Pink cheek blush dots — matches the new vector design.
+      drawBlush(52,  150 + dy, 12);
+      drawBlush(188, 150 + dy, 12);
+      break;
+    case LISTENING: {
+      // Two expanding sound rings, phased so they overlap nicely.
+      float p1 = (float)((t       ) % 1800) / 1800.0f;
+      float p2 = (float)((t + 900 ) % 1800) / 1800.0f;
+      drawSoundRing(120, 120 + dy, 92, 118, p1);
+      drawSoundRing(120, 120 + dy, 92, 118, p2);
+      break;
+    }
+    case ENCOURAGING: {
+      // Single slower warm ring.
+      float p = (float)(t % 2400) / 2400.0f;
+      drawSoundRing(120, 120 + dy, 96, 124, p);
+      break;
+    }
+    case THINKING: {
       int n = (t / 350) % 4;
       for (int i = 0; i < 3; i++) if (i < n) glowCircle(196+i*15, 70-i*6+dy, 5+i);
-      break; }
+      break;
+    }
     case SLEEPY: {
       face.setTextColor(GLOW);
       face.drawString("z", 196, 70+dy, 2);
       face.drawString("Z", 214, 50+dy, 4);
-      break; }
-    case PROUD:
-      fillStar(56,90+dy,8,GOLD); fillStar(196,104+dy,7,GOLD); fillStar(186,58+dy,6,GOLD);
       break;
-    case CELEBRATING: {                                  // simple confetti
+    }
+    case PROUD: {
+      // 4-point twinkle stars (was 5-pt fillStar). Sharper, more "spark".
+      drawTwinkle(56,  90  + dy, 9, GOLD);
+      drawTwinkle(196, 104 + dy, 8, GOLD);
+      drawTwinkle(186, 58  + dy, 7, GOLD);
+      break;
+    }
+    case CELEBRATING: {                                  // confetti + twinkles
       int yy = (t/6) % 220;
       uint16_t cs[3] = { GOLD, PINK, GLOW };
       for (int i = 0; i < 6; i++) {
         int cx = 30 + i*34, cy = (yy + i*36) % 220;
         face.fillRect(cx, cy, 9, 9, cs[i % 3]);
       }
-      fillStar(44,64+dy,9,GOLD); fillStar(200,78+dy,8,GOLD);
-      break; }
-    case OOPS:                                           // friendly sweat drop
-      face.fillCircle(190, 92+dy, 7, rgb(0x8F,0xD3,0xF2));
+      drawTwinkle(44,  64 + dy, 10, GOLD);
+      drawTwinkle(200, 78 + dy, 9,  GOLD);
       break;
+    }
+    case OOPS: {
+      // Small "spark" lines around the face — was a sweat-drop circle.
+      face.drawWideLine(40,  110 + dy, 28,  104 + dy, 4, GOLD);
+      face.drawWideLine(200, 110 + dy, 212, 104 + dy, 4, GOLD);
+      face.drawWideLine(44,  140 + dy, 32,  144 + dy, 4, GOLD);
+      break;
+    }
     default: break;
   }
 }
@@ -212,18 +319,166 @@ void drawFace(uint32_t t) {
   face.pushSprite(0, 0);
 }
 
-// Bottom status strip — paints text + star count straight to the TFT.
-void drawStrip() {
+// 5-point filled star, drawn directly to the TFT (not the sprite).
+// Mirrors the in-sprite fillStar(); kept separate so we don't need to
+// allocate a tiny sprite for the strip.
+void fillStarTFT(int cx, int cy, int r, uint16_t col) {
+  float pts[10][2];
+  for (int i = 0; i < 10; i++) {
+    float a = M_PI/5*i - M_PI/2;
+    float rad = (i % 2 == 0) ? r : r*0.45f;
+    pts[i][0] = cx + cosf(a)*rad;
+    pts[i][1] = cy + sinf(a)*rad;
+  }
+  for (int i = 0; i < 10; i++) {
+    int j = (i+1) % 10;
+    tft.fillTriangle(cx, cy, pts[i][0], pts[i][1], pts[j][0], pts[j][1], col);
+  }
+}
+
+// ---- Bidi-lite for RTL display on a LTR rendering engine ----
+//
+// Takes a UTF-8 string in logical order and returns its visual order so
+// that drawing it left-to-right makes a Hebrew reader see it right-to-left
+// correctly. Numbers and Latin letters stay in their natural order within
+// their own runs; Hebrew runs are reversed; the run order itself is
+// reversed.
+//
+// Algorithm (works for Hebrew + digits + Latin punctuation, the only
+// scripts this project produces):
+//   1. Reverse the entire codepoint sequence.
+//   2. Within that reversed sequence, reverse each run of "LTR-strong"
+//      codepoints (ASCII digits + Latin letters) back to its natural order.
+// Hebrew letters, spaces, and punctuation stay reversed — which is exactly
+// what RTL display needs. This handles the project's prompts ("כמה זה 5
+// כפול 8?", "איך אומרים book באנגלית?", etc.) without pulling in a full
+// Unicode Bidirectional Algorithm.
+bool isLtrStrong(uint32_t cp) {
+  return (cp >= '0' && cp <= '9') ||
+         (cp >= 'a' && cp <= 'z') ||
+         (cp >= 'A' && cp <= 'Z');
+}
+
+String bidiToVisual(const char* utf8) {
+  constexpr int MAX_CPS = 128;
+  uint32_t cps[MAX_CPS];
+  int n = 0;
+
+  // 1. UTF-8 -> codepoints.
+  const uint8_t* p = (const uint8_t*)utf8;
+  while (*p && n < MAX_CPS) {
+    uint32_t cp = 0;
+    if (*p < 0x80) {
+      cp = *p++;
+    } else if ((*p & 0xE0) == 0xC0) {
+      cp  = (uint32_t)(*p++ & 0x1F) << 6;
+      cp |= (uint32_t)(*p++ & 0x3F);
+    } else if ((*p & 0xF0) == 0xE0) {
+      cp  = (uint32_t)(*p++ & 0x0F) << 12;
+      cp |= (uint32_t)(*p++ & 0x3F) << 6;
+      cp |= (uint32_t)(*p++ & 0x3F);
+    } else {
+      p++;  // 4-byte or invalid — skip
+      continue;
+    }
+    cps[n++] = cp;
+  }
+
+  // 2. Reverse the whole sequence.
+  for (int i = 0, j = n - 1; i < j; i++, j--) {
+    uint32_t t = cps[i]; cps[i] = cps[j]; cps[j] = t;
+  }
+
+  // 3. Re-reverse LTR-strong runs (numbers + Latin) so they read naturally.
+  int i = 0;
+  while (i < n) {
+    if (isLtrStrong(cps[i])) {
+      int j = i;
+      while (j < n && isLtrStrong(cps[j])) j++;
+      for (int a = i, b = j - 1; a < b; a++, b--) {
+        uint32_t t = cps[a]; cps[a] = cps[b]; cps[b] = t;
+      }
+      i = j;
+    } else {
+      i++;
+    }
+  }
+
+  // 4. Codepoints -> UTF-8.
+  String out;
+  out.reserve(n * 3);
+  for (int k = 0; k < n; k++) {
+    uint32_t cp = cps[k];
+    if (cp < 0x80) {
+      out += (char)cp;
+    } else if (cp < 0x800) {
+      out += (char)(0xC0 | (cp >> 6));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else {
+      out += (char)(0xE0 | (cp >> 12));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    }
+  }
+  return out;
+}
+
+// Bottom status strip — Hebrew-capable text on the right (RTL aligned),
+// star icon + count on the left. Text rendered via u8g2's Hebrew unifont
+// so כמה זה 5 כפול 8? displays correctly; the star count uses the
+// built-in ASCII font 4 since it's just digits.
+// Takes snapshots so the render isn't racing with Pip::setStrip().
+void drawStrip(const char* textSnap, int starsSnap) {
   tft.fillRect(0, 240, 240, 80, SCREEN_BG);
   tft.drawFastHLine(0, 242, 240, GLOWD);
-  tft.setTextColor(WHT, SCREEN_BG);
-  tft.setTextDatum(ML_DATUM);
-  tft.drawString(stripText, 16, 280, 4);
-  if (stripStars >= 0) {
+
+  // ---- stars + count, left side (less prominent badge in Hebrew layout) ----
+  int leftCursor = 16;
+  if (starsSnap >= 0) {
+    fillStarTFT(22, 282, 10, GOLD);
+    char buf[8]; snprintf(buf, sizeof(buf), "%d", starsSnap);
     tft.setTextColor(GOLD, SCREEN_BG);
-    tft.setTextDatum(MR_DATUM);
-    char buf[8]; snprintf(buf, sizeof(buf), "* %d", stripStars);
-    tft.drawString(buf, 224, 280, 4);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString(buf, 38, 282, 4);
+    leftCursor = 38 + tft.textWidth(buf, 4) + 8;
+  }
+
+  // ---- question text, right side, bidi-reordered ----
+  if (textSnap[0] != '\0') {
+    String visual = bidiToVisual(textSnap);
+    u8f.setFont(u8g2_font_unifont_t_hebrew);
+    u8f.setForegroundColor(WHT);
+    u8f.setBackgroundColor(SCREEN_BG);
+    int textW = u8f.getUTF8Width(visual.c_str());
+    int x = 240 - 16 - textW;       // right-align with 16 px right pad
+    if (x < leftCursor) x = leftCursor;
+    u8f.setCursor(x, 290);          // baseline ~16 px above strip bottom
+    u8f.print(visual);
+  }
+}
+
+// Background render task — drives the face at ~30 fps independently of the
+// main loop. This is what makes Pip responsive even when the partner's
+// main code is blocked on HTTPS, STT, audio playback, or recording.
+void faceTask(void*) {
+  for (;;) {
+    drawFace(millis());
+
+    // Strip: snapshot inside critical section, render outside.
+    bool render = false;
+    char textSnap[64];
+    int  starsSnap = -1;
+    portENTER_CRITICAL(&stripMux);
+    if (stripDirty) {
+      memcpy(textSnap, stripText, sizeof(textSnap));
+      starsSnap = stripStars;
+      stripDirty = false;
+      render = true;
+    }
+    portEXIT_CRITICAL(&stripMux);
+    if (render) drawStrip(textSnap, starsSnap);
+
+    vTaskDelay(pdMS_TO_TICKS(33));    // ~30 fps; yields the CPU
   }
 }
 
@@ -262,23 +517,33 @@ bool begin() {
     tft.drawString("Sprite alloc failed - enable PSRAM", 6, 6, 2);
     return false;
   }
-  // Paint one frame immediately so the screen isn't blank between begin()
-  // and the first tick().
+
+  // u8g2 wrapper — used by the bottom strip for Hebrew/Unicode rendering.
+  // Mode 1 = transparent background per glyph (we paint the strip's solid
+  // background separately in drawStrip()).
+  u8f.begin(tft);
+  u8f.setFontMode(1);
+  u8f.setFontDirection(0);
+
+  // Paint one frame synchronously so the screen isn't blank between
+  // begin() returning and the render task's first tick.
   drawFace(millis());
-  lastFrame = millis();
+
+  // Spawn the background render task on Core 1 (where Arduino's main loop
+  // lives — WiFi/network are on Core 0, so the face stays smooth even
+  // during network operations because FreeRTOS preempts blocked tasks).
+  // Low priority (1) so it never starves real work.
+  if (faceTaskHandle == nullptr) {
+    xTaskCreatePinnedToCore(
+      faceTask, "PipFace", 4096, nullptr, 1, &faceTaskHandle, 1);
+  }
   return true;
 }
 
 void tick() {
-  uint32_t now = millis();
-  if (now - lastFrame >= 33) {        // ~30 fps
-    drawFace(now);
-    lastFrame = now;
-  }
-  if (stripDirty) {
-    drawStrip();
-    stripDirty = false;
-  }
+  // No-op: the face renders on its own FreeRTOS task spawned in begin().
+  // Kept in the API so existing main loops that call Pip::tick() still
+  // compile and don't need editing.
 }
 
 void setEmotion(const char* label) {
@@ -303,12 +568,14 @@ void setDeviceStatus(const char* status, int mood) {
 
 void setStrip(const char* questionOrLabel, int stars) {
   const char* incoming = questionOrLabel ? questionOrLabel : "";
+  portENTER_CRITICAL(&stripMux);
   if (strcmp(stripText, incoming) != 0 || stripStars != stars) {
     strncpy(stripText, incoming, sizeof(stripText) - 1);
     stripText[sizeof(stripText) - 1] = '\0';
     stripStars = stars;
     stripDirty = true;
   }
+  portEXIT_CRITICAL(&stripMux);
 }
 
 }  // namespace Pip
