@@ -351,6 +351,24 @@ bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
 #endif
 }
 
+// Capture one spoken answer during the boot identify flow, RE-ASKING until the
+// child actually says something the STT can transcribe. Never returns empty: it
+// keeps re-prompting (with `retryPrompt`) and listening until it has a
+// transcript, so the caller never has to fall back to the generic session just
+// because the child was slow, silent, or didn't trigger the wake word.
+String identifyCaptureAnswer(const char* retryPrompt) {
+  while (true) {
+    if (recordOneAnswerBlocking() && processRecordedAudio()) {
+      faceEmotion("thinking");
+      String t = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
+      if (!t.isEmpty()) return t;
+    }
+    // No trigger, silence, or unintelligible speech — re-ask and listen again.
+    String r = cloudSynthesizeSpeech(retryPrompt);
+    if (!r.isEmpty()) { faceEmotion("encouraging"); speakAudio(r); }
+  }
+}
+
 // Boot-time voice identification flow:
 //   1. Robot asks "מי כאן?" → kid speaks name → identify_child exchange
 //   2. Robot replies "שלום X, מה נלמד היום?" → kid says "חשבון" or "אנגלית"
@@ -373,57 +391,37 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   faceEmotion("speaking");
   speakAudio(welcomeUrl);
 
-  if (!recordOneAnswerBlocking()) return false;
-  if (!processRecordedAudio()) {
-    // Speak a gentle retry prompt then try once more.
+  // Repeat "who's here?" until the cloud matches a real child — never fall back
+  // to a generic session just because the child was slow, silent, or
+  // mis-recognised. The only non-retry exit is needsPairing: the device's UID
+  // isn't linked to any parent, so no spoken name can ever match and looping
+  // would trap the child forever.
 #if USE_WAKE_WORD
-    String retryUrl = cloudSynthesizeSpeech("לא שמעתי. תגיד \"היי פיפ\" ואז את השם שלך שוב.");
+  const char* nameRetry = "לא שמעתי. תגיד \"היי פיפ\" ואז את השם שלך שוב.";
 #else
-    String retryUrl = cloudSynthesizeSpeech("לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.");
+  const char* nameRetry = "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.";
 #endif
-    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
-    if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
-  }
-  faceEmotion("thinking");
-  String nameTranscript = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
-  if (nameTranscript.isEmpty()) {
-    Serial.println("[Identify] empty name transcript.");
-    return false;
-  }
-
-  String childExchange = firestorePostIdentifyChild(g_sessionId, nameTranscript);
-  if (childExchange.isEmpty()) return false;
-
-  // Poll the cloud and retry up to 3 times if the name wasn't recognised.
-  // Without this guard the flow proceeds to subject selection with an empty
-  // g_childId, so the kid's lesson silently gets attributed to nobody.
   IdentifyResult child;
-  for (int attempt = 0; attempt < 3; attempt++) {
-    if (!firestorePollForIdentifyResult(g_sessionId, childExchange, child)) return false;
+  while (true) {
+    String nameTranscript = identifyCaptureAnswer(nameRetry);
+
+    String childExchange = firestorePostIdentifyChild(g_sessionId, nameTranscript);
+    if (childExchange.isEmpty() ||
+        !firestorePollForIdentifyResult(g_sessionId, childExchange, child)) {
+      delay(1000);   // transient cloud error — pause, then ask again
+      continue;
+    }
     Serial.printf("[Identify] matched: %s (%s)\n",
                   child.matchedChildName.c_str(), child.matchedChildId.c_str());
-    if (child.matchedChildId.length() > 0) break;
-    // Cloud signals the device isn't paired yet (its anonymous UID isn't in
-    // any children.deviceId). Play the cloud's "ask the parent to pair me"
-    // prompt once and bail to the legacy generic-session fallback — retrying
-    // here would just keep saying "I didn't recognize the name" pointlessly.
+    if (child.matchedChildId.length() > 0) break;            // success
     if (child.needsPairing) {
       if (!child.audioUrl.isEmpty()) { faceEmotion("speaking"); speakAudio(child.audioUrl); }
-      Serial.println("[Identify] device not paired — falling back to legacy path.");
+      Serial.println("[Identify] device not paired — cannot identify; falling back.");
       return false;
     }
-    if (attempt == 2) {
-      Serial.println("[Identify] giving up after 3 unknown-name attempts.");
-      return false;
-    }
-    String retryUrl = cloudSynthesizeSpeech("לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.");
-    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
-    if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
-    faceEmotion("thinking");
-    String again = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
-    if (again.isEmpty()) return false;
-    childExchange = firestorePostIdentifyChild(g_sessionId, again);
-    if (childExchange.isEmpty()) return false;
+    // Name not recognised — re-ask and keep looping.
+    String r = cloudSynthesizeSpeech("לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.");
+    if (!r.isEmpty()) { faceEmotion("encouraging"); speakAudio(r); }
   }
   g_childId = child.matchedChildId;
 
@@ -433,26 +431,26 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
     speakAudio(child.audioUrl);
   }
 
-  if (!recordOneAnswerBlocking()) return false;
-  if (!processRecordedAudio()) {
-    String retryUrl = cloudSynthesizeSpeech("לא שמעתי. חשבון או אנגלית?");
-    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
-    if (!recordOneAnswerBlocking() || !processRecordedAudio()) return false;
-  }
-  faceEmotion("thinking");
-  String subjectTranscript = transcribeAudio(recordBuf, recordBytes, g_idToken, "he-IL");
-  if (subjectTranscript.isEmpty()) {
-    Serial.println("[Identify] empty subject transcript.");
-    return false;
-  }
-
-  String subjectExchange = firestorePostIdentifySubject(g_sessionId, subjectTranscript);
-  if (subjectExchange.isEmpty()) return false;
-
+  // Repeat "math or english?" until the cloud returns a recognised subject
+  // (which also carries the first question). Same rule as the name step: keep
+  // asking rather than dropping into a generic session on a missed answer.
   IdentifyResult subj;
-  if (!firestorePollForIdentifyResult(g_sessionId, subjectExchange, subj)) return false;
+  while (true) {
+    String subjectTranscript = identifyCaptureAnswer("לא שמעתי. חשבון או אנגלית?");
+
+    String subjectExchange = firestorePostIdentifySubject(g_sessionId, subjectTranscript);
+    if (subjectExchange.isEmpty() ||
+        !firestorePollForIdentifyResult(g_sessionId, subjectExchange, subj)) {
+      delay(1000);   // transient cloud error — pause, then ask again
+      continue;
+    }
+    if (subj.subject.length() > 0) break;                    // success
+    // Subject not understood — re-ask and keep looping.
+    String r = cloudSynthesizeSpeech("לא הבנתי. תגיד חשבון או אנגלית?");
+    if (!r.isEmpty()) { faceEmotion("encouraging"); speakAudio(r); }
+  }
   Serial.printf("[Identify] subject: %s\n", subj.subject.c_str());
-  if (subj.subject.length() > 0) g_currentSubject = subj.subject;
+  g_currentSubject  = subj.subject;
   firstQuestionOut  = subj.nextQuestion;
   firstAudioUrlOut  = subj.audioUrl;
   return true;
