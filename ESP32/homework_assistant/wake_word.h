@@ -35,6 +35,21 @@
 #define WAKE_WORD_THRESHOLD 0.80f
 #endif
 
+// ── Input auto-gain ───────────────────────────────────────────────────────────
+// The model was trained on clips normalized to peak ≈0.25–1.0, but this ES8311
+// mic delivers a much quieter signal (peak ~0.01–0.03). Log-mel features are
+// level-sensitive, so without scaling the input the model sees out-of-distribution
+// audio and never fires. Before each inference we scale the 1 s window so its peak
+// reaches WW_TARGET_PEAK — matching training — capped at WW_MAX_GAIN so a silent
+// room's noise floor isn't blown up to speech level (which could false-fire).
+// This is wake-word-only; it does NOT touch the shared codec gain or the STT path.
+#ifndef WW_TARGET_PEAK
+#define WW_TARGET_PEAK 0.60f
+#endif
+#ifndef WW_MAX_GAIN
+#define WW_MAX_GAIN 40.0f
+#endif
+
 // New audio pulled in per poll (samples @16 kHz). 3200 = 200 ms → ~200 ms detect
 // granularity; the model still sees the full 1 s window each time.
 #ifndef WW_HOP
@@ -50,6 +65,7 @@ void faceTick();
 static bool   ww_active = false;
 static int    ww_mic_ch = 0;
 static float* ww_ring = nullptr;   // rolling 1 s window  (WW_CLIP)
+static float* ww_sig  = nullptr;   // gain-normalized copy fed to inference (WW_CLIP)
 static float* ww_feat = nullptr;   // log-mel             (WW_FRAMES*WW_MELS)
 static float* ww_b1 = nullptr;     // conv1 activations
 static float* ww_b2 = nullptr;     // conv2 activations
@@ -63,11 +79,12 @@ inline bool wakeWordBegin(){
   int H2=ww_oh(H1),        W2=ww_oh(W1);
   int H3=ww_oh(H2),        W3=ww_oh(W2);
   ww_ring = (float*)ps_malloc(sizeof(float)*WW_CLIP);
+  ww_sig  = (float*)ps_malloc(sizeof(float)*WW_CLIP);
   ww_feat = (float*)ps_malloc(sizeof(float)*WW_FRAMES*WW_MELS);
   ww_b1   = (float*)ps_malloc(sizeof(float)*H1*W1*WW_C1_OUT);
   ww_b2   = (float*)ps_malloc(sizeof(float)*H2*W2*WW_C2_OUT);
   ww_b3   = (float*)ps_malloc(sizeof(float)*H3*W3*WW_C3_OUT);
-  if(!ww_ring||!ww_feat||!ww_b1||!ww_b2||!ww_b3){
+  if(!ww_ring||!ww_sig||!ww_feat||!ww_b1||!ww_b2||!ww_b3){
     Serial.println("[WakeWord] ❌ PSRAM alloc failed.");
     return false;
   }
@@ -101,6 +118,19 @@ inline void wakeWordStopListening(){
   ww_active=false;
 }
 
+// Scale a 1 s window to the training peak level (WW_TARGET_PEAK), capped at
+// WW_MAX_GAIN. Writes to `out` and never touches the rolling window, so the gain
+// can't compound across polls. Returns the gain applied (handy for logging).
+static float ww_normalize(const float* in, float* out){
+  float peak = 1e-6f;
+  for(int i=0;i<WW_CLIP;i++){ float a = fabsf(in[i]); if(a>peak) peak=a; }
+  float g = WW_TARGET_PEAK / peak;
+  if(g > WW_MAX_GAIN) g = WW_MAX_GAIN;
+  if(g < 1.0f)        g = 1.0f;     // already loud enough — leave as-is, never attenuate
+  for(int i=0;i<WW_CLIP;i++) out[i] = in[i]*g;
+  return g;
+}
+
 // Pull ~WW_HOP ms of new audio, slide the window, run one inference.
 // Returns 1 if "hey pip" detected this poll, 0 if not, -1 if not listening.
 inline int wakeWordPoll(){
@@ -118,8 +148,9 @@ inline int wakeWordPoll(){
     faceTick();
   }
 
+  ww_normalize(ww_ring, ww_sig);                            // match training input level
   float prob[WW_NCLASS];
-  ww_infer(ww_ring, ww_feat, ww_b1, ww_b2, ww_b3, prob);   // prob[1] = "hey pip"
+  ww_infer(ww_sig, ww_feat, ww_b1, ww_b2, ww_b3, prob);     // prob[1] = "hey pip"
   if(prob[1] >= WAKE_WORD_THRESHOLD){
     Serial.printf("[WakeWord] 'hey pip' %.2f  ✓\n", (double)prob[1]);
     return 1;
@@ -143,6 +174,7 @@ inline void wakeWordRunTestMode(){
   Serial.printf ("Threshold = %.2f. Say \"hey pip\" and watch 'score'/'max'.\n",
                  (double)WAKE_WORD_THRESHOLD);
   Serial.println("  rms/peak ~0 while you speak   -> mic/I2S problem (no audio to the model)");
+  Serial.println("  gain = auto-boost applied to reach the model's training level (caps at 40x)");
   Serial.println("  score spikes but < threshold  -> lower WAKE_WORD_THRESHOLD just under 'max'");
   Serial.println("  score never moves at all      -> model/feature problem");
   Serial.println("This loop never exits; reflash with WW_TEST_MODE 0 for normal use.\n");
@@ -171,12 +203,13 @@ inline void wakeWordRunTestMode(){
       faceTick();
     }
     float rms = sqrtf(sumSq/(float)WW_HOP);
+    float gain = ww_normalize(ww_ring, ww_sig);   // same auto-gain as live detection
     float prob[WW_NCLASS];
-    ww_infer(ww_ring, ww_feat, ww_b1, ww_b2, ww_b3, prob);
+    ww_infer(ww_sig, ww_feat, ww_b1, ww_b2, ww_b3, prob);
     float score = prob[1];
     if(score > maxScore) maxScore = score;
-    Serial.printf("[WWTEST] ch=%d  rms=%.4f  peak=%.3f  score=%.3f  max=%.3f%s\n",
-                  ww_mic_ch, (double)rms, (double)peak,
+    Serial.printf("[WWTEST] ch=%d  rms=%.4f  peak=%.3f  gain=%4.1fx  score=%.3f  max=%.3f%s\n",
+                  ww_mic_ch, (double)rms, (double)peak, (double)gain,
                   (double)score, (double)maxScore,
                   score >= WAKE_WORD_THRESHOLD ? "   <<< WOULD FIRE" : "");
   }
