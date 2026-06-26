@@ -449,11 +449,25 @@ void drawStrip(const char* textSnap, int starsSnap) {
     u8f.setFont(u8g2_font_unifont_t_hebrew);
     u8f.setForegroundColor(WHT);
     u8f.setBackgroundColor(SCREEN_BG);
+    const int avail = 240 - 16 - leftCursor;   // px available for the text
     int textW = u8f.getUTF8Width(visual.c_str());
-    int x = 240 - 16 - textW;       // right-align with 16 px right pad
-    if (x < leftCursor) x = leftCursor;
-    u8f.setCursor(x, 290);          // baseline ~16 px above strip bottom
-    u8f.print(visual);
+    if (textW > avail) {
+      // Too wide (English questions are far wider than Hebrew/digits in this
+      // font): trim whole codepoints off the end until it fits, add an
+      // ellipsis, and LEFT-align so it never runs off the right edge. The
+      // full question is still spoken aloud.
+      while (visual.length() > 0 &&
+             u8f.getUTF8Width((visual + "...").c_str()) > avail) {
+        int i = visual.length() - 1;           // drop one whole UTF-8 codepoint
+        while (i > 0 && ((uint8_t)visual[i] & 0xC0) == 0x80) i--;
+        visual.remove(i);
+      }
+      visual += "...";
+      u8f.setCursor(leftCursor, 290);
+    } else {
+      u8f.setCursor(240 - 16 - textW, 290);    // right-align, 16 px right pad
+    }
+    u8f.print(visual);                          // baseline ~16 px above bottom
   }
 }
 
