@@ -439,6 +439,7 @@ struct TurnResult {
   String audioUrl;         // WAV of (feedback + next question)
   bool   shouldTakeBreak = false;
   bool   isCorrect       = false;
+  bool   sessionEnded    = false;  // backend signals explicit session end (exit intent / continue declined)
 };
 
 // ── Poll the exchange until the Cloud Function finishes the turn ──────────────
@@ -480,6 +481,7 @@ bool firestorePollForTurnResult(const String& sessionId,
         : resp["fields"]["audioUrl"]["stringValue"].as<String>();
       out.shouldTakeBreak= resp["fields"]["shouldTakeBreak"]["booleanValue"].as<bool>();
       out.isCorrect      = resp["fields"]["isCorrect"]["booleanValue"].as<bool>();
+      out.sessionEnded   = resp["fields"]["sessionEnded"]["booleanValue"].as<bool>();
       return true;
     }
     if (status == "error") {
@@ -487,7 +489,7 @@ bool firestorePollForTurnResult(const String& sessionId,
                      resp["fields"]["error"]["stringValue"].as<String>());
       return false;
     }
-    delay(2000);
+    delay(500);
   }
   Serial.println("[Firestore] Timed out waiting for turn result.");
   return false;
@@ -608,7 +610,7 @@ bool firestorePollForIdentifyResult(const String& sessionId,
                      resp["fields"]["error"]["stringValue"].as<String>());
       return false;
     }
-    delay(1500);
+    delay(500);
   }
   Serial.println("[Firestore] Timed out waiting for identify result.");
   return false;

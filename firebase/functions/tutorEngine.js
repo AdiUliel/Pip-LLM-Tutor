@@ -321,16 +321,10 @@ async function processLearningTurn({
 
   const childAnswer = exchangeData.childAnswer || exchangeData.childAnswerTranscript || exchangeData.question || "";
 
-  // ── Exit intent ─────────────────────────────────────────────────────────────
-  if (detectExitIntent(childAnswer)) {
-    const childName = child?.name || "";
-    const farewellText = childName
-      ? `כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
-      : `כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
-
-    const audioUrl = synthesize ? await synthesize(farewellText, `${exchangeId}_farewell`) : "";
+  // ── Shared session-end helper ─────────────────────────────────────────────────
+  async function endSession(farewellText, label) {
+    const audioUrl = synthesize ? await synthesize(farewellText, `${exchangeId}_${label}`) : "";
     const now = FieldValue.serverTimestamp();
-
     await db.runTransaction(async (tx) => {
       tx.update(exchangeRef, {
         status: "done",
@@ -342,9 +336,43 @@ async function processLearningTurn({
       });
       tx.set(sessionRef, { status: "ended", endedAt: now, lastActivity: now }, { merge: true });
     });
-
     return { sessionEnded: true, spokenFeedback: farewellText, audioData: audioUrl };
   }
+
+  // ── Continue-prompt response ──────────────────────────────────────────────────
+  // When the previous turn injected "רוצה להמשיך?" as the next question and set
+  // askToContinue:true, the child's response arrives here. "לא" / exit phrases →
+  // end session; anything else (including "כן") → clear flag and continue normally.
+  if (session.askToContinue === true) {
+    const wantsToStop = detectExitIntent(childAnswer) ||
+      /(^|\s)לא(\s|$)/.test(childAnswer) || /\bno\b/i.test(childAnswer);
+    if (wantsToStop) {
+      const childName = child?.name || "";
+      const farewellText = childName
+        ? `כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
+        : `כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+      return endSession(farewellText, "continue_no");
+    }
+    // Child said "כן" — clear the flag and fall through to normal processing
+    // (we'll re-generate the next question as if it were a normal correct turn).
+    await sessionRef.set({ askToContinue: false }, { merge: true });
+  }
+
+  // ── Exit intent ─────────────────────────────────────────────────────────────
+  if (detectExitIntent(childAnswer)) {
+    const childName = child?.name || "";
+    const farewellText = childName
+      ? `כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
+      : `כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+    return endSession(farewellText, "farewell");
+  }
+
+  // ── 50-minute session auto-end ────────────────────────────────────────────────
+  // Never cut a turn mid-flight; instead flag the end so it happens after this
+  // answer's feedback is played and the child hears a natural farewell.
+  const sessionStartMs = session.startedAt?.toMillis?.() ?? 0;
+  const sessionAgeMin = sessionStartMs > 0 ? (Date.now() - sessionStartMs) / 60000 : 0;
+  const shouldAutoEnd = sessionAgeMin >= 50;
 
   const isCorrect = checkAnswer(expectedAnswer, childAnswer);
   const previousWrong = Number(session.consecutiveWrong || 0);
@@ -376,75 +404,109 @@ async function processLearningTurn({
     streakCorrect,
   });
 
-  let feedback = deterministic;
-  try {
-    const recentQuestions = await readRecentQuestions(db, sessionId, 5);
-    const llm = await llmFeedback(ai, {
-      child: {
-        age: child?.age || 8,
-        gender: child?.gender || "girl",
-        name: child?.name || "",
-      },
-      session: {
-        subject: session.subject || "math",
-        currentDifficulty,
-        nextDifficulty,
-        consecutiveCorrect: streakCorrect,
-        consecutiveWrong: streakWrong,
-      },
-      turn: {
-        currentQuestion,
-        expectedAnswer,
-        childAnswer,
-        isCorrect,
-      },
-      feedbackMode,
-      wrongAttemptsOnCurrent: wrongOnCurrent,
-      recentQuestions: recentQuestions.map((q) => ({
-        prompt: q.prompt,
-        expectedAnswer: q.expectedAnswer,
-        correct: q.correct,
-      })),
-    }, model, safetySettings);
-    if (llm && typeof llm.spokenFeedback === "string") {
-      feedback = {
-        spokenFeedback: llm.spokenFeedback.slice(0, 500),
-        emotion: ["happy", "neutral", "encouraging", "concerned", "celebrating"].includes(llm.emotion)
-          ? llm.emotion
-          : deterministic.emotion,
-        shouldTakeBreak: Boolean(llm.shouldTakeBreak) || deterministic.shouldTakeBreak,
-      };
-    }
-  } catch (err) {
-    console.warn("LLM feedback failed, using deterministic fallback", err.message);
-  }
+  // Skip LLM when deterministic feedback is sufficient:
+  //   • Simple correct answer (no streak) → "כל הכבוד" is enough, no LLM needed
+  //   • Streak ≥3 correct → celebrate mode, deterministic already handles it well
+  // LLM IS called when it adds real value:
+  //   • First wrong attempt (hint mode) — needs a personalised, question-specific hint
+  //   • Second wrong attempt (answer reveal) — needs a clear explanation
+  //   • Child is struggling (streakWrong ≥ 2) — needs an encouraging, adaptive response
+  const needsLLM = !isCorrect || streakCorrect >= 3;
 
   const subject = session.subject || "math";
   const topics = subjectTopicsFromChild(child || {}, subject);
 
-  // In HINT mode we DON'T pick a new question — the kid gets a second
-  // try at the current one. In CORRECT or ANSWER mode we advance.
-  const nextQuestion = advancesToNextQuestion
-    ? ((await fetchMaterialQuestion(db, sessionId, session, child, subject)) ||
-       generateQuestion({ subject, age: child?.age || 8, difficulty: nextDifficulty, topics }))
-    : {
+  // Run LLM feedback and next-question fetch IN PARALLEL — they are independent.
+  // LLM is only called when it adds real value (needsLLM gate above).
+  const nextQuestionPromise = advancesToNextQuestion
+    ? fetchMaterialQuestion(db, sessionId, session, child, subject)
+        .then((mat) => mat || generateQuestion({ subject, age: child?.age || 8, difficulty: nextDifficulty, topics }))
+    : Promise.resolve({
         subject,
         prompt: currentQuestion,
         expectedAnswer,
         topic: session.currentTopic || subject,
         difficulty: currentDifficulty,
         answerVariants: session.currentAnswerVariants || [],
-      };
+      });
+
+  let feedback = deterministic;
+  if (needsLLM) {
+    const llmPromise = readRecentQuestions(db, sessionId, 5).then((recentQuestions) =>
+      llmFeedback(ai, {
+        child: {
+          age: child?.age || 8,
+          gender: child?.gender || "girl",
+          name: child?.name || "",
+        },
+        session: {
+          subject,
+          currentDifficulty,
+          nextDifficulty,
+          consecutiveCorrect: streakCorrect,
+          consecutiveWrong: streakWrong,
+        },
+        turn: { currentQuestion, expectedAnswer, childAnswer, isCorrect },
+        feedbackMode,
+        wrongAttemptsOnCurrent: wrongOnCurrent,
+        recentQuestions: recentQuestions.map((q) => ({
+          prompt: q.prompt,
+          expectedAnswer: q.expectedAnswer,
+          correct: q.correct,
+        })),
+      }, model, safetySettings)
+    );
+
+    try {
+      const llm = await llmPromise;
+      if (llm && typeof llm.spokenFeedback === "string") {
+        feedback = {
+          spokenFeedback: llm.spokenFeedback.slice(0, 500),
+          emotion: ["happy", "neutral", "encouraging", "concerned", "celebrating"].includes(llm.emotion)
+            ? llm.emotion
+            : deterministic.emotion,
+          shouldTakeBreak: Boolean(llm.shouldTakeBreak) || deterministic.shouldTakeBreak,
+        };
+      }
+    } catch (err) {
+      console.warn("LLM feedback failed, using deterministic fallback", err.message);
+    }
+  } else {
+    console.log("[LLM] skipped — simple correct answer, deterministic feedback used");
+  }
+
+  const nextQuestion = await nextQuestionPromise;
 
   const mood = moodFromEmotion(feedback.emotion);
   const now = FieldValue.serverTimestamp();
 
+  // ── 50-min auto-end: replace next question with farewell ─────────────────────
+  if (shouldAutoEnd && advancesToNextQuestion) {
+    const childName = child?.name || "";
+    const farewellText = feedback.spokenFeedback.trim() + " " +
+      (childName
+        ? `כל הכבוד ${childName}! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`
+        : `כל הכבוד! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`);
+    return endSession(farewellText, "auto_end");
+  }
+
+  // ── Continue-check every 4 questions starting from Q7 ────────────────────────
+  // Trigger AFTER the Nth advancing answer so the child always hears the feedback
+  // for their last answer before being asked to continue.
+  const newQuestionsAsked = (session.questionsAsked || 0) + (advancesToNextQuestion ? 1 : 0);
+  const shouldAskToContinue = advancesToNextQuestion &&
+    newQuestionsAsked >= 7 &&
+    (newQuestionsAsked - 7) % 4 === 0;
+
   // Build the spoken utterance. In hint mode the feedback already contains
   // a "try again?" prompt — don't append the question again to avoid the
   // robot saying it twice in a row.
+  const continuePromptText = "רוצה להמשיך לתרגל עוד קצת? תגיד כן או לא.";
   const spokenText = isHintMode
     ? feedback.spokenFeedback.trim()
-    : `${feedback.spokenFeedback} ${nextQuestion.prompt}`.trim();
+    : shouldAskToContinue
+      ? `${feedback.spokenFeedback} ${continuePromptText}`.trim()
+      : `${feedback.spokenFeedback} ${nextQuestion.prompt}`.trim();
   let audioUrl = "";
   if (synthesize) {
     audioUrl = await synthesize(spokenText, exchangeId);
@@ -519,6 +581,11 @@ async function processLearningTurn({
         consecutiveWrong: streakWrong,
         wrongAttemptsOnCurrent: nextWrongOnCurrent,
         moodSummary: mood,
+        // Set flag so the next turn knows to interpret the child's response as yes/no.
+        askToContinue: shouldAskToContinue ? true : false,
+        // When asking to continue, the "current question" stays as the continue prompt
+        // so the ESP32 face strip shows something sensible.
+        ...(shouldAskToContinue && { currentQuestion: continuePromptText }),
       },
       { merge: true }
     );

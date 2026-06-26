@@ -243,7 +243,7 @@ bool processRecordedAudio() {
     for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
     float rms = sqrt((float)(sumSq / (int64_t)n));
     Serial.printf("[Audio] mono RMS: %.0f\n", rms);
-    if (rms < 100) {
+    if (rms < 250) {
       Serial.println("[Audio] near-silence; speak closer.");
       return false;
     }
@@ -613,26 +613,6 @@ void backToListening() {
 #endif
 }
 
-// A capture didn't yield a usable answer (empty STT or near-silence). Re-speak
-// the CURRENT question so the child knows what to answer — not just "try again"
-// — then re-arm listening so the device never goes silently "stuck". Wake-word
-// mode also reminds them to say "היי פיפ" first.
-void repromptAfterMiss() {
-  String q = g_currentQuestion;
-  q.trim();
-#if USE_WAKE_WORD
-  const char* tail = "תגיד \"היי פיפ\" ותענה שוב.";
-#else
-  const char* tail = "נסה לענות שוב.";
-#endif
-  String msg = q.length() > 0
-      ? String("לא שמעתי אותך. ") + q + " " + tail
-      : String("לא שמעתי אותך. ") + tail;
-  String url = cloudSynthesizeSpeech(msg);
-  if (!url.isEmpty()) { faceEmotion("encouraging"); speakAudio(url); }
-  backToListening();
-}
-
 // Process whatever is in recordBuf (stereo PCM, recordBytes long): strip to the
 // mic channel, reject silence, run STT, post the learning turn, speak feedback +
 // next question, then go back to listening. Shared by the wake-word path and the
@@ -675,9 +655,11 @@ void processCapturedAnswer() {
     for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
     float rms = sqrt((float)(sumSq / (int64_t)n));
     Serial.printf("[Main] Answer RMS: %.0f\n", rms);
-    if (rms < 100) {
+    if (rms < 250) {
       Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
-      repromptAfterMiss();
+      String retryUrl = cloudSynthesizeSpeech("לא שמעתי, תנסה שוב.");
+      if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
+      backToListening();
       return;
     }
   }
@@ -690,8 +672,11 @@ void processCapturedAnswer() {
   const char* sttLang = g_currentSubject.equalsIgnoreCase("english") ? "en-US" : "he-IL";
   String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
   if (answer.isEmpty()) {
-    Serial.println("[Main] STT returned empty transcript.");
-    repromptAfterMiss();
+    Serial.println("[Main] STT returned empty transcript — asking child to repeat.");
+    // Play a short retry prompt so the child knows to speak again.
+    String retryUrl = cloudSynthesizeSpeech("לא שמעתי, תנסה שוב.");
+    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
+    backToListening();
     return;
   }
   Serial.println("[Main] Child answered: " + answer);
@@ -719,6 +704,16 @@ void processCapturedAnswer() {
 
   state = SPEAKING;
   speakAudio(turn.audioUrl);          // installs its own I2S; releases it when done
+
+  // Session ended explicitly (exit intent / continue declined / 50-min limit).
+  if (turn.sessionEnded) {
+    Serial.println("[Main] Session ended by child or time limit. Restarting in 3s...");
+    faceStatus("idle");
+    firestoreWriteDeviceState("idle");
+    delay(3000);
+    ESP.restart();   // fresh boot → new session + re-identification
+    return;
+  }
 
   // The next question is now current.
   g_currentQuestion = turn.nextQuestion;

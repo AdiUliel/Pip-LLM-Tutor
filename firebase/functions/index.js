@@ -53,6 +53,7 @@ const { createInitialQuestion, processLearningTurn } = require("./tutorEngine");
 const {
   notifyOnSessionStarted,
   monitorTutor,
+  sendSessionEndedNow,
 } = require("./notifications");
 exports.notifyOnSessionStarted = notifyOnSessionStarted;
 exports.monitorTutor = monitorTutor;
@@ -173,7 +174,7 @@ async function synthesizeAudio(text, fileId) {
         input: { text: speech },
         voice: { languageCode: "he-IL", name: "he-IL-Standard-A" },
         audioConfig: {
-          audioEncoding:   "LINEAR16",
+          audioEncoding:   "MP3",
           sampleRateHertz: 16000,
         },
       }),
@@ -189,9 +190,9 @@ async function synthesizeAudio(text, fileId) {
   const buf = Buffer.from(audioContent, "base64");
 
   const bucket = getStorage().bucket();
-  const objectPath = `tts/${fileId}.wav`;
+  const objectPath = `tts/${fileId}.mp3`;
   const file = bucket.file(objectPath);
-  await file.save(buf, { contentType: "audio/wav", resumable: false });
+  await file.save(buf, { contentType: "audio/mpeg", resumable: false });
   await file.makePublic();
 
   const url = `https://storage.googleapis.com/${bucket.name}/${objectPath}`;
@@ -493,7 +494,7 @@ exports.onSessionCreated = onDocumentCreated(
 // Trigger: a new exchange was created → process it.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.answerQuestion = onDocumentCreated(
-  "sessions/{sessionId}/exchanges/{exchangeId}",
+  { document: "sessions/{sessionId}/exchanges/{exchangeId}", minInstances: 1 },
   async (event) => {
     const { sessionId, exchangeId } = event.params;
     const snap = event.data;
@@ -540,6 +541,15 @@ exports.answerQuestion = onDocumentCreated(
           exchangeData: data,
         });
         console.log(`[${sessionId}/${exchangeId}] learning turn done`, result);
+        // Immediately notify parent when the child explicitly ends the session
+        // (exit intent, continue declined, or 50-min limit). Don't wait for
+        // monitorTutor which runs once per minute.
+        if (result?.sessionEnded) {
+          const sessionSnap = await db.collection("sessions").doc(sessionId).get();
+          if (sessionSnap.exists) {
+            await sendSessionEndedNow(db, sessionId, sessionSnap.data());
+          }
+        }
       } else if (data.question) {
         await answerFreeTextQuestion(sessionId, exchangeId, data);
         console.log(`[${sessionId}/${exchangeId}] free-text helper answer done`);

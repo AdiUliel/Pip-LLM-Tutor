@@ -102,6 +102,34 @@ async function resolveParentId(db, sessionData) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Exported helper — immediate session-end notification (called directly from
+// answerQuestion when the child explicitly ends the session, rather than
+// waiting for the monitorTutor scheduler which runs once per minute).
+// ──────────────────────────────────────────────────────────────────────────────
+async function sendSessionEndedNow(db, sessionId, sessionData) {
+  try {
+    const parentId = await resolveParentId(db, sessionData);
+    if (!parentId) return;
+    const child = await fetchChild(db, sessionData.childId);
+    const name = child?.name || "הילד";
+    const verb = verbFinishedFor(child?.gender);
+    const subj = subjectLabel(sessionData.subject);
+    const stars = Number.isFinite(sessionData.starsEarned) ? sessionData.starsEarned : 0;
+    const accuracy = sessionData.questionsAsked > 0
+      ? Math.round((sessionData.correctCount / sessionData.questionsAsked) * 100)
+      : null;
+    const parts = [`מקצוע: ${subj}`];
+    if (accuracy !== null) parts.push(`${accuracy}% דיוק`);
+    if (stars > 0) parts.push(`${stars}★`);
+    await sendToParent(db, parentId, `${name} ${verb} את השיעור`, parts.join(" · "),
+      { type: "session.ended", sessionId, childId: sessionData.childId || "" });
+  } catch (err) {
+    console.warn("[notify] sendSessionEndedNow failed:", err.message);
+  }
+}
+exports.sendSessionEndedNow = sendSessionEndedNow;
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Trigger 1 — session started
 // ──────────────────────────────────────────────────────────────────────────────
 
