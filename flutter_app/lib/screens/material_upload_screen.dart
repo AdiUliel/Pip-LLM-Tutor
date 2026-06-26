@@ -76,7 +76,10 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
   // ─────────────────────────── LIST tab ───────────────────────────
 
   Widget _list() {
-    final child = _child;
+    // Watch (not read) so the list rebuilds once the active child finishes
+    // loading. As a root bottom-nav tab this screen is built before the child
+    // is ready, and a read() leaves the loading spinner stuck forever.
+    final child = context.watch<ChildProvider>().child;
     final fb = context.read<FirebaseService>();
     return Column(
       children: [
