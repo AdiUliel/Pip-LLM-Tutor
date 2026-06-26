@@ -101,21 +101,34 @@ const HOMEWORK_HELPER_PROMPT = `אתה פיפ — עוזר שיעורי בית �
 function matchChildByName(children, transcript) {
   const t = String(transcript || "").trim().toLowerCase();
   if (!t) return null;
-  // Exact match first, then substring match
   return (
+    // 1. Exact name.
     children.find((c) => String(c.name || "").toLowerCase() === t) ||
+    // 2. Spoken phrase contains the FULL name ("אני נעמה" → "נעמה").
     children.find((c) => {
       const n = String(c.name || "").toLowerCase();
-      return n.includes(t) || t.includes(n);
+      return n.length >= 2 && t.includes(n);
+    }) ||
+    // 3. Near-complete capture: transcript is a prefix that's almost the whole
+    //    name (STT dropped the last letter). NOT any short fragment — that's
+    //    how "מה" wrongly matched "נעמה" (n.includes(t)).
+    children.find((c) => {
+      const n = String(c.name || "").toLowerCase();
+      return n.length >= 3 && n.startsWith(t) && t.length >= n.length - 1;
     }) ||
     null
   );
 }
 
+// Returns "english" | "math" | null. null means neither subject was clearly
+// said, so the caller should re-ask instead of silently defaulting to math
+// (which made the device start a math lesson regardless of what the kid said).
 function parseSubject(transcript) {
   const t = String(transcript || "").toLowerCase();
   if (t.includes("אנגלית") || t.includes("english") || t.includes("אנגל")) return "english";
-  return "math";
+  if (t.includes("חשבון") || t.includes("חשבן") || t.includes("מתמטיקה") ||
+      t.includes("חשבונ") || t.includes("math") || t.includes("מתמט")) return "math";
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -293,6 +306,19 @@ async function handleIdentifySubject(sessionId, exchangeId, data) {
 
   const transcript = String(data.subjectTranscript || data.childAnswer || "").trim();
   const subject = parseSubject(transcript);
+
+  // Didn't clearly hear "חשבון" or "אנגלית" — re-ask instead of defaulting to
+  // math. The device's identify loop sees subject:"" and prompts the child
+  // again; no question is created yet.
+  if (!subject) {
+    console.log(`[${sessionId}/${exchangeId}] identify_subject unrecognised: "${transcript}" — re-asking`);
+    await exchangeRef.update({
+      status: "done",
+      subject: "",
+      answeredAt: FieldValue.serverTimestamp(),
+    });
+    return;
+  }
 
   let child = null;
   if (session.childId) {
