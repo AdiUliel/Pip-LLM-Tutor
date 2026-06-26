@@ -26,7 +26,9 @@ class TrendsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final child = context.watch<ChildProvider>().child;
     final stats = context.watch<StatsProvider>();
-    final sessions = stats.sessions.reversed.toList(); // oldest → newest
+    // Most recent 14 sessions, oldest→newest — keeps the time-series charts
+    // readable instead of cramming the entire history into one frame.
+    final sessions = stats.sessions.take(14).toList().reversed.toList();
     final content = Column(
           children: [
             if (!embedded)
@@ -57,7 +59,7 @@ class TrendsScreen extends StatelessWidget {
                         const SizedBox(height: 14),
                         _timeCard(context, sessions),
                         const SizedBox(height: 14),
-                        _subjectsCard(context, stats.sessions),
+                        _subjectsCard(context, sessions),
                       ],
                     ),
             ),
@@ -73,7 +75,12 @@ class TrendsScreen extends StatelessWidget {
 
   Widget _accuracyCard(
       BuildContext c, List<Session> oldestFirst, StatsProvider stats) {
-    final avg = (stats.averageAccuracy ?? 0).round();
+    // Average over the shown sessions so the pill matches the chart.
+    final avg = oldestFirst.isEmpty
+        ? 0
+        : (oldestFirst.fold<int>(0, (a, s) => a + s.accuracyPct) /
+                oldestFirst.length)
+            .round();
     return _ChartCard(
       title: 'דיוק לאורך זמן',
       hint: 'אחוז התשובות הנכונות בכל מפגש',
@@ -87,7 +94,7 @@ class TrendsScreen extends StatelessWidget {
         child: _SmoothLineChart(
           values: [for (final s in oldestFirst) s.accuracyPct.toDouble()],
           labels: [for (final s in oldestFirst) _shortDay(s.startedAt)],
-          minY: 40,
+          minY: 0,
           maxY: 100,
           lineColor: AppColors.mint,
         ),
@@ -228,7 +235,7 @@ class TrendsScreen extends StatelessWidget {
     if (total == 0) return const SizedBox.shrink();
     return _ChartCard(
       title: 'מקצועות שתורגלו',
-      hint: '$total מפגשים בשבועיים האחרונים',
+      hint: '$total המפגשים האחרונים',
       child: Column(
         children: [
           _SubjectBar(

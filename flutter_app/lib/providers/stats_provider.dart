@@ -47,7 +47,9 @@ class StatsProvider extends ChangeNotifier {
   void load(String childId, {int limit = 50}) {
     _sub?.cancel();
     _sub = _fb.watchSessions(childId, limit: limit).listen((list) {
-      _sessions = list;
+      // A session where no question was asked isn't a meaningful report —
+      // hide it from the list, charts, and dashboard summary.
+      _sessions = list.where((s) => s.questionsAsked > 0).toList();
       notifyListeners();
     });
   }
