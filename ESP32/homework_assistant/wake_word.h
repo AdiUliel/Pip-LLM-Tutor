@@ -63,7 +63,7 @@
 // scores high on WW_CONSEC polls in a row; stray noise blips don't. Require this
 // many consecutive over-threshold polls before firing.
 #ifndef WW_CONSEC
-#define WW_CONSEC 2
+#define WW_CONSEC 3   // was 2 — demand 3 over-threshold polls in a row to suppress one-off false fires
 #endif
 
 // New audio pulled in per poll (samples @16 kHz). 3200 = 200 ms → ~200 ms detect

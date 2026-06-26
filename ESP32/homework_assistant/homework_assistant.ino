@@ -613,15 +613,22 @@ void backToListening() {
 #endif
 }
 
-// A capture didn't yield a usable answer (empty STT or near-silence). Speak a
-// short cue so the device doesn't just go quiet and feel "stuck", then re-arm
-// listening. Wake-word mode reminds the child to say "היי פיפ" before answering.
+// A capture didn't yield a usable answer (empty STT or near-silence). Re-speak
+// the CURRENT question so the child knows what to answer — not just "try again"
+// — then re-arm listening so the device never goes silently "stuck". Wake-word
+// mode also reminds them to say "היי פיפ" first.
 void repromptAfterMiss() {
+  String q = g_currentQuestion;
+  q.trim();
 #if USE_WAKE_WORD
-  String url = cloudSynthesizeSpeech("לא שמעתי אותך. תגיד \"היי פיפ\" ותענה שוב.");
+  const char* tail = "תגיד \"היי פיפ\" ותענה שוב.";
 #else
-  String url = cloudSynthesizeSpeech("לא שמעתי אותך. נסה לענות שוב.");
+  const char* tail = "נסה לענות שוב.";
 #endif
+  String msg = q.length() > 0
+      ? String("לא שמעתי אותך. ") + q + " " + tail
+      : String("לא שמעתי אותך. ") + tail;
+  String url = cloudSynthesizeSpeech(msg);
   if (!url.isEmpty()) { faceEmotion("encouraging"); speakAudio(url); }
   backToListening();
 }
