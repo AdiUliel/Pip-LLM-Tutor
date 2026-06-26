@@ -613,6 +613,19 @@ void backToListening() {
 #endif
 }
 
+// A capture didn't yield a usable answer (empty STT or near-silence). Speak a
+// short cue so the device doesn't just go quiet and feel "stuck", then re-arm
+// listening. Wake-word mode reminds the child to say "היי פיפ" before answering.
+void repromptAfterMiss() {
+#if USE_WAKE_WORD
+  String url = cloudSynthesizeSpeech("לא שמעתי אותך. תגיד \"היי פיפ\" ותענה שוב.");
+#else
+  String url = cloudSynthesizeSpeech("לא שמעתי אותך. נסה לענות שוב.");
+#endif
+  if (!url.isEmpty()) { faceEmotion("encouraging"); speakAudio(url); }
+  backToListening();
+}
+
 // Process whatever is in recordBuf (stereo PCM, recordBytes long): strip to the
 // mic channel, reject silence, run STT, post the learning turn, speak feedback +
 // next question, then go back to listening. Shared by the wake-word path and the
@@ -657,7 +670,7 @@ void processCapturedAnswer() {
     Serial.printf("[Main] Answer RMS: %.0f\n", rms);
     if (rms < 100) {
       Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
-      backToListening();
+      repromptAfterMiss();
       return;
     }
   }
@@ -671,7 +684,7 @@ void processCapturedAnswer() {
   String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
   if (answer.isEmpty()) {
     Serial.println("[Main] STT returned empty transcript.");
-    backToListening();
+    repromptAfterMiss();
     return;
   }
   Serial.println("[Main] Child answered: " + answer);
