@@ -10,6 +10,7 @@ import '../providers/device_provider.dart';
 import '../theme.dart';
 import '../widgets/dev_chip.dart';
 import '../widgets/p_card.dart';
+import '../widgets/pairing_sheet.dart';
 import '../widgets/robot_face.dart';
 import '../widgets/screen_header.dart';
 
@@ -23,6 +24,7 @@ class DeviceMonitorScreen extends StatefulWidget {
 class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
   bool _starting = false;
   bool _stopping = false;
+  bool _repairing = false;
 
   @override
   Widget build(BuildContext context) {
@@ -175,6 +177,34 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 22),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 2, bottom: 10),
+                    child: Text(
+                      'חיבור התקן',
+                      style:
+                          AppTextStyles.title(context).copyWith(fontSize: 16),
+                    ),
+                  ),
+                  PCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'אם החלפתם את ההתקן הפיזי, או שהמסך מראה קוד שאינו '
+                          'תואם — הקלידו כאן את הקוד החדש.',
+                          style: AppTextStyles.hint(context),
+                        ),
+                        const SizedBox(height: 14),
+                        OutlinedButton(
+                          onPressed: (child == null || _repairing)
+                              ? null
+                              : _repair,
+                          child: Text(_repairing ? 'שומר…' : 'החלפת התקן'),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -182,6 +212,32 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _repair() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final childProv = context.read<ChildProvider>();
+    final cur = childProv.child;
+    if (cur == null) return;
+
+    final newId = await showPairingSheet(context);
+    if (!mounted || newId == null || newId == cur.deviceId) return;
+
+    setState(() => _repairing = true);
+    try {
+      await childProv.save(cur.copyWith(deviceId: newId));
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('ההתקן הוחלף בהצלחה')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('שמירת ההתקן נכשלה: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _repairing = false);
+    }
   }
 
   Future<void> _send({required String action}) async {

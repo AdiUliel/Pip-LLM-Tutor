@@ -19,7 +19,11 @@ import '../widgets/screen_header.dart';
 enum _MaterialTab { list, manual, file }
 
 class MaterialUploadScreen extends StatefulWidget {
-  const MaterialUploadScreen({super.key});
+  const MaterialUploadScreen({super.key, this.isRootTab = false});
+
+  /// True when hosted directly as a bottom-nav tab (no route to pop back to),
+  /// so the list header hides its back chevron.
+  final bool isRootTab;
 
   @override
   State<MaterialUploadScreen> createState() => _MaterialUploadScreenState();
@@ -79,7 +83,8 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
         ScreenHeader(
           title: 'חומרי לימוד',
           subtitle: 'שאלות שההתקן ישתמש בהן',
-          onBack: () => Navigator.of(context).maybePop(),
+          onBack:
+              widget.isRootTab ? null : () => Navigator.of(context).maybePop(),
           right: _AddButton(onTap: () {
             setState(() => _tab = _MaterialTab.manual);
           }),

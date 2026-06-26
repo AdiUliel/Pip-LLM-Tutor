@@ -20,14 +20,13 @@ import '../widgets/pill.dart';
 import '../widgets/robot_face.dart';
 import '../widgets/screen_header.dart';
 import 'child_config_screen.dart';
-import 'material_upload_screen.dart';
 import 'setup_wizard_screen.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key, required this.onNavigateToTab});
 
   /// Called when the user taps a tile that maps to another bottom-nav tab
-  /// (reports, trends, device monitor). The shell handles the actual swap.
+  /// (reports, material, device monitor). The shell handles the actual swap.
   final void Function(int tabIndex) onNavigateToTab;
 
   @override
@@ -100,15 +99,13 @@ class DashboardScreen extends StatelessWidget {
                           builder: (_) => const ChildConfigScreen(),
                         ),
                       ),
-                      onMaterials: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const MaterialUploadScreen(),
-                        ),
-                      ),
+                      onMaterials: () =>
+                          onNavigateToTab(NavTabIndex.material.index),
                       onReports: () =>
                           onNavigateToTab(NavTabIndex.reports.index),
+                      // Trends now lives as a sub-tab inside the Reports hub.
                       onTrends: () =>
-                          onNavigateToTab(NavTabIndex.trends.index),
+                          onNavigateToTab(NavTabIndex.reports.index),
                     ),
                   ],
                 ),
@@ -123,7 +120,7 @@ class DashboardScreen extends StatelessWidget {
 
 /// Stable indices matching the bottom-nav order so callers can pass them
 /// to the shell without coupling to the NavTab enum.
-enum NavTabIndex { dashboard, reports, trends, device, settings }
+enum NavTabIndex { dashboard, reports, material, device, settings }
 
 class _NotificationsBell extends StatelessWidget {
   const _NotificationsBell({required this.onTap, required this.count});

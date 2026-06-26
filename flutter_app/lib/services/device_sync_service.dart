@@ -9,6 +9,11 @@ abstract class DeviceSyncService {
   /// "offline" state when the device hasn't been heard from.
   Stream<DeviceState> watch(String deviceId);
 
+  /// One-shot read of [deviceId]. Returns null if the document does not
+  /// exist. Used by the pairing flow to confirm a freshly-entered code
+  /// resolves to a real, recently-heartbeating device.
+  Future<DeviceState?> tryFetch(String deviceId);
+
   /// Optional remote start/stop. Writes `command` to the device's doc;
   /// the device clears it once it has acted on it.
   /// [command] is one of "start" | "stop" | "none".

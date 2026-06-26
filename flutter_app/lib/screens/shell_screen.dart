@@ -10,9 +10,9 @@ import '../widgets/bottom_nav.dart';
 import '../widgets/offline_banner.dart';
 import 'dashboard_screen.dart';
 import 'device_monitor_screen.dart';
-import 'reports_screen.dart';
+import 'material_upload_screen.dart';
+import 'reports_hub_screen.dart';
 import 'settings_screen.dart';
-import 'trends_screen.dart';
 
 class ShellScreen extends StatefulWidget {
   const ShellScreen({super.key});
@@ -27,7 +27,7 @@ class _ShellScreenState extends State<ShellScreen> {
   static const _tabOrder = [
     NavTab.dashboard,
     NavTab.reports,
-    NavTab.trends,
+    NavTab.material,
     NavTab.device,
     NavTab.settings,
   ];
@@ -40,8 +40,8 @@ class _ShellScreenState extends State<ShellScreen> {
 
     final tabs = <Widget>[
       DashboardScreen(onNavigateToTab: _goTo),
-      const ReportsScreen(),
-      const TrendsScreen(),
+      const ReportsHubScreen(),
+      const MaterialUploadScreen(isRootTab: true),
       const DeviceMonitorScreen(),
       const SettingsScreen(),
     ];

@@ -16,24 +16,26 @@ import '../widgets/pill.dart';
 import '../widgets/screen_header.dart';
 
 class TrendsScreen extends StatelessWidget {
-  const TrendsScreen({super.key});
+  const TrendsScreen({super.key, this.embedded = false});
+
+  /// When true the screen is hosted inside [ReportsHubScreen]'s TabBarView, so
+  /// it renders without its own header/Scaffold (the hub supplies them).
+  final bool embedded;
 
   @override
   Widget build(BuildContext context) {
     final child = context.watch<ChildProvider>().child;
     final stats = context.watch<StatsProvider>();
     final sessions = stats.sessions.reversed.toList(); // oldest → newest
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
+    final content = Column(
           children: [
-            ScreenHeader(
-              title: 'מגמות',
-              subtitle: child == null
-                  ? null
-                  : 'התקדמות ומצב רוח · ${child.name}',
-            ),
+            if (!embedded)
+              ScreenHeader(
+                title: 'מגמות',
+                subtitle: child == null
+                    ? null
+                    : 'התקדמות ומצב רוח · ${child.name}',
+              ),
             Expanded(
               child: sessions.isEmpty
                   ? Center(
@@ -60,8 +62,10 @@ class TrendsScreen extends StatelessWidget {
                     ),
             ),
           ],
-        ),
-      ),
+        );
+    if (embedded) return content;
+    return Scaffold(
+      body: SafeArea(bottom: false, child: content),
     );
   }
 

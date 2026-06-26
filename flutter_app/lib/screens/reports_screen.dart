@@ -17,7 +17,11 @@ import '../widgets/screen_header.dart';
 import 'session_detail_screen.dart';
 
 class ReportsScreen extends StatefulWidget {
-  const ReportsScreen({super.key});
+  const ReportsScreen({super.key, this.embedded = false});
+
+  /// When true the screen is hosted inside [ReportsHubScreen]'s TabBarView, so
+  /// it renders without its own header/Scaffold (the hub supplies them).
+  final bool embedded;
 
   @override
   State<ReportsScreen> createState() => _ReportsScreenState();
@@ -33,17 +37,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final filtered = _filter == null
         ? all
         : all.where((s) => s.subject == _filter).toList();
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
+    final content = Column(
           children: [
-            ScreenHeader(
-              title: 'דוחות',
-              subtitle: child == null
-                  ? null
-                  : 'היסטוריית המפגשים של ${child.name}',
-            ),
+            if (!widget.embedded)
+              ScreenHeader(
+                title: 'דוחות',
+                subtitle: child == null
+                    ? null
+                    : 'היסטוריית המפגשים של ${child.name}',
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
               child: Row(
@@ -73,8 +75,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     ),
             ),
           ],
-        ),
-      ),
+        );
+    if (widget.embedded) return content;
+    return Scaffold(
+      body: SafeArea(bottom: false, child: content),
     );
   }
 

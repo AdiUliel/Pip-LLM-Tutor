@@ -34,6 +34,17 @@ class DeviceSyncServiceReal implements DeviceSyncService {
       });
 
   @override
+  Future<DeviceState?> tryFetch(String deviceId) async {
+    final snap = await _db
+        .collection(AppConstants.colDeviceState)
+        .doc(deviceId)
+        .get();
+    final data = snap.data();
+    if (data == null) return null;
+    return DeviceState.fromMap(deviceId, _hydrate(data));
+  }
+
+  @override
   Future<void> sendCommand(String deviceId, String command) => _db
       .collection(AppConstants.colDeviceState)
       .doc(deviceId)

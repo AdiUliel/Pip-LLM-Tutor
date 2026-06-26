@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-enum NavTab { dashboard, reports, trends, device, settings }
+enum NavTab { dashboard, reports, material, device, settings }
 
 class BottomNav extends StatelessWidget {
   const BottomNav({
@@ -23,7 +23,7 @@ class BottomNav extends StatelessWidget {
   static const _items = <_NavItem>[
     _NavItem(NavTab.dashboard, Icons.home_rounded, 'בית'),
     _NavItem(NavTab.reports,   Icons.description_outlined, 'דוחות'),
-    _NavItem(NavTab.trends,    Icons.trending_up_rounded, 'מגמות'),
+    _NavItem(NavTab.material,  Icons.menu_book_rounded, 'חומר לימוד'),
     _NavItem(NavTab.device,    Icons.devices_other_rounded, 'התקן'),
     _NavItem(NavTab.settings,  Icons.settings_rounded, 'הגדרות'),
   ];
