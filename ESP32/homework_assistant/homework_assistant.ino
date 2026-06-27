@@ -613,6 +613,27 @@ void backToListening() {
 #endif
 }
 
+// A capture didn't yield a usable answer (empty STT or near-silence). Re-speak
+// the CURRENT question so the child knows what to answer — not just a generic
+// "try again" — then re-arm listening so the device never goes silently "stuck".
+// In wake-word mode also remind them to say "היי פיפ" first. The full question
+// is also already shown on the strip via askCurrentQuestion().
+void repromptAfterMiss() {
+  String q = g_currentQuestion;
+  q.trim();
+#if USE_WAKE_WORD
+  const char* tail = "תגיד \"היי פיפ\" ותענה שוב.";
+#else
+  const char* tail = "נסה לענות שוב.";
+#endif
+  String msg = q.length() > 0
+      ? String("לא שמעתי אותך. ") + q + " " + tail
+      : String("לא שמעתי אותך. ") + tail;
+  String url = cloudSynthesizeSpeech(msg);
+  if (!url.isEmpty()) { faceEmotion("encouraging"); speakAudio(url); }
+  backToListening();
+}
+
 // Process whatever is in recordBuf (stereo PCM, recordBytes long): strip to the
 // mic channel, reject silence, run STT, post the learning turn, speak feedback +
 // next question, then go back to listening. Shared by the wake-word path and the
@@ -657,9 +678,7 @@ void processCapturedAnswer() {
     Serial.printf("[Main] Answer RMS: %.0f\n", rms);
     if (rms < 250) {
       Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
-      String retryUrl = cloudSynthesizeSpeech("לא שמעתי, תנסה שוב.");
-      if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
-      backToListening();
+      repromptAfterMiss();   // re-speak the question so the child knows what to answer
       return;
     }
   }
@@ -673,10 +692,7 @@ void processCapturedAnswer() {
   String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
   if (answer.isEmpty()) {
     Serial.println("[Main] STT returned empty transcript — asking child to repeat.");
-    // Play a short retry prompt so the child knows to speak again.
-    String retryUrl = cloudSynthesizeSpeech("לא שמעתי, תנסה שוב.");
-    if (!retryUrl.isEmpty()) { faceEmotion("encouraging"); speakAudio(retryUrl); }
-    backToListening();
+    repromptAfterMiss();   // re-speak the question so the child knows what to answer
     return;
   }
   Serial.println("[Main] Child answered: " + answer);
