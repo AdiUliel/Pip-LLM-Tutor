@@ -23,11 +23,19 @@ import 'child_config_screen.dart';
 import 'setup_wizard_screen.dart';
 
 class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key, required this.onNavigateToTab});
+  const DashboardScreen({
+    super.key,
+    required this.onNavigateToTab,
+    required this.onNavigateToReports,
+  });
 
   /// Called when the user taps a tile that maps to another bottom-nav tab
   /// (reports, material, device monitor). The shell handles the actual swap.
   final void Function(int tabIndex) onNavigateToTab;
+
+  /// Opens the Reports hub on a specific sub-tab (0 = דוחות, 1 = מגמות), rather
+  /// than whatever sub-tab happened to be open last.
+  final void Function(int subTab) onNavigateToReports;
 
   @override
   Widget build(BuildContext context) {
@@ -101,11 +109,10 @@ class DashboardScreen extends StatelessWidget {
                       ),
                       onMaterials: () =>
                           onNavigateToTab(NavTabIndex.material.index),
-                      onReports: () =>
-                          onNavigateToTab(NavTabIndex.reports.index),
-                      // Trends now lives as a sub-tab inside the Reports hub.
-                      onTrends: () =>
-                          onNavigateToTab(NavTabIndex.reports.index),
+                      // Trends lives as a sub-tab inside the Reports hub; each
+                      // shortcut opens its own sub-tab (0 = דוחות, 1 = מגמות).
+                      onReports: () => onNavigateToReports(0),
+                      onTrends: () => onNavigateToReports(1),
                     ),
                   ],
                 ),

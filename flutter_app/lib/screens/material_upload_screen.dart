@@ -15,6 +15,7 @@ import '../services/firebase_service.dart';
 import '../theme.dart';
 import '../widgets/p_card.dart';
 import '../widgets/screen_header.dart';
+import 'material_detail_screen.dart';
 
 enum _MaterialTab { list, manual, file }
 
@@ -85,7 +86,9 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
       children: [
         ScreenHeader(
           title: 'חומרי לימוד',
-          subtitle: 'שאלות שההתקן ישתמש בהן',
+          subtitle: child == null
+              ? 'שאלות שההתקן ישתמש בהן'
+              : 'החומרים של ${child.name}',
           onBack:
               widget.isRootTab ? null : () => Navigator.of(context).maybePop(),
           right: _AddButton(onTap: () {
@@ -121,6 +124,12 @@ class _MaterialUploadScreenState extends State<MaterialUploadScreen> {
                         for (final m in items) ...[
                           _MaterialTile(
                             material: m,
+                            onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    MaterialDetailScreen(material: m),
+                              ),
+                            ),
                             onDelete: () => _confirmDelete(m),
                             onEnabledChanged: (v) => fb.setMaterialEnabled(
                               m.id,
@@ -496,10 +505,12 @@ class _AddButton extends StatelessWidget {
 class _MaterialTile extends StatelessWidget {
   const _MaterialTile({
     required this.material,
+    this.onTap,
     this.onDelete,
     this.onEnabledChanged,
   });
   final MaterialDoc material;
+  final VoidCallback? onTap;
   final VoidCallback? onDelete;
   final ValueChanged<bool>? onEnabledChanged;
 
@@ -517,6 +528,7 @@ class _MaterialTile extends StatelessWidget {
     return Opacity(
       opacity: disabled ? 0.55 : 1,
       child: PCard(
+        onTap: onTap,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,

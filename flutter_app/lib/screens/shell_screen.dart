@@ -24,6 +24,12 @@ class ShellScreen extends StatefulWidget {
 class _ShellScreenState extends State<ShellScreen> {
   int _index = 0;
 
+  // Which Reports sub-tab to show (0 = דוחות, 1 = מגמות) and a request counter
+  // bumped on every dashboard shortcut tap so the hub re-applies it even when
+  // the value is unchanged.
+  int _reportsTab = 0;
+  int _reportsReq = 0;
+
   static const _tabOrder = [
     NavTab.dashboard,
     NavTab.reports,
@@ -34,13 +40,22 @@ class _ShellScreenState extends State<ShellScreen> {
 
   void _goTo(int i) => setState(() => _index = i);
 
+  void _goToReports(int subTab) => setState(() {
+        _index = _tabOrder.indexOf(NavTab.reports);
+        _reportsTab = subTab;
+        _reportsReq++;
+      });
+
   @override
   Widget build(BuildContext context) {
     final offline = !context.watch<DeviceProvider>().isOnline;
 
     final tabs = <Widget>[
-      DashboardScreen(onNavigateToTab: _goTo),
-      const ReportsHubScreen(),
+      DashboardScreen(
+        onNavigateToTab: _goTo,
+        onNavigateToReports: _goToReports,
+      ),
+      ReportsHubScreen(subTab: _reportsTab, request: _reportsReq),
       const MaterialUploadScreen(isRootTab: true),
       const DeviceMonitorScreen(),
       const SettingsScreen(),
@@ -58,7 +73,10 @@ class _ShellScreenState extends State<ShellScreen> {
       bottomNavigationBar: BottomNav(
         active: _tabOrder[_index],
         deviceOffline: offline,
-        onChange: (t) => _goTo(_tabOrder.indexOf(t)),
+        // Tapping the דוחות tab always resets it to the history sub-tab rather
+        // than restoring whatever sub-tab was open last.
+        onChange: (t) =>
+            t == NavTab.reports ? _goToReports(0) : _goTo(_tabOrder.indexOf(t)),
       ),
     );
   }

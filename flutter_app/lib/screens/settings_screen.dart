@@ -78,20 +78,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       });
                     },
                   ),
-                  _Slider(
-                    label: 'הפסקה כל',
-                    value: _breakMin,
-                    min: 3,
-                    max: 15,
-                    step: 1,
-                    unit: 'דק׳',
-                    onChanged: (v) {
-                      setState(() {
-                        _breakMin = v;
-                        _dirty = true;
-                      });
-                    },
-                  ),
                   const SizedBox(height: 8),
                   _section('כללי'),
                   PCard(
