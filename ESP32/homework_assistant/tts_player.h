@@ -22,6 +22,9 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <driver/i2s.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 #include "pins.h"
 
 // ── Configure I2S for playback ────────────────────────────────────────────────
@@ -71,34 +74,47 @@ static void _tts_play_pcm(const mp3d_sample_t* pcm, size_t samples, int channels
 }
 
 // ── Decode MP3 bytes (in PSRAM) and play ─────────────────────────────────────
-void speakFromMp3(const uint8_t* mp3Data, size_t mp3Len) {
-  if (!mp3Data || mp3Len < 4) {
-    Serial.println("[TTS] MP3 buffer too small — skipping.");
+//
+// IMPORTANT: minimp3's decode path is extremely stack-hungry. A single call to
+// mp3dec_decode_frame() puts an ~16 KB mp3dec_scratch_t on the stack, and the
+// mp3dec_ex_t handle is another ~6.7 KB. The Arduino loopTask only has an 8 KB
+// stack, so decoding directly on it overflows the stack and trips the stack
+// canary watchpoint ("Guru Meditation Error ... loopTask"). To avoid this we:
+//   1. keep the big mp3dec_ex_t handle in PSRAM (off the stack), and
+//   2. run the whole decode+play on a dedicated FreeRTOS task with a large
+//      stack, blocking the caller until it finishes.
+static void _tts_decode_and_play(const uint8_t* mp3Data, size_t mp3Len) {
+  // mp3dec_ex_t is ~6.7 KB — keep it off the stack.
+  mp3dec_ex_t* dec = (mp3dec_ex_t*)ps_malloc(sizeof(mp3dec_ex_t));
+  if (!dec) {
+    Serial.println("[TTS] ps_malloc failed for decoder handle.");
     return;
   }
 
-  mp3dec_ex_t dec;
-  if (mp3dec_ex_open_buf(&dec, mp3Data, mp3Len, MP3D_SEEK_TO_SAMPLE) != 0) {
+  if (mp3dec_ex_open_buf(dec, mp3Data, mp3Len, MP3D_SEEK_TO_SAMPLE) != 0) {
     Serial.println("[TTS] minimp3: failed to open MP3 buffer.");
+    free(dec);
     return;
   }
 
-  int sampleRate = dec.info.hz > 0 ? dec.info.hz : SAMPLE_RATE;
-  int channels   = dec.info.channels > 0 ? dec.info.channels : 1;
+  int sampleRate = dec->info.hz > 0 ? dec->info.hz : SAMPLE_RATE;
+  int channels   = dec->info.channels > 0 ? dec->info.channels : 1;
   Serial.printf("[TTS] MP3: %d Hz, %d ch, ~%llu samples\n",
-                sampleRate, channels, (unsigned long long)dec.samples);
+                sampleRate, channels, (unsigned long long)dec->samples);
 
   // Allocate PCM output in PSRAM
-  size_t pcmCap = dec.samples > 0 ? (size_t)dec.samples : (mp3Len * 8);
+  size_t pcmCap = dec->samples > 0 ? (size_t)dec->samples : (mp3Len * 8);
   mp3d_sample_t* pcm = (mp3d_sample_t*)ps_malloc(pcmCap * sizeof(mp3d_sample_t));
   if (!pcm) {
     Serial.println("[TTS] ps_malloc failed for PCM buffer.");
-    mp3dec_ex_close(&dec);
+    mp3dec_ex_close(dec);
+    free(dec);
     return;
   }
 
-  size_t decoded = mp3dec_ex_read(&dec, pcm, pcmCap);
-  mp3dec_ex_close(&dec);
+  size_t decoded = mp3dec_ex_read(dec, pcm, pcmCap);
+  mp3dec_ex_close(dec);
+  free(dec);
   Serial.printf("[TTS] MP3 decoded: %u samples (%u bytes PCM)\n",
                 (unsigned)decoded, (unsigned)(decoded * sizeof(mp3d_sample_t)));
 
@@ -111,6 +127,55 @@ void speakFromMp3(const uint8_t* mp3Data, size_t mp3Len) {
   i2s_driver_uninstall(I2S_PORT);
   digitalWrite(PIN_AUDIO_EN, HIGH);
   Serial.println("[TTS] Playback done.");
+}
+
+// Worker-task plumbing: marshal args + signal completion back to the caller.
+struct _TtsDecodeJob {
+  const uint8_t*    data;
+  size_t            len;
+  SemaphoreHandle_t done;
+};
+
+static void _tts_decode_task(void* arg) {
+  _TtsDecodeJob* job = (_TtsDecodeJob*)arg;
+  _tts_decode_and_play(job->data, job->len);
+  xSemaphoreGive(job->done);
+  vTaskDelete(NULL);  // self-destruct; stack is reclaimed by the idle task
+}
+
+void speakFromMp3(const uint8_t* mp3Data, size_t mp3Len) {
+  if (!mp3Data || mp3Len < 4) {
+    Serial.println("[TTS] MP3 buffer too small — skipping.");
+    return;
+  }
+
+  // Run the decode on a dedicated task with a large stack (the loopTask's 8 KB
+  // is far too small for minimp3). 32 KB comfortably covers the ~16 KB scratch
+  // frame plus call overhead.
+  const uint32_t TTS_TASK_STACK = 32 * 1024;
+  SemaphoreHandle_t done = xSemaphoreCreateBinary();
+  if (!done) {
+    Serial.println("[TTS] failed to create completion semaphore — decoding inline.");
+    _tts_decode_and_play(mp3Data, mp3Len);  // last resort (may overflow stack)
+    return;
+  }
+
+  _TtsDecodeJob job = { mp3Data, mp3Len, done };
+  TaskHandle_t taskHandle = NULL;
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      _tts_decode_task, "tts_decode", TTS_TASK_STACK, &job,
+      tskIDLE_PRIORITY + 1, &taskHandle, APP_CPU_NUM);
+
+  if (ok != pdPASS) {
+    Serial.println("[TTS] failed to spawn decode task — decoding inline.");
+    vSemaphoreDelete(done);
+    _tts_decode_and_play(mp3Data, mp3Len);  // last resort (may overflow stack)
+    return;
+  }
+
+  // Block the caller until playback finishes (job lives on this stack frame).
+  xSemaphoreTake(done, portMAX_DELAY);
+  vSemaphoreDelete(done);
 }
 
 // ── Stream MP3 from URL: download to PSRAM, then decode + play ───────────────
