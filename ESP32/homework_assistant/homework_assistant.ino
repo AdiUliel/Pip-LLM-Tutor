@@ -686,10 +686,17 @@ void processCapturedAnswer() {
   // STT — pick language by the SESSION's subject (read from Firestore after
   // identify_subject), not the compile-time SESSION_SUBJECT. So an English
   // lesson is recognised as English even when flashed with SESSION_SUBJECT="math".
+  // [lat] t0 = child finished recording (entry to processing). All deltas below
+  // are measured against this and against each preceding stage.
+  uint32_t _latT0 = millis();
+
   faceEmotion("thinking");
   faceTick();
   const char* sttLang = g_currentSubject.equalsIgnoreCase("english") ? "en-US" : "he-IL";
+  uint32_t _latPreStt = millis();   // after local pre-processing (mono strip, RMS gate)
   String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
+  uint32_t _latPostStt = millis();
+  Serial.printf("[lat]   B stt=%lu ms\n", (unsigned long)(_latPostStt - _latPreStt));
   if (answer.isEmpty()) {
     Serial.println("[Main] STT returned empty transcript — asking child to repeat.");
     repromptAfterMiss();   // re-speak the question so the child knows what to answer
@@ -699,14 +706,22 @@ void processCapturedAnswer() {
 
   // Post learning turn → backend grades + feedback + next question + audio.
   firestoreWriteDeviceState("feedback", g_currentQuestion);
+  uint32_t _latPrePost = millis();
   String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
+  uint32_t _latPostPost = millis();
+  Serial.printf("[lat]   C post=%lu ms\n", (unsigned long)(_latPostPost - _latPrePost));
   if (exchangeId.isEmpty()) { backToListening(); return; }
 
   TurnResult turn;
+  uint32_t _latPrePoll = millis();
   if (!firestorePollForTurnResult(g_sessionId, exchangeId, turn, 30000)) {
     backToListening();
     return;
   }
+  uint32_t _latPostPoll = millis();
+  // D+E+F collapsed: trigger propagation + function compute + poll detection lag.
+  Serial.printf("[lat]   D+E+F trigger+compute+poll=%lu ms\n",
+                (unsigned long)(_latPostPoll - _latPrePoll));
 
   if (turn.isCorrect) g_stars++;
   Serial.println("[Main] Feedback: " + turn.spokenFeedback);
@@ -719,7 +734,20 @@ void processCapturedAnswer() {
   faceStrip(turn.nextQuestion);
 
   state = SPEAKING;
+  uint32_t _latPrePlay = millis();
   speakAudio(turn.audioUrl);          // installs its own I2S; releases it when done
+
+  // [lat] One-line round-trip summary. g_ttsFirstSampleMs was stamped inside
+  // speakFromUrl() the instant the first audio sample hit I2S (robot speaks).
+  uint32_t _latFirstSound = g_ttsFirstSampleMs ? g_ttsFirstSampleMs : millis();
+  Serial.printf(
+    "[lat] === turn: stt=%lu post=%lu trig+compute+poll=%lu audio(G)=%lu "
+    "| RECORD->FIRST_SOUND=%lu ms ===\n",
+    (unsigned long)(_latPostStt  - _latPreStt),
+    (unsigned long)(_latPostPost - _latPrePost),
+    (unsigned long)(_latPostPoll - _latPrePoll),
+    (unsigned long)(_latFirstSound - _latPrePlay),
+    (unsigned long)(_latFirstSound - _latT0));
 
   // Session ended explicitly (exit intent / continue declined / 50-min limit).
   if (turn.sessionEnded) {

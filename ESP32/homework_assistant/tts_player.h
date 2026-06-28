@@ -25,6 +25,11 @@
 #include <driver/i2s.h>
 #include "pins.h"
 
+// [lat] Wall-clock (millis) at which the FIRST audio sample is pushed to I2S,
+// i.e. the instant the robot actually starts speaking. 0 until set per call.
+// processCapturedAnswer() reads this to compute end-to-end "record → first sound".
+volatile uint32_t g_ttsFirstSampleMs = 0;
+
 // ── I2S playback config: the proven-audible WAV config (ONLY_LEFT, MCLK ×384) ──
 static void _tts_i2s_install(int sampleRate) {
   i2s_config_t cfg = {
@@ -73,6 +78,8 @@ void speakFromUrl(const String& audioUrl) {
     return;
   }
   Serial.println("[TTS] Downloading: " + audioUrl);
+  g_ttsFirstSampleMs = 0;              // [lat] reset; set when first frame plays
+  uint32_t _ttsStart = millis();       // [lat] entry to playback (URL in hand)
 
   // 1) Download the whole MP3 into PSRAM (proven HTTPS path).
   WiFiClientSecure sslClient;
@@ -149,7 +156,10 @@ void speakFromUrl(const String& audioUrl) {
     if (!i2sUp) {
       _tts_i2s_install(rate > 0 ? rate : SAMPLE_RATE);
       i2sUp = true;
+      g_ttsFirstSampleMs = millis();   // [lat] first sample out = robot starts speaking
       Serial.printf("[TTS] MP3: %d Hz, %d ch\n", rate, ch);
+      Serial.printf("[lat]   audio: download+decode-to-first-sample=%lu ms\n",
+                    (unsigned long)(g_ttsFirstSampleMs - _ttsStart));
     }
     for (int i = 0; i < samps; i++) { int32_t a = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (a > peak) peak = a; }
     _tts_play_frame(pcm, samps, ch);
