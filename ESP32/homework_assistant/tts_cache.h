@@ -119,11 +119,10 @@ bool speakTextCached(const String& text) {
     Serial.println("[SD] cache MISS: " + text);
   }
 
-  // Miss (or no SD): synthesise via cloud, download bytes, play, and cache.
-  String url = cloudSynthesizeSpeech(text);
-  if (url.isEmpty()) return false;
+  // Miss (or no SD): synthesise in ONE round trip (MP3 bytes, no Storage), play,
+  // and cache. This is the slow path — prefetch (sdCacheWarm) turns it into HITs.
   size_t len = 0;
-  uint8_t* buf = _ttsDownloadToPSRAM(url, &len);
+  uint8_t* buf = cloudSynthesizeBytes(text, &len);
   if (!buf) return false;
   bool played = false;
   if (len >= 4) {
@@ -134,4 +133,32 @@ bool speakTextCached(const String& text) {
   }
   free(buf);
   return played;
+}
+
+// Pre-warm the cache: for each phrase not already on SD, synthesise (one round
+// trip) and save it — WITHOUT playing. Call once at boot so the first time each
+// static phrase is needed it's an instant SD hit, not a ~2–3 s synth. Best-effort:
+// a failed phrase (e.g. transient HTTP -1) is just skipped and retried next boot.
+// Cheap on later boots — every phrase already on the (persistent) card is skipped.
+void sdCacheWarm(const char* const* phrases, int n) {
+  if (!g_sdReady) return;
+  Serial.printf("[SD] prewarm: checking %d static phrase(s)... "
+                "(first boot synthesises the missing ones — one-time)\n", n);
+  int warmed = 0, already = 0;
+  for (int i = 0; i < n; i++) {
+    String text = phrases[i];
+    if (text.isEmpty()) continue;
+    String path = _ttsKeyPath(text);
+    if (SD_MMC.exists(path)) { already++; continue; }
+    size_t len = 0;
+    uint8_t* buf = cloudSynthesizeBytes(text, &len);
+    if (buf) {
+      if (len >= 4) { _sdWriteMp3(path, buf, len); warmed++; }
+      free(buf);
+    } else {
+      Serial.println("[SD] prewarm failed (will retry next boot): " + text);
+    }
+    yield();
+  }
+  Serial.printf("[SD] prewarm: %d new, %d already cached\n", warmed, already);
 }

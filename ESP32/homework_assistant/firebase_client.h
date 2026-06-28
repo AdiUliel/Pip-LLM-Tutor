@@ -775,6 +775,59 @@ String cloudSynthesizeSpeech(const String& text) {
   return resp["audioUrl"].as<String>();
 }
 
+// ── Synthesise a phrase → MP3 bytes in ONE round trip (no Storage) ───────────
+// Backed by the ttsBytes Cloud Function. Returns a fresh PSRAM buffer (caller
+// frees) and sets *outLen; nullptr on failure. Used by the SD cache (misses +
+// prefetch) so a phrase costs one round trip, not two (synth → Storage → download).
+uint8_t* cloudSynthesizeBytes(const String& text, size_t* outLen) {
+  *outLen = 0;
+  if (g_idToken.isEmpty()) return nullptr;
+  String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
+               ".cloudfunctions.net/ttsBytes";
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  http.setTimeout(30000);
+
+  JsonDocument body;
+  body["text"] = text;
+  String bodyStr; serializeJson(body, bodyStr);
+
+  int code = http.POST(bodyStr);
+  if (code != 200) {
+    Serial.printf("[TTS] ttsBytes HTTP %d\n", code);
+    http.end();
+    return nullptr;
+  }
+
+  int contentLen = http.getSize();
+  const size_t MAX_MP3 = 256 * 1024;
+  size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
+  uint8_t* buf = (uint8_t*)ps_malloc(bufCap);
+  if (!buf) { http.end(); return nullptr; }
+
+  WiFiClient* stream = http.getStreamPtr();
+  size_t filled = 0;
+  uint32_t lastData = millis();
+  while (filled < bufCap) {
+    int avail = stream->available();
+    if (avail > 0) {
+      int n = stream->readBytes(buf + filled, min((size_t)avail, bufCap - filled));
+      filled += n;
+      lastData = millis();
+    } else if (!http.connected() || millis() - lastData > 3000) {
+      break;
+    }
+    yield();
+  }
+  http.end();
+  *outLen = filled;
+  return buf;
+}
+
 // ── deviceState/{deviceId}: live status for the Flutter app ───────────────────
 // The app reads deviceState/{uid}.status + lastHeartbeat (freshness => online),
 // currentQuestion and activeSubject. Rules allow any signed-in user to write.

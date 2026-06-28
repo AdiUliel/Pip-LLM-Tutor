@@ -575,6 +575,27 @@ void setup() {
   // can pair against the right Firebase identity. Cheap (one PATCH) and idempotent.
   firestoreWritePairingCode();
 
+  // Prefetch the FIXED phrases (boot + reprompts) into the SD cache so their first
+  // use is an instant hit, not a ~2–3 s synth. Strings here MUST match the ones
+  // passed to speakTextCached() below verbatim (same bytes → same cache key). Runs
+  // once; on later boots every phrase is already on the card and is skipped.
+  static const char* const STATIC_TTS_PHRASES[] = {
+#if USE_WAKE_WORD
+    "היי! מי כאן? תגיד \"היי פיפ\" ואז את השם שלך.",
+    "לא שמעתי. תגיד \"היי פיפ\" ואז את השם שלך שוב.",
+    "לא שמעתי אותך. תגיד \"היי פיפ\" ותענה שוב.",
+#else
+    "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.",
+    "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.",
+    "לא שמעתי אותך. נסה לענות שוב.",
+#endif
+    "לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.",
+    "לא שמעתי. חשבון או אנגלית?",
+    "לא הבנתי. תגיד חשבון או אנגלית?",
+  };
+  sdCacheWarm(STATIC_TTS_PHRASES,
+              sizeof(STATIC_TTS_PHRASES) / sizeof(STATIC_TTS_PHRASES[0]));
+
   // Two boot paths:
   //   A) CHILD_ID hardcoded → legacy fast path: cloud auto-creates the first
   //      question via onSessionCreated(awaitingFirstQuestion:true).
@@ -644,10 +665,12 @@ void repromptAfterMiss() {
 #else
   const char* tail = "נסה לענות שוב.";
 #endif
-  String msg = q.length() > 0
-      ? String("לא שמעתי אותך. ") + q + " " + tail
-      : String("לא שמעתי אותך. ") + tail;
-  // Cached by text hash: the same question's reprompt replays from SD next time.
+  // STATIC reprompt (no embedded question) so it's one fixed, prefetchable phrase
+  // — an instant SD hit instead of a unique per-question synth every miss. The
+  // question itself is already shown on the strip via faceStrip(), so the child
+  // still sees what to answer.
+  (void)q;   // kept for context/logging; intentionally not spoken
+  String msg = String("לא שמעתי אותך. ") + tail;
   faceEmotion("encouraging");
   speakTextCached(msg);
   backToListening();

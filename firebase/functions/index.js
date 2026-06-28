@@ -808,6 +808,46 @@ exports.processTurn = onRequest(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ttsBytes — {text} → MP3 bytes in the response BODY (no Storage upload).
+// The device's SD cache uses this for misses AND for prefetch (sdCacheWarm), so a
+// phrase costs ONE round trip instead of the two the URL path needs
+// (synthesizeSpeech → Storage → makePublic → device download). No minInstances:
+// prefetch is one-time and warm misses are rare once the cache is primed, so a
+// cold start here is acceptable and saves the always-warm cost.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.ttsBytes = onRequest(
+  { cors: false, timeoutSeconds: 30 },
+  async (req, res) => {
+    if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+    const authHeader = req.headers.authorization || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing auth token" });
+    }
+    try {
+      await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
+    } catch {
+      return res.status(401).json({ error: "Invalid auth token" });
+    }
+    const { text } = req.body || {};
+    if (!text || typeof text !== "string") {
+      return res.status(400).json({ error: "text (string) required" });
+    }
+    try {
+      const buf = await ttsToMp3Buffer(text);
+      if (!buf || buf.length === 0) {
+        res.set("Content-Type", "application/octet-stream");
+        return res.status(200).send(Buffer.alloc(0));
+      }
+      res.set("Content-Type", "audio/mpeg");
+      return res.status(200).send(buf);
+    } catch (err) {
+      console.error("[ttsBytes] failed:", err);
+      return res.status(500).json({ error: err.message || "ttsBytes failed" });
+    }
+  }
+);
+
 exports.synthesizeSpeech = onRequest(
   // minInstances: 1 keeps one warm instance so the first call after idle skips the
   // Cloud Functions v2 cold start (the 3–12 s spike a child would otherwise feel).
