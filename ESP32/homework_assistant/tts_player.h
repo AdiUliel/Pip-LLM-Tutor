@@ -28,20 +28,12 @@
 #include "pins.h"
 
 // ── Configure I2S for playback ────────────────────────────────────────────────
-//
-// We deliberately use the SAME stereo (RIGHT_LEFT) frame as i2s_start_recording()
-// in the .ino — that config is proven to work with this board's ES8311 (the mic
-// path records fine). The ES8311 is configured once at boot for that frame; if
-// playback instead used a mono ONLY_LEFT frame, the BCLK/frame structure the
-// codec sees changes (and the legacy ESP32-S3 I2S driver is unreliable with
-// ONLY_LEFT), so the data is clocked out but never reproduced → silent reply.
-// Mono TTS samples are duplicated into both slots in _tts_play_pcm().
 static void _tts_i2s_install(int sampleRate) {
   i2s_config_t cfg = {
     .mode             = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
     .sample_rate      = (uint32_t)sampleRate,
     .bits_per_sample  = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format   = I2S_CHANNEL_FMT_RIGHT_LEFT,  // stereo frame — matches the recorder
+    .channel_format   = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count    = 8,
@@ -57,30 +49,41 @@ static void _tts_i2s_install(int sampleRate) {
     .data_out_num = PIN_I2S_DOUT,
     .data_in_num  = I2S_PIN_NO_CHANGE,
   };
-  i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
-  i2s_set_pin(I2S_PORT, &pins);
+  esp_err_t eInstall = i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
+  esp_err_t ePin     = i2s_set_pin(I2S_PORT, &pins);
   i2s_zero_dma_buffer(I2S_PORT);
+  if (eInstall != ESP_OK || ePin != ESP_OK) {
+    Serial.printf("[TTS] ⚠️ I2S setup error: install=%s set_pin=%s  (this = silent playback)\n",
+                  esp_err_to_name(eInstall), esp_err_to_name(ePin));
+  }
 }
 
-// ── Play raw PCM (int16_t) via I2S as a stereo frame ─────────────────────────
-// I2S is installed as RIGHT_LEFT (see _tts_i2s_install), so every frame must
-// carry two int16 slots. TTS is mono, so we duplicate each sample into L+R; a
-// stereo source keeps its left channel (the ES8311 drives a single speaker).
+// ── Play raw PCM (int16_t mono) via I2S ──────────────────────────────────────
 static void _tts_play_pcm(const mp3d_sample_t* pcm, size_t samples, int channels) {
-  const size_t WRITE_FRAMES = 256;       // stereo frames per I2S write
-  int16_t stereo[WRITE_FRAMES * 2];
+  const size_t WRITE_CHUNK = 512;  // samples per I2S write
   size_t i = 0;
+  size_t totalWritten = 0;
+  esp_err_t lastErr = ESP_OK;
   while (i < samples) {
-    size_t chunk = min(WRITE_FRAMES, samples - i);
-    for (size_t j = 0; j < chunk; j++) {
-      int16_t s = (channels == 1) ? pcm[i + j] : pcm[(i + j) * 2];  // mono / left
-      stereo[j * 2]     = s;
-      stereo[j * 2 + 1] = s;
-    }
+    size_t chunk = min(WRITE_CHUNK, samples - i);
     size_t written = 0;
-    i2s_write(I2S_PORT, stereo, chunk * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+    esp_err_t e;
+    if (channels == 1) {
+      e = i2s_write(I2S_PORT, pcm + i, chunk * sizeof(mp3d_sample_t), &written, portMAX_DELAY);
+    } else {
+      // Stereo → mono: take left channel only
+      int16_t mono[WRITE_CHUNK];
+      for (size_t j = 0; j < chunk; j++) mono[j] = pcm[(i + j) * 2];
+      e = i2s_write(I2S_PORT, mono, chunk * sizeof(int16_t), &written, portMAX_DELAY);
+    }
+    if (e != ESP_OK) lastErr = e;
+    totalWritten += written;
     i += chunk;
   }
+  // Diagnostic: if this prints 0 bytes or an error, the codec/I2S — not decode —
+  // is why the reply is silent.
+  Serial.printf("[TTS] I2S wrote %u bytes (err=%s)\n",
+                (unsigned)totalWritten, esp_err_to_name(lastErr));
 }
 
 // ── Decode MP3 bytes (in PSRAM) and play ─────────────────────────────────────
@@ -94,6 +97,8 @@ static void _tts_play_pcm(const mp3d_sample_t* pcm, size_t samples, int channels
 //   2. run the whole decode+play on a dedicated FreeRTOS task with a large
 //      stack, blocking the caller until it finishes.
 static void _tts_decode_and_play(const uint8_t* mp3Data, size_t mp3Len) {
+  Serial.printf("[TTS] heap free: internal=%u  psram=%u\n",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
   // mp3dec_ex_t is ~6.7 KB — keep it off the stack.
   mp3dec_ex_t* dec = (mp3dec_ex_t*)ps_malloc(sizeof(mp3dec_ex_t));
   if (!dec) {
