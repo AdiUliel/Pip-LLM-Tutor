@@ -218,20 +218,15 @@ async function synthesizeAudio(text, fileId) {
   return url;
 }
 
-// Like synthesizeAudio but ALSO returns the raw MP3 bytes, so processTurn can
-// send them in the HTTP response while still writing the Storage URL into the
-// exchange doc (keeps the Flutter app's audioData working).
-async function synthesizeAudioCapture(text, fileId) {
-  const buf = await ttsToMp3Buffer(text);
-  if (!buf) return { url: "", buffer: null };
-  let url = "";
-  try {
-    url = await uploadMp3(buf, fileId);
-  } catch (err) {
-    // Upload is best-effort here — the device gets the bytes regardless.
-    console.warn(`[TTS] capture upload failed for ${fileId}:`, err.message);
-  }
-  return { url, buffer: buf };
+// MP3 bytes for processTurn to send inline in the HTTP response. We deliberately
+// SKIP the Storage upload + makePublic that the old URL path needed: the device
+// gets these bytes in the response body, and the Flutter app reads no audio field
+// (verified — no audioData/audioUrl reads, no audio player). Dropping the upload
+// shaves ~100–300 ms off every turn's synchronous critical path. The exchange
+// doc's audioData is left "" (nothing consumes it on this path).
+async function synthesizeAudioCapture(text) {
+  const buffer = await ttsToMp3Buffer(text);
+  return { url: "", buffer };
 }
 
 // Wrapper passed into the tutor engine. Never throws — audio is best-effort so a
@@ -766,10 +761,10 @@ exports.processTurn = onRequest(
       // Capture the spoken-feedback MP3 bytes while still writing the Storage URL
       // into the docs (so the Flutter app's audioData keeps working).
       let audioBuffer = null;
-      const synthesizeCapturing = async (text, fileId) => {
-        const r = await synthesizeAudioCapture(text, fileId);
+      const synthesizeCapturing = async (text) => {
+        const r = await synthesizeAudioCapture(text);
         if (r.buffer) audioBuffer = r.buffer;
-        return r.url;
+        return r.url;   // "" — audioData isn't used on the processTurn path
       };
 
       const result = await processLearningTurn({
