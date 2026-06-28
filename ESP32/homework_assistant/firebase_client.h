@@ -4,9 +4,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <time.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
+#include "mbedtls/base64.h"   // decode base64 header fields from processTurn
 #include "secrets.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -439,10 +437,14 @@ struct TurnResult {
   String spokenFeedback;   // what to say first
   String nextQuestion;     // becomes the new current question
   String emotion;          // happy|neutral|encouraging|concerned|celebrating
-  String audioUrl;         // WAV of (feedback + next question)
+  String audioUrl;         // WAV of (feedback + next question) — old post/poll path
   bool   shouldTakeBreak = false;
   bool   isCorrect       = false;
   bool   sessionEnded    = false;  // backend signals explicit session end (exit intent / continue declined)
+  // Phase 1 (processTurn): MP3 bytes returned inline in the HTTP body. Owned by
+  // the caller — free(audioBuf) after playback. Empty on the old path.
+  uint8_t* audioBuf    = nullptr;
+  size_t   audioLen    = 0;
 };
 
 // ── Poll the exchange until the Cloud Function finishes the turn ──────────────
@@ -518,6 +520,104 @@ bool firestorePollForTurnResult(const String& sessionId,
   }
   http.end();
   Serial.println("[Firestore] Timed out waiting for turn result.");
+  return false;
+}
+
+// ── base64 (ASCII header) → String of raw bytes (UTF-8 Hebrew) ───────────────
+static String _b64ToString(const String& b64) {
+  if (b64.isEmpty()) return "";
+  size_t inLen  = b64.length();
+  size_t outCap = (inLen / 4) * 3 + 4;
+  uint8_t* out  = (uint8_t*)malloc(outCap + 1);
+  if (!out) return "";
+  size_t outLen = 0;
+  int rc = mbedtls_base64_decode(out, outCap, &outLen,
+                                 (const uint8_t*)b64.c_str(), inLen);
+  String s;
+  if (rc == 0) { out[outLen] = 0; s = String((char*)out); }
+  free(out);
+  return s;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// firestoreProcessTurn — Phase 1: ONE synchronous call replaces post + poll +
+// trigger + separate audio download. Sends {sessionId, childAnswer}; the function
+// grades, (gated) calls Gemini, synthesises TTS, writes the same Firestore docs,
+// and returns the result in response HEADERS + the MP3 in the response BODY.
+// Fills `out` (incl. out.audioBuf/out.audioLen — caller must free(out.audioBuf)).
+// Returns false on any failure so the caller can fall back / re-listen.
+// ─────────────────────────────────────────────────────────────────────────────
+bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, TurnResult& out) {
+  String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
+               ".cloudfunctions.net/processTurn";
+
+  JsonDocument body;
+  body["sessionId"]   = sessionId;
+  body["childAnswer"] = childAnswer;
+  String bodyStr; serializeJson(body, bodyStr);
+
+  const char* hdrKeys[] = {
+    "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended",
+    "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id"
+  };
+
+  // Up to 2 attempts so an expired token (401) can be refreshed and retried once.
+  for (int attempt = 0; attempt < 2; attempt++) {
+    _initSSL();
+    HTTPClient http;
+    http.begin(_sslClient, url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("Authorization", "Bearer " + g_idToken);
+    http.setTimeout(60000);
+    http.collectHeaders(hdrKeys, 7);
+
+    int code = http.POST(bodyStr);
+    if (code == 401 && attempt == 0) { firebaseRefreshToken(); http.end(); continue; }
+    if (code != 200) {
+      Serial.printf("[Firestore] processTurn HTTP %d — %s\n", code, http.getString().c_str());
+      http.end();
+      return false;
+    }
+
+    // ── Metadata from headers ─────────────────────────────────────────────────
+    out.isCorrect       = http.header("X-Is-Correct")    == "1";
+    out.emotion         = http.header("X-Emotion");
+    out.shouldTakeBreak = http.header("X-Should-Break")  == "1";
+    out.sessionEnded    = http.header("X-Session-Ended") == "1";
+    out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
+    out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
+
+    // ── MP3 body → PSRAM (caller frees out.audioBuf) ──────────────────────────
+    int contentLen = http.getSize();
+    const size_t MAX_MP3 = 256 * 1024;
+    size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
+    out.audioBuf = (uint8_t*)ps_malloc(bufCap);
+    out.audioLen = 0;
+    if (out.audioBuf) {
+      WiFiClient* stream = http.getStreamPtr();
+      size_t filled = 0;
+      uint32_t lastData = millis();
+      while (filled < bufCap) {
+        int avail = stream->available();
+        if (avail > 0) {
+          int n = stream->readBytes(out.audioBuf + filled, min((size_t)avail, bufCap - filled));
+          filled += n;
+          lastData = millis();
+        } else if (!http.connected() || millis() - lastData > 3000) {
+          break;
+        }
+        yield();
+      }
+      out.audioLen = filled;
+    } else {
+      Serial.println("[Firestore] processTurn: ps_malloc failed for audio buffer.");
+    }
+    http.end();
+    out.ok = true;
+    Serial.printf("[Firestore] processTurn done: correct=%d audio=%u bytes\n",
+                  out.isCorrect, (unsigned)out.audioLen);
+    return true;
+  }
   return false;
 }
 
@@ -717,91 +817,16 @@ void firestoreWriteDeviceState(const String& status,
   http.end();
 }
 
-// ── Background (fire-and-forget) deviceState writer ──────────────────────────
-// Two deviceState PATCHes sit on the learning-turn hot path (status "feedback"
-// before grading, and the next question before playback). Each is a fresh-TLS
-// PATCH (~2 s measured on real hardware) that the child's turn would otherwise
-// block on — yet they only drive the Flutter app's live status; nothing on the
-// device waits on the result. We offload them to a one-shot background task with
-// its OWN TLS client so the turn never pays for them. The auth token + uid are
-// captured at enqueue time, so the task never races the main thread refreshing
-// g_idToken. See firestoreWriteDeviceStateAsync() below.
-struct _DeviceStateJob {
-  String status;
-  String question;
-  String subject;
-  String token;
-  String uid;
-};
-
-static QueueHandle_t    _deviceStateQueue = nullptr;
-static WiFiClientSecure _bgSslClient;   // dedicated TLS client — never shared with _sslClient
-
-static void _deviceStatePatch(const _DeviceStateJob& job) {
-  String url = "https://firestore.googleapis.com/v1/projects/";
-  url += FIREBASE_PROJECT_ID;
-  url += "/databases/(default)/documents/deviceState/" + job.uid;
-  url += "?updateMask.fieldPaths=status";
-  url += "&updateMask.fieldPaths=lastHeartbeat";
-  url += "&updateMask.fieldPaths=currentQuestion";
-  url += "&updateMask.fieldPaths=activeSubject";
-
-  JsonDocument body;
-  body["fields"]["status"]["stringValue"]           = job.status;
-  body["fields"]["lastHeartbeat"]["timestampValue"] = isoNow();
-  if (job.question.length() > 0)
-    body["fields"]["currentQuestion"]["stringValue"] = job.question;
-  else
-    body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
-  body["fields"]["activeSubject"]["stringValue"]     = job.subject;
-
-  String bodyStr;
-  serializeJson(body, bodyStr);
-
-  _bgSslClient.stop();
-  _bgSslClient.setInsecure();
-  HTTPClient http;
-  http.begin(_bgSslClient, url);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + job.token);
-  int code = http.sendRequest("PATCH", bodyStr);
-  if (code != 200) Serial.printf("[Firestore] async deviceState PATCH HTTP %d\n", code);
-  http.end();
-}
-
-static void _deviceStateWriterTask(void*) {
-  for (;;) {
-    _DeviceStateJob* job = nullptr;
-    if (xQueueReceive(_deviceStateQueue, &job, portMAX_DELAY) == pdTRUE && job) {
-      _deviceStatePatch(*job);
-      delete job;
-    }
-  }
-}
-
-// Start the writer once, after Wi-Fi + auth are ready (call from setup()).
-// Pinned to core 0 so its ~2 s TLS handshake runs in parallel with loop()/the
-// turn pipeline, which the Arduino runtime pins to core 1.
-void firestoreStartDeviceStateWriter() {
-  if (_deviceStateQueue) return;
-  _deviceStateQueue = xQueueCreate(4, sizeof(_DeviceStateJob*));
-  xTaskCreatePinnedToCore(_deviceStateWriterTask, "devstate",
-                          8192, nullptr, 1, nullptr, 0);
-}
-
-// Fire-and-forget deviceState update: enqueues to the background writer and
-// returns immediately. Falls back to the synchronous write if the writer isn't
-// running yet (very early boot), so callers always behave correctly.
-void firestoreWriteDeviceStateAsync(const String& status,
-                                    const String& currentQuestion = "",
-                                    const String& subject = SESSION_SUBJECT) {
-  if (g_firebaseUid.isEmpty()) return;
-  if (!_deviceStateQueue) { firestoreWriteDeviceState(status, currentQuestion, subject); return; }
-  _DeviceStateJob* job = new _DeviceStateJob{ status, currentQuestion, subject, g_idToken, g_firebaseUid };
-  if (xQueueSend(_deviceStateQueue, &job, 0) != pdTRUE) {
-    delete job;   // queue full → drop this cosmetic update rather than block the turn
-  }
-}
+// NOTE: an earlier revision offloaded the two hot-path deviceState writes to a
+// background FreeRTOS task with its OWN WiFiClientSecure. On this board that ran
+// a second mbedTLS handshake concurrently with the main TLS connection and
+// exhausted the internal heap — every following TLS call then failed with
+// HTTP -1 and the device rebooted. Removed. The two writes were redundant anyway
+// (the post-playback "listening" write already pushes the next question, and the
+// 10 s heartbeat keeps the device "online"), so they're simply dropped from the
+// turn. If live "feedback" status during grading is wanted back, set it
+// server-side from answerQuestion (which already has admin access) — not with a
+// concurrent device-side TLS connection.
 
 // ── Read a pending remote command (start/stop) from the app, if any ──────────
 // Returns "start" | "stop" | "none".

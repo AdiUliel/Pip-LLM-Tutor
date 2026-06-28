@@ -53,6 +53,7 @@
 #include "firebase_client.h"
 #include "stt_client.h"
 #include "tts_player.h"
+#include "tts_cache.h"     // SD-backed cache for static/repeated phrases (after the 3 above)
 
 // ── Wake-word ("hey pip") on/off switch ───────────────────────────────────────
 // 1 = say "hey pip" to start an answer (REPLACES the button).
@@ -61,6 +62,16 @@
 // — NOTHING to install. See Documentation/WAKE_WORD.md for how it was trained + tuning.
 #ifndef USE_WAKE_WORD
 #define USE_WAKE_WORD 1
+#endif
+
+// ── Phase 1: collapse the turn into ONE synchronous processTurn call ──────────
+// 1 = device calls processTurn (grade + Gemini + TTS + writes done server-side,
+//     result returned inline; audio is the HTTP body). Removes the device's own
+//     Firestore write, the Eventarc trigger, the poll loop, and the separate
+//     audio download. 0 = legacy post+poll path (firestorePostLearningTurn +
+//     firestorePollForTurnResult). Flip to 0 to A/B or fall back.
+#ifndef USE_PROCESS_TURN
+#define USE_PROCESS_TURN 1
 #endif
 
 // ── Wake-word TEST MODE (threshold tuning / "it's unresponsive" debugging) ─────
@@ -367,8 +378,9 @@ String identifyCaptureAnswer(const char* retryPrompt) {
       if (!t.isEmpty()) return t;
     }
     // No trigger, silence, or unintelligible speech — re-ask and listen again.
-    String r = cloudSynthesizeSpeech(retryPrompt);
-    if (!r.isEmpty()) { faceEmotion("encouraging"); speakAudio(r); }
+    // retryPrompt is a fixed string → SD cache makes the re-ask instant.
+    faceEmotion("encouraging");
+    speakTextCached(retryPrompt);
   }
 }
 
@@ -383,16 +395,15 @@ String identifyCaptureAnswer(const char* retryPrompt) {
 bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // ── Step 1 — ask "who's here?" ────────────────────────────────────────────
 #if USE_WAKE_WORD
-  String welcomeUrl = cloudSynthesizeSpeech("היי! מי כאן? תגיד \"היי פיפ\" ואז את השם שלך.");
+  const char* welcomeText = "היי! מי כאן? תגיד \"היי פיפ\" ואז את השם שלך.";
 #else
-  String welcomeUrl = cloudSynthesizeSpeech("היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.");
+  const char* welcomeText = "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.";
 #endif
-  if (welcomeUrl.isEmpty()) {
+  faceEmotion("speaking");
+  if (!speakTextCached(welcomeText)) {     // SD cache → instant after first boot
     Serial.println("[Identify] TTS welcome failed.");
     return false;
   }
-  faceEmotion("speaking");
-  speakAudio(welcomeUrl);
 
   // Repeat "who's here?" until the cloud matches a real child — never fall back
   // to a generic session just because the child was slow, silent, or
@@ -422,9 +433,9 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
       Serial.println("[Identify] device not paired — cannot identify; falling back.");
       return false;
     }
-    // Name not recognised — re-ask and keep looping.
-    String r = cloudSynthesizeSpeech("לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.");
-    if (!r.isEmpty()) { faceEmotion("encouraging"); speakAudio(r); }
+    // Name not recognised — re-ask and keep looping (cached static phrase).
+    faceEmotion("encouraging");
+    speakTextCached("לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.");
   }
   g_childId = child.matchedChildId;
 
@@ -448,9 +459,9 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
       continue;
     }
     if (subj.subject.length() > 0) break;                    // success
-    // Subject not understood — re-ask and keep looping.
-    String r = cloudSynthesizeSpeech("לא הבנתי. תגיד חשבון או אנגלית?");
-    if (!r.isEmpty()) { faceEmotion("encouraging"); speakAudio(r); }
+    // Subject not understood — re-ask and keep looping (cached static phrase).
+    faceEmotion("encouraging");
+    speakTextCached("לא הבנתי. תגיד חשבון או אנגלית?");
   }
   Serial.printf("[Identify] subject: %s\n", subj.subject.c_str());
   g_currentSubject  = subj.subject;
@@ -516,6 +527,10 @@ void setup() {
     Serial.printf("[PSRAM] Record buffer: %u bytes\n", RECORD_BUF_SIZE);
   }
 
+  // SD card: enables the TTS cache for static/repeated phrases. Independent of
+  // Wi-Fi; fails safe (caching off, cloud fallback) if no FAT32 card is present.
+  sdCacheBegin();
+
   // pip_face (needs PSRAM for its 240x240 sprite, and a correct TFT_eSPI
   // User_Setup for this board).
 #if USE_PIP_FACE
@@ -555,11 +570,6 @@ void setup() {
     faceStatus("error");
     while (true) { faceTick(); delay(200); }
   }
-
-  // Background deviceState writer: lets the two cosmetic hot-path status updates
-  // during a turn run off the critical path (own TLS client, core 0). Must start
-  // after auth so g_idToken / g_firebaseUid are populated.
-  firestoreStartDeviceStateWriter();
 
   // Publish the user-visible pairing code → this device's UID so the parent app
   // can pair against the right Firebase identity. Cheap (one PATCH) and idempotent.
@@ -637,8 +647,9 @@ void repromptAfterMiss() {
   String msg = q.length() > 0
       ? String("לא שמעתי אותך. ") + q + " " + tail
       : String("לא שמעתי אותך. ") + tail;
-  String url = cloudSynthesizeSpeech(msg);
-  if (!url.isEmpty()) { faceEmotion("encouraging"); speakAudio(url); }
+  // Cached by text hash: the same question's reprompt replays from SD next time.
+  faceEmotion("encouraging");
+  speakTextCached(msg);
   backToListening();
 }
 
@@ -712,26 +723,36 @@ void processCapturedAnswer() {
   }
   Serial.println("[Main] Child answered: " + answer);
 
-  // Post learning turn → backend grades + feedback + next question + audio.
-  // Cosmetic app-status update → fire-and-forget so the turn doesn't block on a
-  // ~2 s TLS PATCH (see firestoreWriteDeviceStateAsync).
-  firestoreWriteDeviceStateAsync("feedback", g_currentQuestion);
+  TurnResult turn;
+
+#if USE_PROCESS_TURN
+  // Phase 1: ONE synchronous call does grade + (gated) Gemini + TTS + the doc
+  // writes, and returns the result inline (metadata in headers, MP3 in the body).
+  // Replaces the device write + Eventarc trigger + poll loop + separate download.
+  uint32_t _latPreTurn = millis();
+  if (!firestoreProcessTurn(g_sessionId, answer, turn)) {
+    backToListening();
+    return;
+  }
+  uint32_t _latPostTurn = millis();
+  Serial.printf("[lat]   B->E processTurn=%lu ms\n", (unsigned long)(_latPostTurn - _latPreTurn));
+#else
+  // Legacy post + poll path (kept as fallback; flip USE_PROCESS_TURN to 0).
   uint32_t _latPrePost = millis();
   String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
   uint32_t _latPostPost = millis();
   Serial.printf("[lat]   C post=%lu ms\n", (unsigned long)(_latPostPost - _latPrePost));
   if (exchangeId.isEmpty()) { backToListening(); return; }
 
-  TurnResult turn;
   uint32_t _latPrePoll = millis();
   if (!firestorePollForTurnResult(g_sessionId, exchangeId, turn, 30000)) {
     backToListening();
     return;
   }
   uint32_t _latPostPoll = millis();
-  // D+E+F collapsed: trigger propagation + function compute + poll detection lag.
   Serial.printf("[lat]   D+E+F trigger+compute+poll=%lu ms\n",
                 (unsigned long)(_latPostPoll - _latPrePoll));
+#endif
 
   if (turn.isCorrect) g_stars++;
   Serial.println("[Main] Feedback: " + turn.spokenFeedback);
@@ -740,17 +761,31 @@ void processCapturedAnswer() {
 
   // Show emotion + speak feedback (audio already includes the next question).
   faceEmotion(pipEmotionFor(turn.emotion));
-  // Cosmetic app-status update → async so playback isn't delayed by a ~2 s PATCH.
-  firestoreWriteDeviceStateAsync("feedback", turn.nextQuestion);
+  // (No deviceState write here — the post-playback "listening" write below pushes
+  // the next question; keeping a write on this line only delayed playback ~2 s.)
   faceStrip(turn.nextQuestion);
 
   state = SPEAKING;
   uint32_t _latPrePlay = millis();
+#if USE_PROCESS_TURN
+  speakFromBuffer(turn.audioBuf, turn.audioLen);   // inline MP3 from the turn response
+  if (turn.audioBuf) { free(turn.audioBuf); turn.audioBuf = nullptr; }
+#else
   speakAudio(turn.audioUrl);          // installs its own I2S; releases it when done
+#endif
 
-  // [lat] One-line round-trip summary. g_ttsFirstSampleMs was stamped inside
-  // speakFromUrl() the instant the first audio sample hit I2S (robot speaks).
+  // [lat] One-line round-trip summary. g_ttsFirstSampleMs was stamped the instant
+  // the first audio sample hit I2S (robot starts speaking).
   uint32_t _latFirstSound = g_ttsFirstSampleMs ? g_ttsFirstSampleMs : millis();
+#if USE_PROCESS_TURN
+  Serial.printf(
+    "[lat] === turn: stt=%lu processTurn=%lu decode=%lu "
+    "| RECORD->FIRST_SOUND=%lu ms ===\n",
+    (unsigned long)(_latPostStt  - _latPreStt),
+    (unsigned long)(_latPostTurn - _latPreTurn),
+    (unsigned long)(_latFirstSound - _latPrePlay),
+    (unsigned long)(_latFirstSound - _latT0));
+#else
   Serial.printf(
     "[lat] === turn: stt=%lu post=%lu trig+compute+poll=%lu audio(G)=%lu "
     "| RECORD->FIRST_SOUND=%lu ms ===\n",
@@ -759,6 +794,7 @@ void processCapturedAnswer() {
     (unsigned long)(_latPostPoll - _latPrePoll),
     (unsigned long)(_latFirstSound - _latPrePlay),
     (unsigned long)(_latFirstSound - _latT0));
+#endif
 
   // Session ended explicitly (exit intent / continue declined / 50-min limit).
   if (turn.sessionEnded) {

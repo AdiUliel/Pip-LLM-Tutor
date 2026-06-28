@@ -71,64 +71,18 @@ static void _tts_play_frame(const int16_t* pcm, int totalSamps, int channels) {
   }
 }
 
-// ── Download MP3 (to PSRAM), decode with helix, play ─────────────────────────
-void speakFromUrl(const String& audioUrl) {
-  if (audioUrl.isEmpty()) {
-    Serial.println("[TTS] No audio URL — skipping playback.");
-    return;
-  }
-  Serial.println("[TTS] Downloading: " + audioUrl);
-  g_ttsFirstSampleMs = 0;              // [lat] reset; set when first frame plays
-  uint32_t _ttsStart = millis();       // [lat] entry to playback (URL in hand)
-
-  // 1) Download the whole MP3 into PSRAM (proven HTTPS path).
-  WiFiClientSecure sslClient;
-  sslClient.setInsecure();
-  HTTPClient http;
-  http.begin(sslClient, audioUrl);
-  http.setTimeout(15000);
-  int code = http.GET();
-  if (code != 200) {
-    Serial.printf("[TTS] HTTP %d — skipping.\n", code);
-    http.end();
-    return;
-  }
-  int contentLen = http.getSize();
-  const size_t MAX_MP3 = 256 * 1024;
-  size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
-  uint8_t* mp3Buf = (uint8_t*)ps_malloc(bufCap);
-  if (!mp3Buf) {
-    Serial.println("[TTS] ps_malloc failed for MP3 buffer.");
-    http.end();
-    return;
-  }
-  WiFiClient* stream = http.getStreamPtr();
-  size_t filled = 0;
-  uint32_t lastData = millis();
-  while (filled < bufCap) {
-    int avail = stream->available();
-    if (avail > 0) {
-      int n = stream->readBytes(mp3Buf + filled, min((size_t)avail, bufCap - filled));
-      filled += n;
-      lastData = millis();
-    } else if (!http.connected() || millis() - lastData > 3000) {
-      break;
-    }
-    yield();
-  }
-  http.end();
-  Serial.printf("[TTS] Downloaded %u bytes of MP3.\n", (unsigned)filled);
-  if (filled < 4) { free(mp3Buf); return; }
-
-  // 2) Decode with helix, frame by frame, and stream PCM to I2S.
+// ── Decode an in-memory MP3 with helix and play it (does NOT free the buffer) ─
+// Shared by every audio source: a downloaded URL, the processTurn HTTP body, and
+// the SD cache. Sets g_ttsFirstSampleMs the instant the first sample hits I2S.
+void _ttsDecodeAndPlay(const uint8_t* mp3Buf, size_t filled) {
+  if (filled < 4) return;
   if (!MP3Decoder_AllocateBuffers()) {
     Serial.println("[TTS] MP3Decoder_AllocateBuffers failed.");
-    free(mp3Buf);
     return;
   }
 
   static int16_t pcm[2304];          // 1152 samples/ch * 2 ch (max per frame)
-  uint8_t* p = mp3Buf;
+  uint8_t* p = (uint8_t*)mp3Buf;     // helix takes uint8_t*; it does not modify content
   int remaining = (int)filled;
   bool i2sUp = false;
   int32_t peak = 0;
@@ -158,8 +112,6 @@ void speakFromUrl(const String& audioUrl) {
       i2sUp = true;
       g_ttsFirstSampleMs = millis();   // [lat] first sample out = robot starts speaking
       Serial.printf("[TTS] MP3: %d Hz, %d ch\n", rate, ch);
-      Serial.printf("[lat]   audio: download+decode-to-first-sample=%lu ms\n",
-                    (unsigned long)(g_ttsFirstSampleMs - _ttsStart));
     }
     for (int i = 0; i < samps; i++) { int32_t a = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (a > peak) peak = a; }
     _tts_play_frame(pcm, samps, ch);
@@ -168,8 +120,6 @@ void speakFromUrl(const String& audioUrl) {
   }
 
   MP3Decoder_FreeBuffers();
-  free(mp3Buf);
-
   Serial.printf("[TTS] Decoded %u frames, peak=%ld/32767\n", (unsigned)framesPlayed, (long)peak);
 
   if (i2sUp) {
@@ -178,6 +128,84 @@ void speakFromUrl(const String& audioUrl) {
   }
   digitalWrite(PIN_AUDIO_EN, HIGH);  // amp off
   Serial.println("[TTS] Playback done.");
+}
+
+// ── Download a whole MP3 into a fresh PSRAM buffer (caller frees) ─────────────
+// Returns nullptr on failure; sets *outLen to bytes read.
+uint8_t* _ttsDownloadToPSRAM(const String& audioUrl, size_t* outLen) {
+  *outLen = 0;
+  WiFiClientSecure sslClient;
+  sslClient.setInsecure();
+  HTTPClient http;
+  http.begin(sslClient, audioUrl);
+  http.setTimeout(15000);
+  int code = http.GET();
+  if (code != 200) {
+    Serial.printf("[TTS] HTTP %d — skipping.\n", code);
+    http.end();
+    return nullptr;
+  }
+  int contentLen = http.getSize();
+  const size_t MAX_MP3 = 256 * 1024;
+  size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
+  uint8_t* mp3Buf = (uint8_t*)ps_malloc(bufCap);
+  if (!mp3Buf) {
+    Serial.println("[TTS] ps_malloc failed for MP3 buffer.");
+    http.end();
+    return nullptr;
+  }
+  WiFiClient* stream = http.getStreamPtr();
+  size_t filled = 0;
+  uint32_t lastData = millis();
+  while (filled < bufCap) {
+    int avail = stream->available();
+    if (avail > 0) {
+      int n = stream->readBytes(mp3Buf + filled, min((size_t)avail, bufCap - filled));
+      filled += n;
+      lastData = millis();
+    } else if (!http.connected() || millis() - lastData > 3000) {
+      break;
+    }
+    yield();
+  }
+  http.end();
+  *outLen = filled;
+  return mp3Buf;
+}
+
+// ── Download MP3 from a URL, decode, play ────────────────────────────────────
+void speakFromUrl(const String& audioUrl) {
+  if (audioUrl.isEmpty()) {
+    Serial.println("[TTS] No audio URL — skipping playback.");
+    return;
+  }
+  Serial.println("[TTS] Downloading: " + audioUrl);
+  g_ttsFirstSampleMs = 0;
+  uint32_t _ttsStart = millis();
+
+  size_t len = 0;
+  uint8_t* mp3Buf = _ttsDownloadToPSRAM(audioUrl, &len);
+  if (!mp3Buf) return;
+  Serial.printf("[TTS] Downloaded %u bytes of MP3.\n", (unsigned)len);
+  if (len < 4) { free(mp3Buf); return; }
+
+  _ttsDecodeAndPlay(mp3Buf, len);
+  free(mp3Buf);
+
+  if (g_ttsFirstSampleMs)
+    Serial.printf("[lat]   audio: download+decode-to-first-sample=%lu ms\n",
+                  (unsigned long)(g_ttsFirstSampleMs - _ttsStart));
+}
+
+// ── Play an MP3 already in memory (processTurn HTTP body, SD cache) ───────────
+// Does NOT free the buffer — the owner does.
+void speakFromBuffer(const uint8_t* mp3, size_t len) {
+  if (!mp3 || len < 4) {
+    Serial.println("[TTS] empty/short MP3 buffer — skipping.");
+    return;
+  }
+  g_ttsFirstSampleMs = 0;
+  _ttsDecodeAndPlay(mp3, len);
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

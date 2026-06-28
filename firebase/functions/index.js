@@ -156,9 +156,11 @@ function parseSubject(transcript) {
 // skips the 44-byte WAV header), so the audioConfig below must stay in sync
 // with tts_player.h on the ESP32.
 // ─────────────────────────────────────────────────────────────────────────────
-async function synthesizeAudio(text, fileId) {
+// Low-level Google TTS call → MP3 Buffer (no Storage). Shared by the URL-based
+// path (synthesizeAudio) and the bytes-in-response path (processTurn).
+async function ttsToMp3Buffer(text) {
   const speech = String(text || "").trim();
-  if (!speech) return "";
+  if (!speech) return null;
 
   const tokenRes = await fetch(
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
@@ -178,10 +180,9 @@ async function synthesizeAudio(text, fileId) {
         input: { text: speech },
         voice: { languageCode: "he-IL", name: "he-IL-Standard-A" },
         audioConfig: {
-          // MP3 @ 16 kHz. The ESP32 streams it via the ESP32-audioI2S library
-          // (audio.connecttohost). OPUS would be smaller but needs the v3.x
-          // library, which requires Arduino-ESP32 core 3.x; this project is on
-          // core 2.0.17, so MP3 via the legacy-driver v2.0.6 library it is.
+          // MP3 @ 16 kHz. The ESP32 decodes it with the helix decoder in
+          // tts_player.h. OPUS would be smaller but needs the v3.x library /
+          // core 3.x; this project is on core 2.0.x, so MP3 it is.
           audioEncoding:   "MP3",
           sampleRateHertz: 16000,
         },
@@ -195,17 +196,42 @@ async function synthesizeAudio(text, fileId) {
   }
 
   const { audioContent } = await ttsRes.json();
-  const buf = Buffer.from(audioContent, "base64");
+  return Buffer.from(audioContent, "base64");
+}
 
+// Upload an MP3 buffer to Storage and return a public URL. Best-effort caller
+// decides; this throws on failure.
+async function uploadMp3(buf, fileId) {
   const bucket = getStorage().bucket();
   const objectPath = `tts/${fileId}.mp3`;
   const file = bucket.file(objectPath);
   await file.save(buf, { contentType: "audio/mpeg", resumable: false });
   await file.makePublic();
+  return `https://storage.googleapis.com/${bucket.name}/${objectPath}`;
+}
 
-  const url = `https://storage.googleapis.com/${bucket.name}/${objectPath}`;
-  console.log(`[TTS] Synthesised "${speech.slice(0, 40)}..." → ${url} (${buf.length} bytes)`);
+async function synthesizeAudio(text, fileId) {
+  const buf = await ttsToMp3Buffer(text);
+  if (!buf) return "";
+  const url = await uploadMp3(buf, fileId);
+  console.log(`[TTS] Synthesised "${String(text).slice(0, 40)}..." → ${url} (${buf.length} bytes)`);
   return url;
+}
+
+// Like synthesizeAudio but ALSO returns the raw MP3 bytes, so processTurn can
+// send them in the HTTP response while still writing the Storage URL into the
+// exchange doc (keeps the Flutter app's audioData working).
+async function synthesizeAudioCapture(text, fileId) {
+  const buf = await ttsToMp3Buffer(text);
+  if (!buf) return { url: "", buffer: null };
+  let url = "";
+  try {
+    url = await uploadMp3(buf, fileId);
+  } catch (err) {
+    // Upload is best-effort here — the device gets the bytes regardless.
+    console.warn(`[TTS] capture upload failed for ${fileId}:`, err.message);
+  }
+  return { url, buffer: buf };
 }
 
 // Wrapper passed into the tutor engine. Never throws — audio is best-effort so a
@@ -688,6 +714,105 @@ exports.submitChildAnswer = onCall(async (request) => {
 //    reads `audioBase64` and passes it to speakAudio() which dispatches on
 //    `https://` prefix. The value is now a Storage URL, not base64.)
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// processTurn — the synchronous device turn (Phase 1).
+//
+// The device POSTs {sessionId, childAnswer} and BLOCKS on one HTTPS call that:
+//   grade (deterministic) → gated Gemini (thinking off) → Google TTS → writes the
+//   same session/questions/exchanges docs → returns the result INLINE.
+//
+// Response: feedback/emotion/next-question/flags in headers (Hebrew base64-encoded
+// since header values must be ASCII); the MP3 bytes as the response BODY. This
+// removes, in one shot, the device's Firestore write, the Eventarc trigger, the
+// poll loop, and the separate Storage download that the old post+poll path paid.
+//
+// The exchange doc is created with status "processing" (NOT "pending"), so the
+// answerQuestion trigger — which only acts on "pending" — skips it. answerQuestion
+// stays deployed as the app-initiated / fallback path.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.processTurn = onRequest(
+  { cors: false, timeoutSeconds: 60, minInstances: 1 },
+  async (req, res) => {
+    if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+
+    const authHeader = req.headers.authorization || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing auth token" });
+    }
+    try {
+      await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
+    } catch {
+      return res.status(401).json({ error: "Invalid auth token" });
+    }
+
+    const { sessionId, childAnswer } = req.body || {};
+    if (!sessionId || typeof childAnswer !== "string") {
+      return res.status(400).json({ error: "sessionId and childAnswer (string) required" });
+    }
+
+    try {
+      const sessionRef = db.collection("sessions").doc(sessionId);
+      const exchangeRef = sessionRef.collection("exchanges").doc();   // auto-id
+      const exchangeId = exchangeRef.id;
+      const exchangeData = {
+        type: "learning_turn",
+        childAnswer,
+        status: "processing",   // NOT "pending" → answerQuestion trigger skips it
+        handledBy: "processTurn",
+        askedAt: FieldValue.serverTimestamp(),
+      };
+      await exchangeRef.set(exchangeData);
+
+      // Capture the spoken-feedback MP3 bytes while still writing the Storage URL
+      // into the docs (so the Flutter app's audioData keeps working).
+      let audioBuffer = null;
+      const synthesizeCapturing = async (text, fileId) => {
+        const r = await synthesizeAudioCapture(text, fileId);
+        if (r.buffer) audioBuffer = r.buffer;
+        return r.url;
+      };
+
+      const result = await processLearningTurn({
+        db,
+        ai,
+        model: GEMINI_MODEL,
+        safetySettings: CHILD_SAFETY_SETTINGS,
+        synthesize: synthesizeCapturing,
+        sessionId,
+        exchangeId,
+        exchangeData,
+      });
+
+      // Notify the parent immediately on explicit session end (same as the trigger).
+      if (result?.sessionEnded) {
+        const sessionSnap = await sessionRef.get();
+        if (sessionSnap.exists) await sendSessionEndedNow(db, sessionId, sessionSnap.data());
+      }
+
+      // Metadata → headers. Hebrew is base64(utf8) since header values are ASCII.
+      const b64 = (s) => Buffer.from(String(s || ""), "utf8").toString("base64");
+      res.set("X-Exchange-Id",       exchangeId);
+      res.set("X-Is-Correct",        result.isCorrect ? "1" : "0");
+      res.set("X-Emotion",           result.emotion || "neutral");
+      res.set("X-Should-Break",      result.shouldTakeBreak ? "1" : "0");
+      res.set("X-Session-Ended",     result.sessionEnded ? "1" : "0");
+      res.set("X-Feedback-B64",      b64(result.spokenFeedback));
+      res.set("X-Next-Question-B64", b64(result.nextQuestion));
+
+      if (audioBuffer && audioBuffer.length > 0) {
+        res.set("Content-Type", "audio/mpeg");
+        return res.status(200).send(audioBuffer);
+      }
+      // TTS produced nothing — return metadata only with an empty body.
+      res.set("Content-Type", "application/octet-stream");
+      return res.status(200).send(Buffer.alloc(0));
+    } catch (err) {
+      console.error("[processTurn] failed:", err);
+      return res.status(500).json({ error: err.message || "processTurn failed" });
+    }
+  }
+);
+
 exports.synthesizeSpeech = onRequest(
   // minInstances: 1 keeps one warm instance so the first call after idle skips the
   // Cloud Functions v2 cold start (the 3–12 s spike a child would otherwise feel).
