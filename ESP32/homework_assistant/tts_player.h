@@ -28,12 +28,20 @@
 #include "pins.h"
 
 // ── Configure I2S for playback ────────────────────────────────────────────────
+//
+// We deliberately use the SAME stereo (RIGHT_LEFT) frame as i2s_start_recording()
+// in the .ino — that config is proven to work with this board's ES8311 (the mic
+// path records fine). The ES8311 is configured once at boot for that frame; if
+// playback instead used a mono ONLY_LEFT frame, the BCLK/frame structure the
+// codec sees changes (and the legacy ESP32-S3 I2S driver is unreliable with
+// ONLY_LEFT), so the data is clocked out but never reproduced → silent reply.
+// Mono TTS samples are duplicated into both slots in _tts_play_pcm().
 static void _tts_i2s_install(int sampleRate) {
   i2s_config_t cfg = {
     .mode             = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
     .sample_rate      = (uint32_t)sampleRate,
     .bits_per_sample  = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format   = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .channel_format   = I2S_CHANNEL_FMT_RIGHT_LEFT,  // stereo frame — matches the recorder
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count    = 8,
@@ -54,21 +62,23 @@ static void _tts_i2s_install(int sampleRate) {
   i2s_zero_dma_buffer(I2S_PORT);
 }
 
-// ── Play raw PCM (int16_t mono) via I2S ──────────────────────────────────────
+// ── Play raw PCM (int16_t) via I2S as a stereo frame ─────────────────────────
+// I2S is installed as RIGHT_LEFT (see _tts_i2s_install), so every frame must
+// carry two int16 slots. TTS is mono, so we duplicate each sample into L+R; a
+// stereo source keeps its left channel (the ES8311 drives a single speaker).
 static void _tts_play_pcm(const mp3d_sample_t* pcm, size_t samples, int channels) {
-  const size_t WRITE_CHUNK = 512;  // samples per I2S write
+  const size_t WRITE_FRAMES = 256;       // stereo frames per I2S write
+  int16_t stereo[WRITE_FRAMES * 2];
   size_t i = 0;
   while (i < samples) {
-    size_t chunk = min(WRITE_CHUNK, samples - i);
-    size_t written = 0;
-    if (channels == 1) {
-      i2s_write(I2S_PORT, pcm + i, chunk * sizeof(mp3d_sample_t), &written, portMAX_DELAY);
-    } else {
-      // Stereo → mono: take left channel only
-      int16_t mono[WRITE_CHUNK];
-      for (size_t j = 0; j < chunk; j++) mono[j] = pcm[(i + j) * 2];
-      i2s_write(I2S_PORT, mono, chunk * sizeof(int16_t), &written, portMAX_DELAY);
+    size_t chunk = min(WRITE_FRAMES, samples - i);
+    for (size_t j = 0; j < chunk; j++) {
+      int16_t s = (channels == 1) ? pcm[i + j] : pcm[(i + j) * 2];  // mono / left
+      stereo[j * 2]     = s;
+      stereo[j * 2 + 1] = s;
     }
+    size_t written = 0;
+    i2s_write(I2S_PORT, stereo, chunk * 2 * sizeof(int16_t), &written, portMAX_DELAY);
     i += chunk;
   }
 }
