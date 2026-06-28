@@ -4,6 +4,9 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 #include "secrets.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -452,19 +455,39 @@ bool firestorePollForTurnResult(const String& sessionId,
   url += "/databases/(default)/documents/sessions/" + sessionId + "/exchanges/" + exchangeId;
 
   uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
-    _initSSL();
-    HTTPClient http;
-    http.begin(_sslClient, url);
-    http.addHeader("Authorization", "Bearer " + g_idToken);
 
+  // One TLS handshake + a single keep-alive HTTP connection for the WHOLE poll,
+  // instead of a fresh handshake every iteration. The old loop called _initSSL()
+  // (which stops + reopens the socket) on every pass, so each poll paid a full
+  // ~0.3–0.6 s TLS handshake and the effective period was ~1 s, not 0.5 s. Now
+  // we connect once, set reuse, and just re-GET — so the 250 ms interval is real.
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.setReuse(true);
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+
+  while (millis() - start < timeoutMs) {
     int code = http.GET();
-    if (code == 401) { firebaseRefreshToken(); http.end(); continue; }
-    if (code != 200) { Serial.printf("[Firestore] poll HTTP %d\n", code); http.end(); delay(2000); continue; }
+    if (code == 401) {
+      // Token expired mid-poll: refresh and rebuild the connection with new auth.
+      firebaseRefreshToken();
+      http.end();
+      _initSSL();
+      http.begin(_sslClient, url);
+      http.setReuse(true);
+      http.addHeader("Authorization", "Bearer " + g_idToken);
+      continue;
+    }
+    if (code != 200) {
+      Serial.printf("[Firestore] poll HTTP %d\n", code);
+      http.getString();   // drain body so the reused keep-alive socket stays clean
+      delay(500);
+      continue;
+    }
 
     JsonDocument resp;
-    deserializeJson(resp, http.getString());
-    http.end();
+    deserializeJson(resp, http.getString());   // fully drains body → connection stays reusable
 
     String status = resp["fields"]["status"]["stringValue"].as<String>();
     Serial.println("[Firestore] turn status = " + status);
@@ -482,15 +505,18 @@ bool firestorePollForTurnResult(const String& sessionId,
       out.shouldTakeBreak= resp["fields"]["shouldTakeBreak"]["booleanValue"].as<bool>();
       out.isCorrect      = resp["fields"]["isCorrect"]["booleanValue"].as<bool>();
       out.sessionEnded   = resp["fields"]["sessionEnded"]["booleanValue"].as<bool>();
+      http.end();
       return true;
     }
     if (status == "error") {
       Serial.println("[Firestore] turn error: " +
                      resp["fields"]["error"]["stringValue"].as<String>());
+      http.end();
       return false;
     }
-    delay(500);
+    delay(250);
   }
+  http.end();
   Serial.println("[Firestore] Timed out waiting for turn result.");
   return false;
 }
@@ -689,6 +715,92 @@ void firestoreWriteDeviceState(const String& status,
     Serial.printf("[Firestore] deviceState PATCH HTTP %d\n", code);
   }
   http.end();
+}
+
+// ── Background (fire-and-forget) deviceState writer ──────────────────────────
+// Two deviceState PATCHes sit on the learning-turn hot path (status "feedback"
+// before grading, and the next question before playback). Each is a fresh-TLS
+// PATCH (~2 s measured on real hardware) that the child's turn would otherwise
+// block on — yet they only drive the Flutter app's live status; nothing on the
+// device waits on the result. We offload them to a one-shot background task with
+// its OWN TLS client so the turn never pays for them. The auth token + uid are
+// captured at enqueue time, so the task never races the main thread refreshing
+// g_idToken. See firestoreWriteDeviceStateAsync() below.
+struct _DeviceStateJob {
+  String status;
+  String question;
+  String subject;
+  String token;
+  String uid;
+};
+
+static QueueHandle_t    _deviceStateQueue = nullptr;
+static WiFiClientSecure _bgSslClient;   // dedicated TLS client — never shared with _sslClient
+
+static void _deviceStatePatch(const _DeviceStateJob& job) {
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/deviceState/" + job.uid;
+  url += "?updateMask.fieldPaths=status";
+  url += "&updateMask.fieldPaths=lastHeartbeat";
+  url += "&updateMask.fieldPaths=currentQuestion";
+  url += "&updateMask.fieldPaths=activeSubject";
+
+  JsonDocument body;
+  body["fields"]["status"]["stringValue"]           = job.status;
+  body["fields"]["lastHeartbeat"]["timestampValue"] = isoNow();
+  if (job.question.length() > 0)
+    body["fields"]["currentQuestion"]["stringValue"] = job.question;
+  else
+    body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
+  body["fields"]["activeSubject"]["stringValue"]     = job.subject;
+
+  String bodyStr;
+  serializeJson(body, bodyStr);
+
+  _bgSslClient.stop();
+  _bgSslClient.setInsecure();
+  HTTPClient http;
+  http.begin(_bgSslClient, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + job.token);
+  int code = http.sendRequest("PATCH", bodyStr);
+  if (code != 200) Serial.printf("[Firestore] async deviceState PATCH HTTP %d\n", code);
+  http.end();
+}
+
+static void _deviceStateWriterTask(void*) {
+  for (;;) {
+    _DeviceStateJob* job = nullptr;
+    if (xQueueReceive(_deviceStateQueue, &job, portMAX_DELAY) == pdTRUE && job) {
+      _deviceStatePatch(*job);
+      delete job;
+    }
+  }
+}
+
+// Start the writer once, after Wi-Fi + auth are ready (call from setup()).
+// Pinned to core 0 so its ~2 s TLS handshake runs in parallel with loop()/the
+// turn pipeline, which the Arduino runtime pins to core 1.
+void firestoreStartDeviceStateWriter() {
+  if (_deviceStateQueue) return;
+  _deviceStateQueue = xQueueCreate(4, sizeof(_DeviceStateJob*));
+  xTaskCreatePinnedToCore(_deviceStateWriterTask, "devstate",
+                          8192, nullptr, 1, nullptr, 0);
+}
+
+// Fire-and-forget deviceState update: enqueues to the background writer and
+// returns immediately. Falls back to the synchronous write if the writer isn't
+// running yet (very early boot), so callers always behave correctly.
+void firestoreWriteDeviceStateAsync(const String& status,
+                                    const String& currentQuestion = "",
+                                    const String& subject = SESSION_SUBJECT) {
+  if (g_firebaseUid.isEmpty()) return;
+  if (!_deviceStateQueue) { firestoreWriteDeviceState(status, currentQuestion, subject); return; }
+  _DeviceStateJob* job = new _DeviceStateJob{ status, currentQuestion, subject, g_idToken, g_firebaseUid };
+  if (xQueueSend(_deviceStateQueue, &job, 0) != pdTRUE) {
+    delete job;   // queue full → drop this cosmetic update rather than block the turn
+  }
 }
 
 // ── Read a pending remote command (start/stop) from the app, if any ──────────

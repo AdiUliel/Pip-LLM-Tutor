@@ -41,7 +41,7 @@ setGlobalOptions({ region: FUNCTIONS_REGION });
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { initializeFirestore, FieldValue } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
 const { getAuth } = require("firebase-admin/auth");
 const { GoogleGenAI } = require("@google/genai");
@@ -62,8 +62,12 @@ exports.monitorTutor = monitorTutor;
 const { extractQuestionsFromMaterial } = require("./extractQuestions");
 exports.extractQuestionsFromMaterial = extractQuestionsFromMaterial;
 
-initializeApp();
-const db = getFirestore();
+const app = initializeApp();
+// preferRest: skip the Admin SDK's gRPC Firestore channel (whose lazy init adds
+// ~2–5 s on a cold start) and use the REST transport, which matches this code's
+// simple read/write pattern. MUST run before any getFirestore() in the codebase;
+// since every function loads this module at cold start, this is that first call.
+const db = initializeFirestore(app, { preferRest: true });
 
 // Vertex AI / Gemini.
 //   - location "global" is the most reliable endpoint for Gemini 2.x model
@@ -404,6 +408,8 @@ async function answerFreeTextQuestion(sessionId, exchangeId, data) {
       systemInstruction,
       maxOutputTokens: 180,
       temperature: 0.65,
+      // Disable 2.5-flash "thinking" — short spoken reply, no benefit from it.
+      thinkingConfig: { thinkingBudget: 0 },
       safetySettings: CHILD_SAFETY_SETTINGS,
     },
   });
@@ -683,7 +689,9 @@ exports.submitChildAnswer = onCall(async (request) => {
 //    `https://` prefix. The value is now a Storage URL, not base64.)
 // ─────────────────────────────────────────────────────────────────────────────
 exports.synthesizeSpeech = onRequest(
-  { cors: false, timeoutSeconds: 30 },
+  // minInstances: 1 keeps one warm instance so the first call after idle skips the
+  // Cloud Functions v2 cold start (the 3–12 s spike a child would otherwise feel).
+  { cors: false, timeoutSeconds: 30, minInstances: 1 },
   async (req, res) => {
     if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
@@ -713,7 +721,9 @@ exports.synthesizeSpeech = onRequest(
 );
 
 exports.transcribeAudio = onRequest(
-  { cors: false, timeoutSeconds: 30 },
+  // minInstances: 1 — STT is the first network hop of a turn, so its cold start is
+  // fully additive. Keep one instance warm to kill the first-answer cold-start spike.
+  { cors: false, timeoutSeconds: 30, minInstances: 1 },
   async (req, res) => {
     if (req.method !== "POST") {
       return res.status(405).send("Method Not Allowed");

@@ -262,8 +262,11 @@ bool processRecordedAudio() {
 // processCapturedAnswer() handle it unchanged. Installs and uninstalls I2S
 // itself. Returns true if speech was captured, false on timeout/too-short.
 //   startTimeoutMs : how long to wait for the child to START talking
-//   trailSilenceMs : how much trailing quiet ends the utterance
-bool recordUntilSilence(uint32_t startTimeoutMs = 6000, uint32_t trailSilenceMs = 1200) {
+//   trailSilenceMs : how much trailing quiet ends the utterance. Lowered 1200→800
+//     to shave perceived end-of-speech delay (Phase 0.5). TUNE THIS: too low and
+//     a child who pauses mid-answer gets cut off — raise it back toward 1000–1200
+//     if you see premature endpoints in the logs.
+bool recordUntilSilence(uint32_t startTimeoutMs = 6000, uint32_t trailSilenceMs = 800) {
   i2s_start_recording();
   recordBytes = 0;
   uint32_t startMs    = millis();
@@ -553,6 +556,11 @@ void setup() {
     while (true) { faceTick(); delay(200); }
   }
 
+  // Background deviceState writer: lets the two cosmetic hot-path status updates
+  // during a turn run off the critical path (own TLS client, core 0). Must start
+  // after auth so g_idToken / g_firebaseUid are populated.
+  firestoreStartDeviceStateWriter();
+
   // Publish the user-visible pairing code → this device's UID so the parent app
   // can pair against the right Firebase identity. Cheap (one PATCH) and idempotent.
   firestoreWritePairingCode();
@@ -705,7 +713,9 @@ void processCapturedAnswer() {
   Serial.println("[Main] Child answered: " + answer);
 
   // Post learning turn → backend grades + feedback + next question + audio.
-  firestoreWriteDeviceState("feedback", g_currentQuestion);
+  // Cosmetic app-status update → fire-and-forget so the turn doesn't block on a
+  // ~2 s TLS PATCH (see firestoreWriteDeviceStateAsync).
+  firestoreWriteDeviceStateAsync("feedback", g_currentQuestion);
   uint32_t _latPrePost = millis();
   String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
   uint32_t _latPostPost = millis();
@@ -730,7 +740,8 @@ void processCapturedAnswer() {
 
   // Show emotion + speak feedback (audio already includes the next question).
   faceEmotion(pipEmotionFor(turn.emotion));
-  firestoreWriteDeviceState("feedback", turn.nextQuestion);
+  // Cosmetic app-status update → async so playback isn't delayed by a ~2 s PATCH.
+  firestoreWriteDeviceStateAsync("feedback", turn.nextQuestion);
   faceStrip(turn.nextQuestion);
 
   state = SPEAKING;

@@ -234,6 +234,9 @@ async function llmFeedback(ai, payload, model = DEFAULT_MODEL, safetySettings = 
       maxOutputTokens: 180,
       temperature: 0.45,
       responseMimeType: "application/json",
+      // Disable 2.5-flash "thinking": the output is a tiny fixed JSON, so thinking
+      // only adds latency here (~0.5–1.3 s) with no quality gain.
+      thinkingConfig: { thinkingBudget: 0 },
       safetySettings,
     },
   });
