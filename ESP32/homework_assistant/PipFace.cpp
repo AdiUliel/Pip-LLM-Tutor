@@ -445,29 +445,68 @@ void drawStrip(const char* textSnap, int starsSnap) {
 
   // ---- question text, right side, bidi-reordered ----
   if (textSnap[0] != '\0') {
-    String visual = bidiToVisual(textSnap);
     u8f.setFont(u8g2_font_unifont_t_hebrew);
     u8f.setForegroundColor(WHT);
     u8f.setBackgroundColor(SCREEN_BG);
     const int avail = 240 - 16 - leftCursor;   // px available for the text
-    int textW = u8f.getUTF8Width(visual.c_str());
-    if (textW > avail) {
-      // Too wide (English questions are far wider than Hebrew/digits in this
-      // font): trim whole codepoints off the end until it fits, add an
-      // ellipsis, and LEFT-align so it never runs off the right edge. The
-      // full question is still spoken aloud.
-      while (visual.length() > 0 &&
-             u8f.getUTF8Width((visual + "...").c_str()) > avail) {
-        int i = visual.length() - 1;           // drop one whole UTF-8 codepoint
-        while (i > 0 && ((uint8_t)visual[i] & 0xC0) == 0x80) i--;
-        visual.remove(i);
-      }
-      visual += "...";
-      u8f.setCursor(leftCursor, 290);
+
+    // Pixel width is independent of bidi reordering (same glyphs), so we can
+    // measure on the logical text and only reorder (bidiToVisual) at draw time.
+    String logical = textSnap;
+    String visual = bidiToVisual(logical);
+
+    if (u8f.getUTF8Width(visual.c_str()) <= avail) {
+      // Fits on one line — right-align (RTL), 16 px right pad, baseline 290.
+      u8f.setCursor(240 - 16 - u8f.getUTF8Width(visual.c_str()), 290);
+      u8f.print(visual);
     } else {
-      u8f.setCursor(240 - 16 - textW, 290);    // right-align, 16 px right pad
+      // Too wide for one line (English questions are far wider than Hebrew/
+      // digits in this font): word-wrap into up to TWO lines so the whole
+      // question is shown instead of being truncated. Wrapping is done on the
+      // logical text — the FIRST words go on the TOP line — then each line is
+      // bidi-reordered independently so it reads correctly in either script.
+      String line1 = "", line2 = "";
+      int i = 0, len = logical.length();
+      while (i < len) {
+        while (i < len && logical[i] == ' ') i++;     // skip spaces
+        int wStart = i;
+        while (i < len && logical[i] != ' ') i++;      // take one word
+        if (i == wStart) break;
+        String word = logical.substring(wStart, i);
+        String cand = line1.length() ? line1 + " " + word : word;
+        if (u8f.getUTF8Width(cand.c_str()) <= avail || line1.length() == 0) {
+          line1 = cand;                                // still fits on top line
+        } else {
+          line2 = logical.substring(wStart);           // rest spills to line 2
+          line2.trim();
+          break;
+        }
+      }
+
+      // Top line, right-aligned, baseline 272.
+      String v1 = bidiToVisual(line1);
+      u8f.setCursor(240 - 16 - u8f.getUTF8Width(v1.c_str()), 272);
+      u8f.print(v1);
+
+      // Bottom line, baseline 292. If it's STILL too wide, trim whole
+      // codepoints off the end + ellipsis (left-aligned); else right-align.
+      if (line2.length()) {
+        String v2 = bidiToVisual(line2);
+        if (u8f.getUTF8Width(v2.c_str()) > avail) {
+          while (v2.length() > 0 &&
+                 u8f.getUTF8Width((v2 + "...").c_str()) > avail) {
+            int k = v2.length() - 1;                    // drop one UTF-8 codepoint
+            while (k > 0 && ((uint8_t)v2[k] & 0xC0) == 0x80) k--;
+            v2.remove(k);
+          }
+          v2 += "...";
+          u8f.setCursor(leftCursor, 292);
+        } else {
+          u8f.setCursor(240 - 16 - u8f.getUTF8Width(v2.c_str()), 292);
+        }
+        u8f.print(v2);
+      }
     }
-    u8f.print(visual);                          // baseline ~16 px above bottom
   }
 }
 
