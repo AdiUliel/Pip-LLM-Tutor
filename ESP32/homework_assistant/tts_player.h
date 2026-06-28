@@ -1,93 +1,176 @@
 #pragma once
 // ─────────────────────────────────────────────────────────────────────────────
-// TTS Player — streams MP3 from a URL via the ESP32-audioI2S `Audio` library.
-// This mirrors the board's official "Example_30_ai_chat", which plays its TTS
-// with audio.connecttohost(url), so it is known to work with this board's ES8311.
+// TTS Player — download MP3 → decode with the ESP32-audioI2S **helix** MP3
+// decoder → play PCM through OUR OWN I2S in the exact format that makes sound on
+// this board (mono ONLY_LEFT frame, MCLK ×384, APLL on — the same config the
+// old, audible WAV playback used).
 //
-// The Cloud Function synthesizes speech (Google TTS, MP3 @ 16 kHz mono), uploads
-// it to Firebase Storage, and returns a public https URL. We hand that URL to the
-// Audio library, which downloads + decodes + drives the ES8311 over I2S.
+// Why not just use audio.connecttohost()? On this board the Audio class outputs
+// a STEREO (RIGHT_LEFT) frame, which our ES8311 init reproduces as silence (only
+// the ONLY_LEFT mono frame is audible here). So we borrow only the library's
+// MP3 *decoder* and keep our proven I2S output path.
 //
-// ┌─ REQUIRED LIBRARY ─────────────────────────────────────────────────────────┐
-// │ ESP32-audioI2S **v2.0.6** (the last release on the LEGACY driver/i2s.h, so   │
-// │ it compiles on Arduino-ESP32 core 2.0.x). v3.x needs core 3.0.0+ and will    │
-// │ NOT compile here. Install from the upstream tag:                             │
-// │   https://github.com/schreibfaul1/ESP32-audioI2S/releases/tag/2.0.6          │
-// │                                                                              │
-// │ REQUIRED ONE-TIME PATCH to that library (its constructor leaves the I2S      │
-// │ MCLK multiple at the default 256×fs, but this board's ES8311 is clocked at   │
-// │ 384×fs — 256 gives muffled/garbled audio). In  ...\ESP32-audioI2S\src\       │
-// │ Audio.cpp, inside `Audio::Audio(...)`, where m_i2s_config.* is filled in,    │
-// │ set/add these two lines:                                                     │
-// │     m_i2s_config.use_apll       = true;                                      │
-// │     m_i2s_config.mclk_multiple  = I2S_MCLK_MULTIPLE_384;                     │
-// │ (re-apply if you ever reinstall the library.)                               │
-// └─────────────────────────────────────────────────────────────────────────────┘
-//
-// I2S ownership: the Audio ctor calls i2s_driver_install and the dtor calls
-// i2s_driver_uninstall (both LEGACY driver — same as the mic recorder). We create
-// the object per playback and delete it when done, so the recorder can reclaim
-// I2S_NUM_0 for the next recording. Only ONE owner is active at a time — every
-// caller stops recording before speakAudio().
+// REQUIRES: ESP32-audioI2S **v2.0.6** installed (legacy driver, core 2.0.x). We
+// include <Audio.h> only so the Arduino builder compiles+links the library's
+// helix decoder (mp3_decoder/*.cpp); we never instantiate the Audio class, so
+// the library never touches I2S. The earlier "mclk_multiple" library patch is
+// NOT needed for this path (we set the I2S clock ourselves below) — but leaving
+// it in place is harmless.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include <Audio.h>
+#include <Audio.h>                     // pulls the library in so helix gets linked
+#include "mp3_decoder/mp3_decoder.h"   // MP3Decode / MP3FindSyncWord / MP3Get*
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <driver/i2s.h>
 #include "pins.h"
 
-#ifndef TTS_VOLUME
-#define TTS_VOLUME        18      // 0..21 (ESP32-audioI2S volume scale)
-#endif
-#ifndef TTS_MAX_PLAY_MS
-#define TTS_MAX_PLAY_MS   30000   // safety net: never let a stalled stream wedge the loop
-#endif
+// ── I2S playback config: the proven-audible WAV config (ONLY_LEFT, MCLK ×384) ──
+static void _tts_i2s_install(int sampleRate) {
+  i2s_config_t cfg = {
+    .mode             = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate      = (uint32_t)sampleRate,
+    .bits_per_sample  = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format   = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count    = 8,
+    .dma_buf_len      = 512,
+    .use_apll         = true,
+    .tx_desc_auto_clear = true,
+    .mclk_multiple    = I2S_MCLK_MULTIPLE_384,
+  };
+  i2s_pin_config_t pins = {
+    .mck_io_num   = PIN_I2S_MCLK,
+    .bck_io_num   = PIN_I2S_BCLK,
+    .ws_io_num    = PIN_I2S_LRCK,
+    .data_out_num = PIN_I2S_DOUT,
+    .data_in_num  = I2S_PIN_NO_CHANGE,
+  };
+  i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pins);
+  i2s_zero_dma_buffer(I2S_PORT);
+}
 
-// ── Stream + play an audio URL (MP3) ─────────────────────────────────────────
+// Play one decoded frame (int16, interleaved) to the mono ONLY_LEFT I2S.
+// `totalSamps` = samples across all channels (MP3GetOutputSamps()).
+static void _tts_play_frame(const int16_t* pcm, int totalSamps, int channels) {
+  size_t w = 0;
+  if (channels == 1) {
+    i2s_write(I2S_PORT, pcm, (size_t)totalSamps * sizeof(int16_t), &w, portMAX_DELAY);
+  } else {
+    static int16_t mono[1152];                 // 1 MP3 frame = 1152 samples/ch max
+    int frames = totalSamps / 2;
+    for (int i = 0; i < frames; i++) mono[i] = pcm[i * 2];   // keep left channel
+    i2s_write(I2S_PORT, mono, (size_t)frames * sizeof(int16_t), &w, portMAX_DELAY);
+  }
+}
+
+// ── Download MP3 (to PSRAM), decode with helix, play ─────────────────────────
 void speakFromUrl(const String& audioUrl) {
   if (audioUrl.isEmpty()) {
     Serial.println("[TTS] No audio URL — skipping playback.");
     return;
   }
-  Serial.println("[TTS] Streaming: " + audioUrl);
+  Serial.println("[TTS] Downloading: " + audioUrl);
 
-  digitalWrite(PIN_AUDIO_EN, LOW);            // speaker amp on
+  // 1) Download the whole MP3 into PSRAM (proven HTTPS path).
+  WiFiClientSecure sslClient;
+  sslClient.setInsecure();
+  HTTPClient http;
+  http.begin(sslClient, audioUrl);
+  http.setTimeout(15000);
+  int code = http.GET();
+  if (code != 200) {
+    Serial.printf("[TTS] HTTP %d — skipping.\n", code);
+    http.end();
+    return;
+  }
+  int contentLen = http.getSize();
+  const size_t MAX_MP3 = 256 * 1024;
+  size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
+  uint8_t* mp3Buf = (uint8_t*)ps_malloc(bufCap);
+  if (!mp3Buf) {
+    Serial.println("[TTS] ps_malloc failed for MP3 buffer.");
+    http.end();
+    return;
+  }
+  WiFiClient* stream = http.getStreamPtr();
+  size_t filled = 0;
+  uint32_t lastData = millis();
+  while (filled < bufCap) {
+    int avail = stream->available();
+    if (avail > 0) {
+      int n = stream->readBytes(mp3Buf + filled, min((size_t)avail, bufCap - filled));
+      filled += n;
+      lastData = millis();
+    } else if (!http.connected() || millis() - lastData > 3000) {
+      break;
+    }
+    yield();
+  }
+  http.end();
+  Serial.printf("[TTS] Downloaded %u bytes of MP3.\n", (unsigned)filled);
+  if (filled < 4) { free(mp3Buf); return; }
 
-  // Grab the I2S port for this reply (default ctor → external DAC, I2S_NUM_0;
-  // freed by the dtor on delete below). NOTE the v2.0.6 setPinout signature:
-  //   setPinout(BCLK, LRC, DOUT, DIN=NO_CHANGE, MCK=NO_CHANGE)
-  // MCLK is the 5th argument — passing it as the 4th would route it to DIN and
-  // leave the ES8311 without a master clock (silent).
-  Audio* audio = new Audio();
-  audio->setPinout(PIN_I2S_BCLK, PIN_I2S_LRCK, PIN_I2S_DOUT,
-                   I2S_PIN_NO_CHANGE, PIN_I2S_MCLK);
-  audio->setVolume(TTS_VOLUME);
-  audio->forceMono(true);                     // single speaker on this board
-
-  if (!audio->connecttohost(audioUrl.c_str())) {
-    Serial.println("[TTS] connecttohost failed — skipping.");
-    delete audio;
-    digitalWrite(PIN_AUDIO_EN, HIGH);
+  // 2) Decode with helix, frame by frame, and stream PCM to I2S.
+  if (!MP3Decoder_AllocateBuffers()) {
+    Serial.println("[TTS] MP3Decoder_AllocateBuffers failed.");
+    free(mp3Buf);
     return;
   }
 
-  // Pump the decoder until the stream ends (isRunning() goes false at EOF) or the
-  // safety timeout fires. v2.0.6 has no audio_eof_stream callback, so we rely on
-  // isRunning().
-  uint32_t start = millis();
-  while (audio->isRunning() && (millis() - start) < TTS_MAX_PLAY_MS) {
-    audio->loop();
-    delay(1);                                 // yield to WiFi / idle
+  static int16_t pcm[2304];          // 1152 samples/ch * 2 ch (max per frame)
+  uint8_t* p = mp3Buf;
+  int remaining = (int)filled;
+  bool i2sUp = false;
+  int32_t peak = 0;
+  uint32_t framesPlayed = 0;
+
+  digitalWrite(PIN_AUDIO_EN, LOW);   // amp on
+
+  while (remaining > 0) {
+    int sync = MP3FindSyncWord(p, remaining);
+    if (sync < 0) break;             // no further frames
+    p += sync; remaining -= sync;
+
+    int bytesLeft = remaining;
+    int ret = MP3Decode(p, &bytesLeft, pcm, 0);
+    int consumed = remaining - bytesLeft;
+    if (consumed <= 0) consumed = 2; // guard against stall
+    p += consumed; remaining -= consumed;
+    if (ret < 0) continue;           // skip a bad frame, keep going
+
+    int ch    = MP3GetChannels();
+    int rate  = MP3GetSampRate();
+    int samps = MP3GetOutputSamps(); // total across channels
+    if (samps <= 0) continue;
+
+    if (!i2sUp) {
+      _tts_i2s_install(rate > 0 ? rate : SAMPLE_RATE);
+      i2sUp = true;
+      Serial.printf("[TTS] MP3: %d Hz, %d ch\n", rate, ch);
+    }
+    for (int i = 0; i < samps; i++) { int32_t a = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (a > peak) peak = a; }
+    _tts_play_frame(pcm, samps, ch);
+    framesPlayed++;
+    yield();
   }
 
-  audio->stopSong();
-  delete audio;                               // releases the I2S port (i2s_driver_uninstall)
+  MP3Decoder_FreeBuffers();
+  free(mp3Buf);
 
-  digitalWrite(PIN_AUDIO_EN, HIGH);           // amp off
+  Serial.printf("[TTS] Decoded %u frames, peak=%ld/32767\n", (unsigned)framesPlayed, (long)peak);
+
+  if (i2sUp) {
+    delay(200);                      // drain DMA
+    i2s_driver_uninstall(I2S_PORT);
+  }
+  digitalWrite(PIN_AUDIO_EN, HIGH);  // amp off
   Serial.println("[TTS] Playback done.");
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
-// Everything the backend returns is an https Storage URL; connecttohost streams
-// and decodes the MP3.
 void speakAudio(const String& s) {
   if (s.isEmpty()) {
     Serial.println("[TTS] empty audio — skipping.");
