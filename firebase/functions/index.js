@@ -174,7 +174,12 @@ async function synthesizeAudio(text, fileId) {
         input: { text: speech },
         voice: { languageCode: "he-IL", name: "he-IL-Standard-A" },
         audioConfig: {
-          audioEncoding:   "MP3",
+          // OGG_OPUS: ~30-40% smaller than MP3 at the same quality → faster
+          // downloads. The ESP32 streams it via the ESP32-audioI2S library,
+          // whose opus decoder reads this OGG container. 16 kHz keeps it tiny
+          // and matches the ES8311's configured rate. (If Google ever rejects
+          // this rate for OPUS, drop sampleRateHertz to use the default.)
+          audioEncoding:   "OGG_OPUS",
           sampleRateHertz: 16000,
         },
       }),
@@ -190,9 +195,11 @@ async function synthesizeAudio(text, fileId) {
   const buf = Buffer.from(audioContent, "base64");
 
   const bucket = getStorage().bucket();
-  const objectPath = `tts/${fileId}.mp3`;
+  // .ogg + audio/ogg so the firmware's Audio library detects the OGG/Opus codec
+  // from both the URL extension and the Content-Type header (they must agree).
+  const objectPath = `tts/${fileId}.ogg`;
   const file = bucket.file(objectPath);
-  await file.save(buf, { contentType: "audio/mpeg", resumable: false });
+  await file.save(buf, { contentType: "audio/ogg", resumable: false });
   await file.makePublic();
 
   const url = `https://storage.googleapis.com/${bucket.name}/${objectPath}`;

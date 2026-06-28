@@ -616,12 +616,12 @@ bool firestorePollForIdentifyResult(const String& sessionId,
   return false;
 }
 
-// ── Cloud Function /synthesizeSpeech: text → base64 WAV audio ────────────────
-// Used by the identify flow for the very first prompt ("מי כאן?") since
-// there's no on-device TTS and no pre-recorded audio files on the ESP32.
-// Returns the base64-encoded WAV ready for speakFromBase64() — no Storage
-// upload involved, saving ~1.5-3 s per round.
-// Falls back to the legacy {audioUrl: "..."} shape for older Cloud builds.
+// ── Cloud Function /synthesizeSpeech: text → audio Storage URL ───────────────
+// Used by the identify flow for the prompts ("מי כאן?" etc.) since there's no
+// on-device TTS. The Cloud Function synthesizes the speech, uploads it to
+// Firebase Storage, and returns a public https URL (kept in the legacy-named
+// `audioBase64` field for firmware compatibility — it's a URL, not base64).
+// speakAudio() streams it via the Audio library. Falls back to {audioUrl:"..."}.
 String cloudSynthesizeSpeech(const String& text) {
   if (g_idToken.isEmpty()) return "";
   String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
