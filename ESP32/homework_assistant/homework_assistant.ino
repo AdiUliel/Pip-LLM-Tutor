@@ -74,6 +74,18 @@
 #define USE_PROCESS_TURN 1
 #endif
 
+// ── Phase 2: fold STT into processTurn (upload audio; server transcribes) ─────
+// 1 = the device uploads the raw mono PCM straight to processTurn (?fmt=pcm16),
+//     which runs STT itself, then grade + Gemini + TTS — ONE round trip for the
+//     whole turn, with NO separate transcribeAudio handshake and a RAW-PCM upload
+//     (no base64, −33% bytes over the slow uplink). Requires USE_PROCESS_TURN.
+// 0 = transcribe on-device first (transcribeAudio), then send the TEXT to
+//     processTurn (or to post+poll when USE_PROCESS_TURN=0). Flip to 0 to A/B or
+//     fall back. The boot identify flow always uses on-device STT regardless.
+#ifndef USE_PROCESS_TURN_AUDIO
+#define USE_PROCESS_TURN_AUDIO 1
+#endif
+
 // ── Wake-word TEST MODE (threshold tuning / "it's unresponsive" debugging) ─────
 // Set to 1 to boot straight into a serial score printer: it SKIPS WiFi/Firebase
 // and, every ~200 ms, prints the live "hey pip" score plus the mic level so you
@@ -735,6 +747,30 @@ void processCapturedAnswer() {
   faceEmotion("thinking");
   faceTick();
   const char* sttLang = g_currentSubject.equalsIgnoreCase("english") ? "en-US" : "he-IL";
+
+  TurnResult turn;
+
+#if USE_PROCESS_TURN && USE_PROCESS_TURN_AUDIO
+  // Phase 2: upload the raw mono PCM straight to processTurn. ONE round trip does
+  // STT + grade + (gated) Gemini + TTS + the doc writes, returned inline (metadata
+  // in headers, MP3 in the body). Removes the separate transcribeAudio handshake
+  // and the base64 upload overhead entirely.
+  uint32_t _latPreTurn = millis();
+  if (!firestoreProcessTurnAudio(g_sessionId, recordBuf, recordBytes, sttLang, turn)) {
+    backToListening();
+    return;
+  }
+  uint32_t _latPostTurn = millis();
+  if (turn.sttEmpty) {
+    Serial.println("[Main] Server STT found no speech — asking child to repeat.");
+    repromptAfterMiss();   // re-speak the question so the child knows what to answer
+    return;
+  }
+  Serial.printf("[lat]   A->E processTurnAudio(stt+turn)=%lu ms\n",
+                (unsigned long)(_latPostTurn - _latPreTurn));
+#else
+  // On-device STT first, then send the TEXT onward. (Phase 1, or legacy post+poll
+  // when USE_PROCESS_TURN=0.)
   uint32_t _latPreStt = millis();   // after local pre-processing (mono strip, RMS gate)
   String answer = transcribeAudio(recordBuf, recordBytes, g_idToken, sttLang);
   uint32_t _latPostStt = millis();
@@ -746,9 +782,7 @@ void processCapturedAnswer() {
   }
   Serial.println("[Main] Child answered: " + answer);
 
-  TurnResult turn;
-
-#if USE_PROCESS_TURN
+  #if USE_PROCESS_TURN
   // Phase 1: ONE synchronous call does grade + (gated) Gemini + TTS + the doc
   // writes, and returns the result inline (metadata in headers, MP3 in the body).
   // Replaces the device write + Eventarc trigger + poll loop + separate download.
@@ -759,7 +793,7 @@ void processCapturedAnswer() {
   }
   uint32_t _latPostTurn = millis();
   Serial.printf("[lat]   B->E processTurn=%lu ms\n", (unsigned long)(_latPostTurn - _latPreTurn));
-#else
+  #else
   // Legacy post + poll path (kept as fallback; flip USE_PROCESS_TURN to 0).
   uint32_t _latPrePost = millis();
   String exchangeId = firestorePostLearningTurn(g_sessionId, answer);
@@ -775,6 +809,7 @@ void processCapturedAnswer() {
   uint32_t _latPostPoll = millis();
   Serial.printf("[lat]   D+E+F trigger+compute+poll=%lu ms\n",
                 (unsigned long)(_latPostPoll - _latPrePoll));
+  #endif
 #endif
 
   if (turn.isCorrect) g_stars++;
@@ -800,7 +835,15 @@ void processCapturedAnswer() {
   // [lat] One-line round-trip summary. g_ttsFirstSampleMs was stamped the instant
   // the first audio sample hit I2S (robot starts speaking).
   uint32_t _latFirstSound = g_ttsFirstSampleMs ? g_ttsFirstSampleMs : millis();
-#if USE_PROCESS_TURN
+#if USE_PROCESS_TURN && USE_PROCESS_TURN_AUDIO
+  // Phase 2: STT is folded into processTurnAudio, so there's no separate stt stage.
+  Serial.printf(
+    "[lat] === turn: processTurnAudio(stt+turn)=%lu decode=%lu "
+    "| RECORD->FIRST_SOUND=%lu ms ===\n",
+    (unsigned long)(_latPostTurn - _latPreTurn),
+    (unsigned long)(_latFirstSound - _latPrePlay),
+    (unsigned long)(_latFirstSound - _latT0));
+#elif USE_PROCESS_TURN
   Serial.printf(
     "[lat] === turn: stt=%lu processTurn=%lu decode=%lu "
     "| RECORD->FIRST_SOUND=%lu ms ===\n",
@@ -854,11 +897,14 @@ void processCapturedAnswer() {
 void loop() {
   faceTick();  // ~30fps internally; cheap to call every iteration
 
-  // Heartbeat so the app keeps showing the device online.
+  // Heartbeat so the app keeps showing the device online. Uses the keep-alive
+  // path (firestoreHeartbeat) so repeats cost ~0.1 s instead of a ~2 s handshake —
+  // the device stays responsive to "היי פיפ" between heartbeats. Meaningful state
+  // transitions still use firestoreWriteDeviceState().
   if (millis() - g_lastHeartbeat > HEARTBEAT_MS) {
     g_lastHeartbeat = millis();
     const char* hb = (state == IDLE) ? "listening" : "asking";
-    firestoreWriteDeviceState(hb, g_currentQuestion);
+    firestoreHeartbeat(hb, g_currentQuestion);
   }
 
 #if USE_WAKE_WORD

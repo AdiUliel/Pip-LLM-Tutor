@@ -156,17 +156,59 @@ function parseSubject(transcript) {
 // skips the 44-byte WAV header), so the audioConfig below must stay in sync
 // with tts_player.h on the ESP32.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Shared ADC access token (Compute metadata server) ────────────────────────
+// Used by every Google API call this file makes via Application Default
+// Credentials — TTS, STT — so the token fetch lives in exactly one place.
+async function getAccessToken() {
+  const tokenRes = await fetch(
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    { headers: { "Metadata-Flavor": "Google" } }
+  );
+  const { access_token } = await tokenRes.json();
+  return access_token;
+}
+
+// ── Google Speech-to-Text recognise ──────────────────────────────────────────
+// audioBase64 = base64 of LINEAR16 16 kHz mono PCM. Returns the transcript ("" if
+// nothing was recognised). Shared by the transcribeAudio Cloud Function (device
+// sends base64 JSON) and processTurn's Phase-2 audio path (device sends raw PCM in
+// the body, which we base64 here for Google). Throws on a non-OK STT response.
+async function recognizeSpeech(audioBase64, languageCode = "he-IL") {
+  const accessToken = await getAccessToken();
+  const sttRes = await fetch(
+    "https://speech.googleapis.com/v1/speech:recognize",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        audio: { content: audioBase64 },
+        config: {
+          encoding:        "LINEAR16",
+          sampleRateHertz: 16000,
+          languageCode,
+          model:           "default",
+        },
+      }),
+    }
+  );
+  if (!sttRes.ok) {
+    const errText = await sttRes.text();
+    throw new Error(`STT HTTP ${sttRes.status}: ${errText}`);
+  }
+  const sttData = await sttRes.json();
+  return sttData.results?.[0]?.alternatives?.[0]?.transcript ?? "";
+}
+
 // Low-level Google TTS call → MP3 Buffer (no Storage). Shared by the URL-based
 // path (synthesizeAudio) and the bytes-in-response path (processTurn).
 async function ttsToMp3Buffer(text) {
   const speech = String(text || "").trim();
   if (!speech) return null;
 
-  const tokenRes = await fetch(
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-    { headers: { "Metadata-Flavor": "Google" } }
-  );
-  const { access_token } = await tokenRes.json();
+  const access_token = await getAccessToken();
 
   const ttsRes = await fetch(
     "https://texttospeech.googleapis.com/v1/text:synthesize",
@@ -710,16 +752,26 @@ exports.submitChildAnswer = onCall(async (request) => {
 //    `https://` prefix. The value is now a Storage URL, not base64.)
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-// processTurn — the synchronous device turn (Phase 1).
+// processTurn — the synchronous device turn (Phase 1 + Phase 2).
 //
-// The device POSTs {sessionId, childAnswer} and BLOCKS on one HTTPS call that:
-//   grade (deterministic) → gated Gemini (thinking off) → Google TTS → writes the
-//   same session/questions/exchanges docs → returns the result INLINE.
+// Two request shapes, same inline response:
 //
-// Response: feedback/emotion/next-question/flags in headers (Hebrew base64-encoded
-// since header values must be ASCII); the MP3 bytes as the response BODY. This
-// removes, in one shot, the device's Firestore write, the Eventarc trigger, the
-// poll loop, and the separate Storage download that the old post+poll path paid.
+//   Phase 1 (text):  POST application/json {sessionId, childAnswer}
+//                    — the device transcribed on-device first.
+//   Phase 2 (audio): POST application/octet-stream  ?fmt=pcm16&sessionId=&lang=
+//                    body = raw LINEAR16 16 kHz mono PCM. This function runs STT
+//                    ITSELF, so the device skips the separate transcribeAudio call
+//                    (one fewer ~2 s TLS handshake) and uploads RAW PCM (no base64,
+//                    -33% bytes over the slow device link). No speech recognised →
+//                    X-Stt-Empty:1 + empty body so the device reprompts locally,
+//                    without creating an exchange or spending Gemini/TTS on silence.
+//
+// Either way the function does: grade (deterministic) → gated Gemini (thinking
+// off) → Google TTS → writes the same session/questions/exchanges docs → returns
+// the result INLINE: feedback/emotion/next-question/flags in headers (Hebrew
+// base64-encoded since header values must be ASCII); the MP3 bytes as the response
+// BODY. This removes, in one shot, the device's Firestore write, the Eventarc
+// trigger, the poll loop, and the separate Storage download the old path paid.
 //
 // The exchange doc is created with status "processing" (NOT "pending"), so the
 // answerQuestion trigger — which only acts on "pending" — skips it. answerQuestion
@@ -740,9 +792,38 @@ exports.processTurn = onRequest(
       return res.status(401).json({ error: "Invalid auth token" });
     }
 
-    const { sessionId, childAnswer } = req.body || {};
-    if (!sessionId || typeof childAnswer !== "string") {
-      return res.status(400).json({ error: "sessionId and childAnswer (string) required" });
+    // ── Resolve the child's answer: text (JSON body) or audio (raw PCM body) ──
+    let sessionId, childAnswer;
+    if (req.query.fmt === "pcm16") {
+      // Phase 2: raw PCM in the body; transcribe here.
+      sessionId = String(req.query.sessionId || "");
+      const languageCode = String(req.query.lang || "he-IL");
+      const pcm = req.rawBody;
+      if (!sessionId || !Buffer.isBuffer(pcm) || pcm.length < 1000) {
+        return res.status(400).json({ error: "sessionId (query) and PCM body required" });
+      }
+      let transcript;
+      try {
+        transcript = await recognizeSpeech(pcm.toString("base64"), languageCode);
+      } catch (err) {
+        console.error("[processTurn] STT failed:", err);
+        return res.status(502).json({ error: "STT failed" });
+      }
+      transcript = String(transcript || "").trim();
+      if (!transcript) {
+        // No speech recognised — let the device reprompt locally (SD-cached, instant)
+        // instead of fabricating a turn. No exchange/Gemini/TTS is spent on silence.
+        console.log(`[processTurn] STT empty for session ${sessionId} — reprompt`);
+        res.set("X-Stt-Empty", "1");
+        res.set("Content-Type", "application/octet-stream");
+        return res.status(200).send(Buffer.alloc(0));
+      }
+      childAnswer = transcript;
+    } else {
+      ({ sessionId, childAnswer } = req.body || {});
+      if (!sessionId || typeof childAnswer !== "string") {
+        return res.status(400).json({ error: "sessionId and childAnswer (string) required" });
+      }
     }
 
     try {
@@ -793,6 +874,8 @@ exports.processTurn = onRequest(
       res.set("X-Session-Ended",     result.sessionEnded ? "1" : "0");
       res.set("X-Feedback-B64",      b64(result.spokenFeedback));
       res.set("X-Next-Question-B64", b64(result.nextQuestion));
+      // Echo what we heard so the audio path can log/show it (Phase 2 STT result).
+      res.set("X-Transcript-B64",    b64(childAnswer));
 
       if (audioBuffer && audioBuffer.length > 0) {
         res.set("Content-Type", "audio/mpeg");
@@ -902,55 +985,13 @@ exports.transcribeAudio = onRequest(
     const { audio, languageCode = "he-IL" } = req.body;
     if (!audio) return res.status(400).json({ error: "No audio provided" });
 
-    let accessToken;
     try {
-      const tokenRes = await fetch(
-        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-        { headers: { "Metadata-Flavor": "Google" } }
-      );
-      const tokenData = await tokenRes.json();
-      accessToken = tokenData.access_token;
-    } catch (err) {
-      console.error("Failed to get access token:", err);
-      return res.status(500).json({ error: "Auth error" });
-    }
-
-    try {
-      const sttRes = await fetch(
-        "https://speech.googleapis.com/v1/speech:recognize",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":  "application/json",
-            "Authorization": `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            audio: { content: audio },
-            config: {
-              encoding:        "LINEAR16",
-              sampleRateHertz: 16000,
-              languageCode,
-              model:           "default",
-            },
-          }),
-        }
-      );
-
-      if (!sttRes.ok) {
-        const errText = await sttRes.text();
-        console.error("STT error:", errText);
-        return res.status(502).json({ error: "STT failed", detail: errText });
-      }
-
-      const sttData = await sttRes.json();
-      const transcript =
-        sttData.results?.[0]?.alternatives?.[0]?.transcript ?? "";
-
+      const transcript = await recognizeSpeech(audio, languageCode);
       console.log(`Transcribed: "${transcript}"`);
       return res.json({ transcript });
     } catch (err) {
       console.error("STT call failed:", err);
-      return res.status(500).json({ error: err.message });
+      return res.status(502).json({ error: "STT failed", detail: err.message });
     }
   }
 );

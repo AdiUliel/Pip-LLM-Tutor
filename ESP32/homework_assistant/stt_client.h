@@ -3,20 +3,9 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "secrets.h"
-
-// Minimal read-only Stream over a PSRAM buffer.
-// HTTPClient::sendRequest(method, stream, size) reads in 4KB chunks,
-// avoiding the single large write() that fails for 150KB+ SSL payloads.
-class MemStream : public Stream {
-  const uint8_t* _buf;
-  size_t _len, _pos;
-public:
-  MemStream(const uint8_t* buf, size_t len) : _buf(buf), _len(len), _pos(0) {}
-  int  available() override { return (int)min(_len - _pos, (size_t)1024); } // cap → HTTPClient reads in 1KB chunks
-  int  read()      override { return _pos < _len ? _buf[_pos++] : -1; }
-  int  peek()      override { return _pos < _len ? _buf[_pos]   : -1; }
-  size_t write(uint8_t) override { return 0; }
-};
+// NOTE: MemStream (PSRAM-backed upload Stream) now lives in firebase_client.h,
+// which is included before this header in homework_assistant.ino. It's shared
+// with firestoreProcessTurnAudio()'s raw-PCM upload.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Speech-to-Text client

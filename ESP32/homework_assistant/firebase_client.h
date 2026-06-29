@@ -7,6 +7,22 @@
 #include "mbedtls/base64.h"   // decode base64 header fields from processTurn
 #include "secrets.h"
 
+// ── Read-only Stream over a PSRAM buffer ─────────────────────────────────────
+// HTTPClient::sendRequest(method, stream, size) reads in small chunks instead of
+// one big write(), which fails for large SSL payloads (HTTP -3 on ~150 KB+). Used
+// by firestoreProcessTurnAudio() here (raw PCM upload) and by the STT client
+// (stt_client.h, included AFTER this header — it relies on this definition).
+class MemStream : public Stream {
+  const uint8_t* _buf;
+  size_t _len, _pos;
+public:
+  MemStream(const uint8_t* buf, size_t len) : _buf(buf), _len(len), _pos(0) {}
+  int  available() override { return (int)min(_len - _pos, (size_t)1024); } // cap → reads in 1KB chunks
+  int  read()      override { return _pos < _len ? _buf[_pos++] : -1; }
+  int  peek()      override { return _pos < _len ? _buf[_pos]   : -1; }
+  size_t write(uint8_t) override { return 0; }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Firebase REST client — connects the device to the team's tutor backend.
 //
@@ -441,6 +457,7 @@ struct TurnResult {
   bool   shouldTakeBreak = false;
   bool   isCorrect       = false;
   bool   sessionEnded    = false;  // backend signals explicit session end (exit intent / continue declined)
+  bool   sttEmpty        = false;  // Phase 2 audio path: server STT found no speech → caller reprompts
   // Phase 1 (processTurn): MP3 bytes returned inline in the HTTP body. Owned by
   // the caller — free(audioBuf) after playback. Empty on the old path.
   uint8_t* audioBuf    = nullptr;
@@ -539,6 +556,37 @@ static String _b64ToString(const String& b64) {
   return s;
 }
 
+// ── Stream the HTTP response body (MP3 bytes) into a fresh PSRAM buffer ───────
+// Sets out.audioBuf (caller frees) + out.audioLen. Shared by both inline-audio
+// turn paths (firestoreProcessTurn / firestoreProcessTurnAudio) so the read loop
+// lives in one place. Leaves out.audioBuf=nullptr / out.audioLen=0 on alloc fail.
+static void _readMp3BodyToPSRAM(HTTPClient& http, TurnResult& out) {
+  int contentLen = http.getSize();
+  const size_t MAX_MP3 = 256 * 1024;
+  size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
+  out.audioBuf = (uint8_t*)ps_malloc(bufCap);
+  out.audioLen = 0;
+  if (!out.audioBuf) {
+    Serial.println("[Firestore] processTurn: ps_malloc failed for audio buffer.");
+    return;
+  }
+  WiFiClient* stream = http.getStreamPtr();
+  size_t filled = 0;
+  uint32_t lastData = millis();
+  while (filled < bufCap) {
+    int avail = stream->available();
+    if (avail > 0) {
+      int n = stream->readBytes(out.audioBuf + filled, min((size_t)avail, bufCap - filled));
+      filled += n;
+      lastData = millis();
+    } else if (!http.connected() || millis() - lastData > 3000) {
+      break;
+    }
+    yield();
+  }
+  out.audioLen = filled;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // firestoreProcessTurn — Phase 1: ONE synchronous call replaces post + poll +
 // trigger + separate audio download. Sends {sessionId, childAnswer}; the function
@@ -588,33 +636,87 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
 
     // ── MP3 body → PSRAM (caller frees out.audioBuf) ──────────────────────────
-    int contentLen = http.getSize();
-    const size_t MAX_MP3 = 256 * 1024;
-    size_t bufCap = (contentLen > 0 && (size_t)contentLen <= MAX_MP3) ? (size_t)contentLen : MAX_MP3;
-    out.audioBuf = (uint8_t*)ps_malloc(bufCap);
-    out.audioLen = 0;
-    if (out.audioBuf) {
-      WiFiClient* stream = http.getStreamPtr();
-      size_t filled = 0;
-      uint32_t lastData = millis();
-      while (filled < bufCap) {
-        int avail = stream->available();
-        if (avail > 0) {
-          int n = stream->readBytes(out.audioBuf + filled, min((size_t)avail, bufCap - filled));
-          filled += n;
-          lastData = millis();
-        } else if (!http.connected() || millis() - lastData > 3000) {
-          break;
-        }
-        yield();
-      }
-      out.audioLen = filled;
-    } else {
-      Serial.println("[Firestore] processTurn: ps_malloc failed for audio buffer.");
-    }
+    _readMp3BodyToPSRAM(http, out);
     http.end();
     out.ok = true;
     Serial.printf("[Firestore] processTurn done: correct=%d audio=%u bytes\n",
+                  out.isCorrect, (unsigned)out.audioLen);
+    return true;
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// firestoreProcessTurnAudio — Phase 2: fold STT INTO processTurn.
+//
+// The device uploads the RAW mono PCM (LINEAR16 16 kHz) as the request BODY:
+//   • no base64 — drops 33% vs the JSON STT upload (over the slow device link);
+//   • no separate transcribeAudio round trip — one fewer ~2 s TLS handshake.
+// The function transcribes, then grades + (gated) Gemini + TTS, and returns the
+// result inline exactly like firestoreProcessTurn (metadata in headers, MP3 in the
+// body). When the server's STT finds no speech it sets out.sttEmpty so the caller
+// reprompts locally (instant SD-cached phrase) instead of wasting a turn.
+// Fills out.audioBuf/out.audioLen — caller must free(out.audioBuf).
+// ─────────────────────────────────────────────────────────────────────────────
+bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size_t pcmLen,
+                               const char* langCode, TurnResult& out) {
+  String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
+               ".cloudfunctions.net/processTurn?fmt=pcm16&sessionId=" + sessionId +
+               "&lang=" + String(langCode);
+
+  const char* hdrKeys[] = {
+    "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended",
+    "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id",
+    "X-Stt-Empty", "X-Transcript-B64"
+  };
+  const size_t hdrCount = sizeof(hdrKeys) / sizeof(hdrKeys[0]);
+
+  // Up to 2 attempts so an expired token (401) can be refreshed and retried once.
+  for (int attempt = 0; attempt < 2; attempt++) {
+    _initSSL();
+    HTTPClient http;
+    http.begin(_sslClient, url);
+    http.addHeader("Content-Type", "application/octet-stream");
+    http.addHeader("Authorization", "Bearer " + g_idToken);
+    http.setTimeout(60000);
+    http.collectHeaders(hdrKeys, hdrCount);
+
+    // Stream the raw PCM in 1 KB chunks (the single big SSL write() fails for large
+    // payloads — same reason the STT path streams). A few-second answer is
+    // ~60–120 KB of mono PCM.
+    MemStream bodyStream(pcm, pcmLen);
+    int code = http.sendRequest("POST", &bodyStream, pcmLen);
+    if (code == 401 && attempt == 0) { firebaseRefreshToken(); http.end(); continue; }
+    if (code != 200) {
+      Serial.printf("[Firestore] processTurnAudio HTTP %d — %s\n", code, http.getString().c_str());
+      http.end();
+      return false;
+    }
+
+    // ── No speech recognised server-side → caller reprompts locally ───────────
+    if (http.header("X-Stt-Empty") == "1") {
+      http.end();
+      out.ok = true;
+      out.sttEmpty = true;
+      Serial.println("[Firestore] processTurnAudio: server STT empty — will reprompt.");
+      return true;
+    }
+
+    // ── Metadata from headers ─────────────────────────────────────────────────
+    out.isCorrect       = http.header("X-Is-Correct")    == "1";
+    out.emotion         = http.header("X-Emotion");
+    out.shouldTakeBreak = http.header("X-Should-Break")  == "1";
+    out.sessionEnded    = http.header("X-Session-Ended") == "1";
+    out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
+    out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
+    String transcript   = _b64ToString(http.header("X-Transcript-B64"));
+    if (transcript.length()) Serial.println("[STT] (server) heard: " + transcript);
+
+    // ── MP3 body → PSRAM (caller frees out.audioBuf) ──────────────────────────
+    _readMp3BodyToPSRAM(http, out);
+    http.end();
+    out.ok = true;
+    Serial.printf("[Firestore] processTurnAudio done: correct=%d audio=%u bytes\n",
                   out.isCorrect, (unsigned)out.audioLen);
     return true;
   }
@@ -868,6 +970,70 @@ void firestoreWriteDeviceState(const String& status,
     Serial.printf("[Firestore] deviceState PATCH HTTP %d\n", code);
   }
   http.end();
+}
+
+// ── Keep-alive heartbeat (loop() only) ───────────────────────────────────────
+// firestoreWriteDeviceState() calls _initSSL() (stop + reopen socket), so the
+// 10 s heartbeat paid a full ~2 s TLS handshake every time — and in wake-word mode
+// that's ~2 s every 10 s where loop() can't poll "היי פיפ". This keeps ONE
+// keep-alive HTTPClient across calls (the proven setReuse pattern from
+// firestorePollForTurnResult): only the FIRST heartbeat after another Firestore
+// call pays the handshake; the rest re-PATCH on the open socket (~0.1 s).
+//
+// It reuses the SHARED _sslClient — NOT a second concurrent TLS connection (that
+// OOMs this board; see the note below). Any other call's _initSSL() simply stops
+// the socket, and the next heartbeat's sendRequest() reconnects it transparently.
+// Use this ONLY for the periodic loop heartbeat; meaningful state transitions
+// still go through firestoreWriteDeviceState().
+static HTTPClient _hbHttp;
+static bool _hbInit = false;
+
+void firestoreHeartbeat(const String& status,
+                        const String& currentQuestion = "",
+                        const String& subject = SESSION_SUBJECT) {
+  if (g_firebaseUid.isEmpty()) return;
+
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
+  url += "?updateMask.fieldPaths=status";
+  url += "&updateMask.fieldPaths=lastHeartbeat";
+  url += "&updateMask.fieldPaths=currentQuestion";
+  url += "&updateMask.fieldPaths=activeSubject";
+
+  if (!_hbInit) {
+    _initSSL();                          // fresh socket for the first heartbeat
+    _hbHttp.begin(_sslClient, url);
+    _hbHttp.setReuse(true);
+    _hbHttp.addHeader("Content-Type", "application/json");
+    _hbHttp.addHeader("Authorization", "Bearer " + g_idToken);  // baked once; rebuilt on 401
+    _hbInit = true;
+  }
+
+  JsonDocument body;
+  body["fields"]["status"]["stringValue"]           = status;
+  body["fields"]["lastHeartbeat"]["timestampValue"] = isoNow();
+  if (currentQuestion.length() > 0)
+    body["fields"]["currentQuestion"]["stringValue"] = currentQuestion;
+  else
+    body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
+  body["fields"]["activeSubject"]["stringValue"]     = subject;
+  String bodyStr; serializeJson(body, bodyStr);
+
+  int code = _hbHttp.sendRequest("PATCH", bodyStr);
+  // Always drain the body — a reused keep-alive socket must be left clean.
+  _hbHttp.getString();
+  if (code == 401) {
+    // Token rotated since we baked the Authorization header — refresh + rebuild.
+    firebaseRefreshToken();
+    _hbHttp.end();
+    _hbInit = false;                     // next heartbeat re-inits with the new token
+    return;
+  }
+  if (code != 200) {
+    Serial.printf("[Firestore] heartbeat PATCH HTTP %d\n", code);
+    if (code <= 0) { _hbHttp.end(); _hbInit = false; }  // socket dead — rebuild next time
+  }
 }
 
 // NOTE: an earlier revision offloaded the two hot-path deviceState writes to a
