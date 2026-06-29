@@ -100,6 +100,18 @@
 #define WW_TEST_MODE 0
 #endif
 
+// ── Wake-word DATA CAPTURE mode (record real samples to SD for RETRAINING) ─────
+// Set to 1 to boot straight into the SD recorder (see ww_capture.h): say "hey pip"
+// and capture room/bed noise through THIS device's real mic, then retrain the model
+// on it. Skips WiFi/Firebase and never returns. Mutually exclusive with normal use
+// and with WW_TEST_MODE — reflash with WW_CAPTURE_MODE 0 to go back to the tutor.
+#ifndef WW_CAPTURE_MODE
+#define WW_CAPTURE_MODE 0
+#endif
+#if WW_CAPTURE_MODE
+  #include "ww_capture.h"     // needs the codec (initES8311) + SD (sdCacheBegin)
+#endif
+
 #if USE_WAKE_WORD
   #include "wake_word.h"
 #endif
@@ -556,6 +568,12 @@ void setup() {
 
   // ES8311 codec via I2C.
   if (!initES8311()) Serial.println("⚠️  ES8311 init failed. Audio may not work.");
+
+#if WW_CAPTURE_MODE
+  // Data-collection build: record real "hey pip" + noise to the SD card, then halt.
+  // Needs the codec (just above) and the SD card (sdCacheBegin, above). Never returns.
+  wakeWordRunCaptureMode();
+#endif
 
 #if USE_WAKE_WORD
   // Self-contained "hey pip" model (no Edge Impulse). Needs the codec up (shares the mic).
