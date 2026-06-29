@@ -64,13 +64,17 @@ function detectExitIntent(text) {
 }
 
 // ── Material-based question fetching ─────────────────────────────────────────
-// If the child's profile has useUploadedMaterials:true, pull an unused question
-// from the parent's enabled material docs. Falls back to the deterministic
-// generator if no eligible material questions remain.
+// Pull an unused question from the CHILD's enabled uploaded material docs for
+// this subject. Returns null (→ caller falls back to the deterministic
+// generator) when no eligible material question remains. The parent app and
+// extractQuestionsFromMaterial both write materials as items[] of
+// {question, answer}; we map those to the engine's {prompt, expectedAnswer}.
+// Scoped by childId (which materials carry and the session knows) — there's no
+// per-child opt-in flag; an uploaded material that's toggled `enabled` IS the
+// opt-in.
 async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
-  if (!child?.useUploadedMaterials) return null;
-  const parentId = session.parentId;
-  if (!parentId) return null;
+  const childId = session.childId;
+  if (!childId) return null;
 
   const usedSnap = await db
     .collection("sessions").doc(sessionId)
@@ -78,16 +82,18 @@ async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
   const usedPrompts = new Set(usedSnap.docs.map((d) => d.data().prompt));
 
   const materialsSnap = await db.collection("materials")
-    .where("parentId", "==", parentId)
+    .where("childId", "==", childId)
     .where("subject", "==", subject)
     .where("enabled", "==", true)
     .get();
 
   const candidates = [];
   materialsSnap.forEach((doc) => {
-    (doc.data().questions || []).forEach((q) => {
-      if (q.prompt && q.expectedAnswer && !usedPrompts.has(q.prompt)) {
-        candidates.push(q);
+    (doc.data().items || []).forEach((it) => {
+      const prompt = it && it.question ? String(it.question).trim() : "";
+      const answer = it && it.answer ? String(it.answer).trim() : "";
+      if (prompt && answer && !usedPrompts.has(prompt)) {
+        candidates.push({ prompt, answer });
       }
     });
   });
@@ -98,10 +104,10 @@ async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
   return {
     subject,
     prompt: q.prompt,
-    expectedAnswer: String(q.expectedAnswer),
-    topic: q.topic || subject,
+    expectedAnswer: q.answer,
+    topic: subject,
     difficulty: session.currentDifficulty || 1,
-    answerVariants: [String(q.expectedAnswer).toLowerCase().trim()],
+    answerVariants: [q.answer.toLowerCase().trim()],
     fromMaterial: true,
   };
 }
@@ -266,12 +272,16 @@ async function createInitialQuestion(db, sessionRef, sessionData, child) {
   const subject = sessionData.subject || "math";
   const difficulty = clamp(sessionData.currentDifficulty || levelFromChild(child || {}, subject), 1, 10);
   const topics = subjectTopicsFromChild(child || {}, subject);
-  const question = generateQuestion({
-    subject,
-    age: child?.age || 8,
-    difficulty,
-    topics,
-  });
+  // Prefer an uploaded-material question for the very first question too; fall
+  // back to the deterministic generator when the child has no material questions.
+  const question =
+    (await fetchMaterialQuestion(db, sessionRef.id, sessionData, child, subject)) ||
+    generateQuestion({
+      subject,
+      age: child?.age || 8,
+      difficulty,
+      topics,
+    });
   await sessionRef.set(
     {
       status: "active",
