@@ -19,9 +19,13 @@
 //     channel. I2S is installed only while listening and released the moment the
 //     wake word fires, so it never collides with the recorder or the TTS player.
 //
-// TUNING: if it false-fires, raise WAKE_WORD_THRESHOLD (e.g. 0.85–0.92); if it
-// misses, lower it (≈0.70). The model was trained on synthetic voices, so expect
-// to tune this once on the real device. See Documentation/WAKE_WORD.md.
+// TUNING: the defaults below are tuned for SENSITIVITY — the reported failure was
+// "rarely detects", made worse by the partly-covered mic hole (= a quieter mic).
+// If it now FALSE-fires, raise WAKE_WORD_THRESHOLD (toward 0.80–0.90), raise
+// WW_MIN_PEAK, or raise WW_CONSEC. If it still MISSES, build with WW_TEST_MODE 1,
+// say "hey pip", read the 'max' score column, and set WAKE_WORD_THRESHOLD a touch
+// below it. The model was trained on synthetic voices, so expect to tune this once
+// on the real device. See Documentation/WAKE_WORD.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
@@ -30,9 +34,12 @@
 #include "pins.h"
 #include "ww_infer.h"     // pure-C log-mel + CNN (includes hey_pip_model.h)
 
-// Confidence (0..1) on the "hey pip" class needed to trigger.
+// Confidence (0..1) on the "hey pip" class needed to trigger. Lowered 0.80→0.70:
+// once the input is leveled correctly (noise gate + auto-gain below), a real
+// "hey pip" scores well above this — 0.80 was rejecting borderline-but-valid
+// utterances, especially when the wake word is spoken at arm's length or farther.
 #ifndef WAKE_WORD_THRESHOLD
-#define WAKE_WORD_THRESHOLD 0.80f
+#define WAKE_WORD_THRESHOLD 0.70f
 #endif
 
 // ── Input auto-gain ───────────────────────────────────────────────────────────
@@ -47,29 +54,39 @@
 #define WW_TARGET_PEAK 0.60f
 #endif
 #ifndef WW_MAX_GAIN
-#define WW_MAX_GAIN 20.0f          // was 40 — high gain on a silent room amplified noise into false fires
+#define WW_MAX_GAIN 50.0f          // 20→50: with the mic hole partly covered the window
+                                   // peak can sit ~0.012–0.02, which needs 30–50× to reach
+                                   // WW_TARGET_PEAK. The noise gate (WW_MIN_PEAK) still stops
+                                   // a silent room from being amplified into a false fire.
 #endif
 
 // ── False-fire suppression ────────────────────────────────────────────────────
-// NOISE GATE: ignore any window whose RAW peak is below this. A quiet room sits
-// around peak ~0.015; a real "hey pip" puts the window at ~0.07+. Gating below
-// WW_MIN_PEAK means silence is never amplified-then-scored, which is what caused
-// the 0.4–0.8 "ghost" scores. Raise it if you still get false fires; lower it if
-// a softly-spoken wake word gets ignored (watch the 'win' column in test mode).
+// NOISE GATE: ignore any window whose RAW peak is below this — pure silence must
+// never be amplified-then-scored (that produced the 0.4–0.8 "ghost" scores). But
+// the gate MUST sit below a real, possibly-distant "hey pip": with the mic hole
+// partly covered a valid utterance can peak as low as ~0.015, so the gate lives
+// just under that and we lean on the model's dedicated noise class + the WW_CONSEC
+// debounce to reject the occasional room-noise window that slips through. Raise it
+// if a quiet room false-fires; lower it if a soft wake word is ignored (watch the
+// 'win' column in test mode).
 #ifndef WW_MIN_PEAK
-#define WW_MIN_PEAK 0.030f
+#define WW_MIN_PEAK 0.015f         // 0.030→0.015 — 0.030 was gating real (distant/quiet) wake words
 #endif
 // DEBOUNCE: a real wake word stays in the 1 s window for several polls, so it
 // scores high on WW_CONSEC polls in a row; stray noise blips don't. Require this
 // many consecutive over-threshold polls before firing.
 #ifndef WW_CONSEC
-#define WW_CONSEC 3   // was 2 — demand 3 over-threshold polls in a row to suppress one-off false fires
+#define WW_CONSEC 2   // 3→2: 3-in-a-row over a high threshold was hard to satisfy for real
+                      // (quieter) utterances. 2 consecutive polls still rejects single-poll
+                      // score jitter. Raise back to 3 if you start getting false fires.
 #endif
 
-// New audio pulled in per poll (samples @16 kHz). 3200 = 200 ms → ~200 ms detect
-// granularity; the model still sees the full 1 s window each time.
+// New audio pulled in per poll (samples @16 kHz). 1600 = 100 ms → ~100 ms detect
+// granularity; the model still sees the full 1 s window each time. Smaller hop =
+// the phrase is scored at more alignments inside the window (a streaming-KWS recall
+// win) and detection reacts ~100 ms sooner, at the cost of one extra inference/100 ms.
 #ifndef WW_HOP
-#define WW_HOP 3200
+#define WW_HOP 1600
 #endif
 
 // ── Reused from the main sketch (identical ES8311 I2S clocking for listen+record)

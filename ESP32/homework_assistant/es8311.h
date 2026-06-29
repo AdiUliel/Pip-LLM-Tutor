@@ -83,8 +83,13 @@ bool initES8311() {
   // ── DAC equalizer bypass ──────────────────────────────────────────────────
   es8311_write(0x37, 0x08);   // Bypass DAC EQ
 
-  // ── DAC volume: 100% ──────────────────────────────────────────────────────
-  es8311_write(0x32, 0xBF);
+  // ── DAC volume (TTS loudness) ─────────────────────────────────────────────
+  // Reg 0x32 is the master DAC digital volume: 0.5 dB/step, 0xBF = 0 dB (unity).
+  // Bumped 0xBF→0xC5 (+3 dB) so TTS is a bit louder now that the speaker opening is
+  // partly covered. Each +2 steps ≈ +1 dB (e.g. 0xC8 ≈ +4.5 dB); back off toward
+  // 0xBF if loud TTS distorts — this is pure digital gain, so it can clip source
+  // peaks that are already near full-scale (watch the "peak=…/32767" line in tts_player).
+  es8311_write(0x32, 0xC5);
 
   Serial.println("[ES8311] Init OK");
   return true;
