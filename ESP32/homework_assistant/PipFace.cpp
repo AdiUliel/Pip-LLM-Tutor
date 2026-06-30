@@ -453,7 +453,7 @@ void drawStrip(const char* textSnap, int starsSnap) {
     // Pixel width is independent of bidi reordering (same glyphs), so we can
     // measure on the logical text and only reorder (bidiToVisual) at draw time.
     String logical = textSnap;
-    String visual = bidiToVisual(logical);
+    String visual = bidiToVisual(logical.c_str());
 
     if (u8f.getUTF8Width(visual.c_str()) <= avail) {
       // Fits on one line — right-align (RTL), 16 px right pad, baseline 290.
@@ -484,14 +484,14 @@ void drawStrip(const char* textSnap, int starsSnap) {
       }
 
       // Top line, right-aligned, baseline 272.
-      String v1 = bidiToVisual(line1);
+      String v1 = bidiToVisual(line1.c_str());
       u8f.setCursor(240 - 16 - u8f.getUTF8Width(v1.c_str()), 272);
       u8f.print(v1);
 
       // Bottom line, baseline 292. If it's STILL too wide, trim whole
       // codepoints off the end + ellipsis (left-aligned); else right-align.
       if (line2.length()) {
-        String v2 = bidiToVisual(line2);
+        String v2 = bidiToVisual(line2.c_str());
         if (u8f.getUTF8Width(v2.c_str()) > avail) {
           while (v2.length() > 0 &&
                  u8f.getUTF8Width((v2 + "...").c_str()) > avail) {
