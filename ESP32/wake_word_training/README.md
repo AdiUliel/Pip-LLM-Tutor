@@ -1,5 +1,11 @@
 # "hey pip" wake-word — training pipeline
 
+> 🤖 **Retraining for robustness? START WITH [`RETRAIN_RUNBOOK.md`](RETRAIN_RUNBOOK.md).**
+> It's a self-contained, step-by-step handoff (real device recordings + neural-TTS +
+> heavy augmentation) meant to be executed by Claude on an Ubuntu machine. The notes
+> below describe the original v1 pipeline.
+
+
 This is exactly how the bundled model (`ESP32/homework_assistant/hey_pip_model.h`)
 was produced. It runs entirely offline — synthetic speech (espeak-ng) + a small
 CNN trained in TensorFlow, exported to plain C. No accounts, no cloud.
