@@ -92,6 +92,20 @@
 #define WW_HOP 1600
 #endif
 
+// Stereo slot carrying the mic. The ES8311 is mono and always lands on the SAME
+// I2S slot on this board (slot 1 / RIGHT); the other slot carries constant
+// clock/common-mode crosstalk at a steady ~0.007 (crest ~1.0). Pinned, not
+// auto-detected: the old energy-based boot calibration compared the two slots
+// over a 64 ms window and, whenever the room was quiet at boot, the crosstalk
+// slot out-energized the silent mic and the device locked onto the WRONG (deaf)
+// channel for the whole session — the root cause of "hey pip" intermittently
+// never firing. (The STT recorder uses the same energy pick but runs it AFTER
+// capturing loud speech, so it stays reliable there.) Flip to 0 only if a board
+// revision wires the mic on the other slot.
+#ifndef WW_MIC_CHANNEL
+#define WW_MIC_CHANNEL 1
+#endif
+
 // ── Reused from the main sketch (identical ES8311 I2S clocking for listen+record)
 void i2s_start_recording();
 void i2s_stop_recording();
@@ -130,13 +144,14 @@ inline bool wakeWordBegin(){
   return true;
 }
 
-// Pick the stereo slot that carries the mic (ES8311 is mono on one side).
+// Pin the mic to its fixed I2S slot (see WW_MIC_CHANNEL). We still read+discard
+// one DMA buffer so any codec-startup garbage doesn't enter the rolling window,
+// but we no longer let boot-time silence decide the channel (that locked onto the
+// deaf crosstalk slot — see WW_MIC_CHANNEL).
 static void ww_calibrate_channel(){
   const int FR=1024; static int16_t tmp[FR*2]; size_t br=0;
   i2s_read(I2S_PORT,(char*)tmp,sizeof(tmp),&br,portMAX_DELAY);
-  size_t fr=br/4; int64_t s0=0,s1=0;
-  for(size_t i=0;i<fr;i++){ s0+=(int64_t)tmp[i*2]*tmp[i*2]; s1+=(int64_t)tmp[i*2+1]*tmp[i*2+1]; }
-  ww_mic_ch=(s1>s0)?1:0;
+  ww_mic_ch = WW_MIC_CHANNEL;
 }
 
 // Begin listening: install I2S, find mic channel, clear the rolling window.
