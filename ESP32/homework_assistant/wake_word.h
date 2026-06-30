@@ -70,7 +70,10 @@
 // if a quiet room false-fires; lower it if a soft wake word is ignored (watch the
 // 'win' column in test mode).
 #ifndef WW_MIN_PEAK
-#define WW_MIN_PEAK 0.015f         // 0.030→0.015 — 0.030 was gating real (distant/quiet) wake words
+#define WW_MIN_PEAK 0.008f         // 0.030→0.015→0.008 — on-device measurement showed a real,
+                                   // normal-volume "hey pip" raw-peaks at ~0.012 through this
+                                   // board's built-in mic; 0.015 was squelching it before scoring.
+                                   // 0.008 sits between the ~0.004 quiet-room floor and ~0.012 speech.
 #endif
 // DEBOUNCE: a real wake word stays in the 1 s window for several polls, so it
 // scores high on WW_CONSEC polls in a row; stray noise blips don't. Require this
