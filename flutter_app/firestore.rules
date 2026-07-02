@@ -1,0 +1,79 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId));
+    }
+
+    function ownsSession(sessionId) {
+      return signedIn()
+        && sessionDoc(sessionId).data.deviceId == request.auth.uid;
+    }
+
+    // ── Devices ──────────────────────────────────────────────────────────────
+    match /devices/{deviceId} {
+      allow read, write: if signedIn() && request.auth.uid == deviceId;
+    }
+
+    match /deviceState/{deviceId} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Children / Materials ─────────────────────────────────────────────────
+    // Parent app creates and edits these. Device reads the child profile and
+    // enabled materials during a learning session.
+    match /children/{childId} {
+      allow read, write: if signedIn();
+    }
+
+    match /materials/{materialId} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Sessions ─────────────────────────────────────────────────────────────
+    match /sessions/{sessionId} {
+      allow read: if signedIn();
+
+      // A device or the app may create a session. Cloud Functions may also create
+      // sessions through Admin SDK and bypass these rules.
+      allow create: if signedIn()
+                    && request.resource.data.keys().hasAll(['childId', 'deviceId', 'subject', 'startedAt']);
+
+      // Device/app can update lightweight session state. LLM fields are usually
+      // written by Cloud Functions, but allowing signed-in updates keeps ESP32
+      // integration simple for the prototype.
+      allow update: if signedIn();
+      allow delete: if false;
+
+      // ── Exchanges ─────────────────────────────────────────────────────────
+      // New LLM tutor flow:
+      //   Device writes {type:'learning_turn', childAnswer:'...', status:'pending'}.
+      // Legacy helper flow:
+      //   Device writes {question:'...', status:'pending'}.
+      // Cloud Functions write answers using Admin SDK.
+      match /exchanges/{exchangeId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.status == 'pending'
+                      && (
+                        request.resource.data.childAnswer is string ||
+                        request.resource.data.childAnswerTranscript is string ||
+                        request.resource.data.question is string
+                      );
+        allow update, delete: if false;
+      }
+
+      // Per-question logs used by Reports / Session detail screens.
+      match /questions/{questionId} {
+        allow read: if signedIn();
+        allow create, update, delete: if false;
+      }
+    }
+  }
+}

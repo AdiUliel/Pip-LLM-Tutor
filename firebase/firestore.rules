@@ -1,0 +1,126 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function childParentForId(childId) {
+      return get(/databases/$(database)/documents/children/$(childId)).data.parentId;
+    }
+
+    // ── Devices ──────────────────────────────────────────────────────────────
+    match /devices/{deviceId} {
+      allow read, write: if signedIn() && request.auth.uid == deviceId;
+    }
+
+    // deviceState rules left loose intentionally; tighten in a follow-up
+    // (low impact: spoof heartbeat / online status only).
+    match /deviceState/{deviceId} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Pairing codes ───────────────────────────────────────────────────────
+    // `pairingCodes/TUTOR-XXXXXX = { firebaseUid }` — the device publishes
+    // this on every boot so the Flutter pairing sheet can translate the
+    // user-visible 6-digit code into the device's Firebase UID. Reads are
+    // public-to-any-signed-in-parent (you can't pair without it); writes are
+    // locked to the device claiming its own uid so one device can't squat
+    // on another's code.
+    match /pairingCodes/{codeId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+                    && request.resource.data.firebaseUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ── Parents (FCM tokens etc.) ───────────────────────────────────────────
+    // Each parent reads/writes only their own doc.
+    match /parents/{parentId} {
+      allow read, write: if signedIn() && request.auth.uid == parentId;
+    }
+
+    // ── Children ────────────────────────────────────────────────────────────
+    // Parent owns the doc via `parentId`; the paired device may also read its
+    // own child profile via `deviceId == auth.uid` (used by the ESP32 to
+    // resolve which child it's serving).
+    match /children/{childId} {
+      allow read: if signedIn() && (
+        resource.data.parentId == request.auth.uid ||
+        resource.data.deviceId == request.auth.uid
+      );
+      allow create: if signedIn()
+                    && request.resource.data.parentId == request.auth.uid;
+      allow update: if signedIn()
+                    && resource.data.parentId == request.auth.uid
+                    && request.resource.data.parentId == request.auth.uid;
+      allow delete: if signedIn()
+                    && resource.data.parentId == request.auth.uid;
+    }
+
+    // ── Materials ───────────────────────────────────────────────────────────
+    // Reads stay loose for now — Flutter's `watchMaterials(childId)` query
+    // doesn't carry parentId, and tightening would need a composite-index
+    // change + client refactor. Writes are locked down via the child doc's
+    // parentId so cross-tenant tampering is blocked.
+    match /materials/{materialId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+                    && childParentForId(request.resource.data.childId) == request.auth.uid;
+      allow update, delete: if signedIn()
+                    && childParentForId(resource.data.childId) == request.auth.uid;
+    }
+
+    // ── Sessions ────────────────────────────────────────────────────────────
+    // Reads stay loose for now (same reason as materials). Writes are owner-
+    // checked: only the device that created the session, or the parent listed
+    // on it, can update. Creates restricted to device-uid + sensible shape so
+    // a random signed-in user can't fabricate sessions in someone else's
+    // collection.
+    match /sessions/{sessionId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+                    && request.resource.data.deviceId == request.auth.uid
+                    && request.resource.data.keys().hasAll(['deviceId', 'startedAt'])
+                    && (
+                      request.resource.data.keys().hasAll(['childId', 'subject']) ||
+                      request.resource.data.status in ['identifying', 'identifying_child']
+                    );
+
+      allow update: if signedIn() && (
+        resource.data.deviceId == request.auth.uid ||
+        (resource.data.parentId is string && resource.data.parentId == request.auth.uid)
+      );
+
+      allow delete: if false;
+
+      // ── Exchanges ─────────────────────────────────────────────────────────
+      // Cloud Functions write answers using Admin SDK (bypasses rules).
+      // Device/app may create a pending exchange; updates/deletes are blocked
+      // so the device can't tamper with the cloud's answers.
+      match /exchanges/{exchangeId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.status == 'pending'
+                      && (
+                        request.resource.data.childAnswer is string ||
+                        request.resource.data.childAnswerTranscript is string ||
+                        request.resource.data.question is string ||
+                        request.resource.data.childNameTranscript is string ||
+                        request.resource.data.subjectTranscript is string
+                      );
+        allow update, delete: if false;
+      }
+
+      // Per-question logs used by Reports / Session detail screens.
+      // Read-only from clients — only Cloud Functions write these.
+      match /questions/{questionId} {
+        allow read: if signedIn();
+        allow create, update, delete: if false;
+      }
+    }
+  }
+}

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-S3 Display Module Hardware Documentation</title>
+    <style>
+        :root {
+            --primary: #1e293b;
+            --secondary: #334155;
+            --accent: #2563eb;
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --border: #e2e8f0;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-main);
+            background-color: var(--bg);
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            background-color: var(--primary);
+            color: white;
+            padding: 3rem 2rem;
+            text-align: center;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.5rem;
+            font-weight: 700;
+        }
+
+        header p {
+            margin: 0.5rem 0 0;
+            color: #cbd5e1;
+            font-size: 1.1rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+            display: flex;
+            gap: 2rem;
+        }
+
+        nav {
+            flex: 0 0 250px;
+            position: sticky;
+            top: 2rem;
+            height: max-content;
+            background: var(--surface);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        nav li {
+            margin-bottom: 0.75rem;
+        }
+
+        nav a {
+            text-decoration: none;
+            color: var(--secondary);
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        nav a:hover {
+            color: var(--accent);
+        }
+
+        main {
+            flex: 1;
+        }
+
+        section {
+            background: var(--surface);
+            padding: 2.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            color: var(--primary);
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+
+        h3 {
+            color: var(--secondary);
+            margin-top: 2rem;
+        }
+
+        .image-placeholder {
+            background-color: #f1f5f9;
+            border: 2px dashed #94a3b8;
+            border-radius: 8px;
+            padding: 3rem 1rem;
+            text-align: center;
+            margin: 1.5rem 0;
+            color: var(--text-muted);
+            font-family: monospace;
+            font-size: 0.9rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .image-placeholder svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        .diagram-img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            margin: 1.5rem 0;
+            display: block;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            text-align: left;
+        }
+
+        th {
+            background-color: #f8fafc;
+            font-weight: 600;
+        }
+
+        code {
+            background-color: #f1f5f9;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #e11d48;
+        }
+
+        .note {
+            background-color: #eff6ff;
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            margin: 1.5rem 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+            nav {
+                flex: auto;
+                position: relative;
+                top: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Hardware Documentation</h1>
+        <p>2.8inch IPS ESP32-S3 (ES3C28P & ES3N28P) Display Module</p>
+    </header>
+
+    <div class="container">
+        <nav>
+            <h3>Contents</h3>
+            <ul>
+                <li><a href="#overview">1. Hardware Overview</a></li>
+                <li><a href="#display-touch">2. Display & Touch</a></li>
+                <li><a href="#core">3. Core Controller</a></li>
+                <li><a href="#power">4. Power Management</a></li>
+                <li><a href="#audio">5. Audio Subsystem</a></li>
+                <li><a href="#interfaces">6. Expansion & Interfaces</a></li>
+                <li><a href="#controls">7. Controls & Indicators</a></li>
+            </ul>
+        </nav>
+
+        <main>
+            <!-- 1. Overview -->
+            <section id="overview">
+                <h2>1. Hardware Overview</h2>
+                <p>The display module integrates a 2.8-inch IPS LCD, capacitive touch, ESP32-S3 main control, audio processing, and various peripheral interfaces. Below is the mapping of the physical components on the PCB.</p>
+                
+                <img src="Screenshot 2026-05-26 191551.png" alt="Product Views (Front and Back)" class="diagram-img">
+                <img src="hardwarespec.png" alt="Module hardware resources (PCB Back View Components)" class="diagram-img">
+            </section>
+
+            <!-- 2. Display & Touch -->
+            <section id="display-touch">
+                <h2>2. Display & Touch</h2>
+                
+                <h3>LCD Screen</h3>
+                <p>The display is a 2.8-inch IPS screen driven by the <code>ILI9341V</code> IC with a resolution of 240x320. It connects to the ESP32-S3 using a 4-wire SPI communication interface. The ILI9341 uses 16 bits (RGB565) to control pixel display, supporting up to 65K colors.</p>
+                <div class="note">
+                    <strong>Note:</strong> Refer to the ILI9341V datasheet for exact SPI timing diagrams and format structures.
+                </div>
+
+                <h3>Capacitive Touch Screen</h3>
+                <p>The touch interface uses the <code>FT6336G</code> control IC and communicates with the ESP32-S3 via the I2C bus (slave address: <code>0x38</code>). It connects through a 0.5mm pitch FPC socket using four pins: <code>CTP_RST</code>, <code>CTP_INT</code>, <code>CTP_SDA</code>, and <code>CTP_SCL</code>.</p>
+                <img src="canvas3.png" alt="Capacitive touch screen interface circuit" class="diagram-img">
+
+                <h3>LCD Backlight Control</h3>
+                <p>Driven by a <code>BSS138</code> N-channel MOSFET. A high level on the <code>LCD_BL</code> pin conducts the drain/source, illuminating the screen. It supports PWM signal input for brightness adjustment.</p>
+                <img src="canvas13.png" alt="LCD backlight control circuit" class="diagram-img">
+                
+                <h3>18P LCD Panel Welding Interface</h3>
+                <p>An 18-pin 0.8mm pitch interface that carries the SPI signals, screen voltage pins, backlight circuit pins, and touch signals.</p>
+                <img src="canvas10.png" alt="18P LCD panel wire welding interface" class="diagram-img">
+            </section>
+
+            <!-- 3. Core Controller -->
+            <section id="core">
+                <h2>3. Core Controller</h2>
+                <p>The main control chip is the <strong>ESP32-S3R8</strong>, featuring an Xtensa dual-core 32-bit LX7 microprocessor (up to 240MHz). It includes 8MB of internal OPI PSRAM and connects to an external 16MB QSPI Flash.</p>
+                <ul>
+                    <li>Supports 2.4GHz Wi-Fi and Bluetooth V5.0.</li>
+                    <li>Equipped with an onboard PCB antenna circuit.</li>
+                    <li>Utilizes a 40MHz passive crystal oscillator.</li>
+                    <li>Includes a CLC filtering circuit for analog power.</li>
+                </ul>
+                <img src="canvas5.png" alt="ESP32-S3 Main control circuit" class="diagram-img">
+            </section>
+
+            <!-- 4. Power Management -->
+            <section id="power">
+                <h2>4. Power Management</h2>
+                
+                <h3>Type-C Interface</h3>
+                <p>Provides main power (5V), program downloading, and serial communication. Features a Schottky diode to prevent current reversal and static surge protection diodes.</p>
+                <img src="canvas.png" alt="Type-C Interface circuit" class="diagram-img">
+
+                <h3>5V to 3.3V Voltage Regulators</h3>
+                <p>Two separate <code>ME6217C33M5G</code> LDOs are used (max 800mA output) to isolate power paths: one exclusively for the audio circuits and one for the rest of the board.</p>
+                <img src="canvas1.png" alt="5V to 3.3V voltage regulator circuit" class="diagram-img">
+                <img src="canvas2.png" alt="Audio 5V to 3.3V voltage regulator circuit" class="diagram-img">
+
+                <h3>Battery Management (Charge & Discharge)</h3>
+                <p>Controlled by the <code>TP4054</code> IC. A 2-pin 1.25mm pitch interface allows connecting a battery. The TP4054 limits charging current via a resistor (up to 500mA). A P-channel MOSFET (Q3) cuts off battery power when 5V Type-C power is present.</p>
+                <img src="canvas9.png" alt="Battery charge and discharge management circuit" class="diagram-img">
+
+                <h3>Battery Level Detection</h3>
+                <p>Since the battery saturation voltage (4.2V) exceeds the ESP32-S3's ADC maximum (3.3V), a voltage divider (two 200K resistors) scales the voltage down. The ADC reads this value, which must be multiplied by 2 in software to get the true battery voltage.</p>
+                <img src="canvas12.png" alt="Battery level detection circuit" class="diagram-img">
+            </section>
+
+            <!-- 5. Audio Subsystem -->
+            <section id="audio">
+                <h2>5. Audio Subsystem</h2>
+
+                <h3>Audio Codec (ES8311)</h3>
+                <p>The <code>ES8311</code> IC handles decoding and encoding. It is configured via I2C (address <code>0x18</code>) and transmits audio over the I2S bus. It processes incoming MIC signals (via ADC) and outputs audio signals to the amplifier (via DAC).</p>
+                <img src="canvas4.png" alt="Audio codec control circuit" class="diagram-img">
+
+                <h3>Audio Power Amplifier (FM8002E)</h3>
+                <p>The <code>FM8002E</code> receives differential signals (OUTP/OUTN) from the codec and amplifies them for the speaker. At 5V, it can drive 1.5W (8 ohm load) or 2W (4 ohm load). The volume is controlled by gain adjustment resistors.</p>
+                <img src="audio_amp.png" alt="Audio power amplifier circuit" class="diagram-img">
+
+                <h3>Microphone Control</h3>
+                <p>A bottom-in MEMS silicon microphone is used for audio input. A CLC filtering circuit ensures clean signal transmission to the codec.</p>
+                <div class="note">
+                    <strong>Hardware Identification Note:</strong> The PCB features a literal <code>MIC</code> marking alongside a small microphone icon/drawing indicating the exact location of the component.
+                </div>
+                <img src="canvas18.png" alt="MIC control circuit" class="diagram-img">
+            </section>
+
+            <!-- 6. Expansion & Interfaces -->
+            <section id="interfaces">
+                <h2>6. Expansion & Interfaces</h2>
+
+                <h3>MicroSD Card Slot</h3>
+                <p>Operates using the SDIO communication method rather than standard SPI, allowing for higher-speed storage access.</p>
+                <img src="canvas15.png" alt="MicroSD card slot interface circuit" class="diagram-img">
+
+                <h3>Serial Module (UART)</h3>
+                <p>A 4-pin 1.25mm interface exposing RXD0 and TXD0. Features impedance balancing resistors and an anti-reverse field-effect transistor on the 5V line.</p>
+                <img src="canvas7.png" alt="Interface circuit of serial module" class="diagram-img">
+
+                <h3>Expanded IO & I2C</h3>
+                <p>Provides a 4-pin interface for general IO (IO21, IO14, IO3, IO2) which can double as an SPI bus, plus a dedicated 4-pin header for the I2C bus (IIC_SDA, IIC_SCL). The I2C pins cannot be used as standard GPIO.</p>
+                <img src="canvas8.png" alt="Extended IO and peripheral interface circuits" class="diagram-img">
+            </section>
+
+            <!-- 7. Controls & Indicators -->
+            <section id="controls">
+                <h2>7. Controls & Indicators</h2>
+
+                <h3>Buttons</h3>
+                <p><strong>RESET Key (KEY1):</strong> Grounds the reset pin of the ESP32-S3. An RC circuit provides delay to ensure stable resets.</p>
+                <img src="canvas6.png" alt="Key reset circuit" class="diagram-img">
+                
+                <p><strong>BOOT Key / Download Key (KEY2):</strong> Grounds IO0. Holding this while resetting places the ESP32-S3 into download mode. It can otherwise act as a general-purpose button.</p>
+                <img src="canvas11.png" alt="Download key circuit" class="diagram-img">
+
+                <h3>RGB LED (WS2812B)</h3>
+                <p>A built-in tri-color RGB LED utilizing an internal IC. Powered by 5V, it requires only a single IO pin to generate different color output based on timing waveforms.</p>
+                <img src="canvas14.png" alt="RGB three-color light control circuit" class="diagram-img">
+            </section>
+        </main>
+    </div>
+
+</body>
+</html>
