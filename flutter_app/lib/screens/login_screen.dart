@@ -2,6 +2,7 @@
 // Translates the design from ~/Downloads/ioT/screen-login.jsx.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
@@ -242,6 +243,34 @@ class _LoginScreenState extends State<LoginScreen> {
                             : (_signup ? 'יצירת חשבון' : 'כניסה'),
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    const _OrDivider(),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: busy
+                          ? null
+                          : () => context.read<AuthProvider>().signInWithGoogle(),
+                      style: OutlinedButton.styleFrom(
+                        // Standard "Sign in with Google" light button styling.
+                        backgroundColor: Colors.white,
+                        foregroundColor: const Color(0xFF3C4043),
+                        minimumSize: const Size.fromHeight(54),
+                        side: const BorderSide(color: Color(0xFFDADCE0)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadii.pill),
+                        ),
+                        textStyle: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                        ),
+                      ),
+                      icon: SvgPicture.asset(
+                        'assets/google_g.svg',
+                        width: 20,
+                        height: 20,
+                      ),
+                      label: const Text('המשך עם Google'),
+                    ),
                   ],
                 ),
               ),
@@ -336,6 +365,27 @@ class _Field extends StatelessWidget {
           decoration: InputDecoration(hintText: placeholder),
           onChanged: (_) => onChange?.call(),
         ),
+      ],
+    );
+  }
+}
+
+class _OrDivider extends StatelessWidget {
+  const _OrDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    final line = Expanded(
+      child: Divider(color: AppColors.inkSoft.withValues(alpha: 0.3), thickness: 1),
+    );
+    return Row(
+      children: [
+        line,
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text('או', style: AppTextStyles.hint(context)),
+        ),
+        line,
       ],
     );
   }

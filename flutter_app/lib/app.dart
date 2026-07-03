@@ -87,7 +87,11 @@ class _ChildLoader extends StatelessWidget {
           if (childProv.activeChildId != active.id || childProv.child == null) {
             childProv.setActive(active.id);
           }
-          context.read<DeviceProvider>().watch(active.deviceId);
+          // deviceId is empty when the parent chose to pair the device later;
+          // skip watching until one is linked from the device monitor.
+          if (active.deviceId.isNotEmpty) {
+            context.read<DeviceProvider>().watch(active.deviceId);
+          }
           context.read<StatsProvider>().load(active.id);
         });
         return const ShellScreen();

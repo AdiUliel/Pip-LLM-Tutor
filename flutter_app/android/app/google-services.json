@@ -12,7 +12,20 @@
           "package_name": "com.emotionaltutor.emotional_tutor"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "233818904977-re495macr6urnqp68sabm34t42gnokkr.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.emotionaltutor.emotional_tutor",
+            "certificate_hash": "7587389b3d9d8a5c17d0525594de3f42a9629b82"
+          }
+        },
+        {
+          "client_id": "233818904977-9i9has8t4uu9n2oalsv2c5qechilnsph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyD71FKbTF6s2rOWFTJqwzmvZEzsC-B_I64"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "233818904977-9i9has8t4uu9n2oalsv2c5qechilnsph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "233818904977-8ocisujl32c37q64b67pgv6l6rupq1mp.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.emotionaltutor.emotionalTutor"
+              }
+            }
+          ]
         }
       }
     }

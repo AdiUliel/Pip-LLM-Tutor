@@ -73,7 +73,9 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       topicFocus: {for (final s in enabled) s: const <String>[]},
       level: {for (final s in enabled) s: defaultLevel},
       settings: ChildSettings.defaults(),
-      deviceId: _deviceId!,
+      // Empty when the parent chose to link the device later; they can pair it
+      // afterwards from the device monitor screen.
+      deviceId: _deviceId ?? '',
       createdAt: DateTime.now(),
     );
 
@@ -412,7 +414,11 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
                       fontWeight: FontWeight.w800,
                     ),
                   ),
-                  const TextSpan(text: ' נוצר וההתקן מחובר. אפשר להתחיל ללמוד!'),
+                  TextSpan(
+                    text: _connected
+                        ? ' נוצר וההתקן מחובר. אפשר להתחיל ללמוד!'
+                        : ' נוצר! אפשר להתחיל — את ההתקן תוכלו לחבר מאוחר יותר מההגדרות.',
+                  ),
                 ],
               ),
             ),
@@ -503,11 +509,24 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       case 1:
         return [
           Expanded(
-            child: ElevatedButton(
-              onPressed: _connected
-                  ? () => setState(() => _step = 2)
-                  : null,
-              child: const Text('המשך'),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ElevatedButton(
+                  onPressed: _connected
+                      ? () => setState(() => _step = 2)
+                      : null,
+                  child: const Text('המשך'),
+                ),
+                // Let parents finish setup without a device and pair it later
+                // from the device monitor screen.
+                if (!_connected)
+                  TextButton(
+                    style: TextButton.styleFrom(foregroundColor: AppColors.sky),
+                    onPressed: () => setState(() => _step = 2),
+                    child: const Text('אחבר מאוחר יותר'),
+                  ),
+              ],
             ),
           ),
         ];

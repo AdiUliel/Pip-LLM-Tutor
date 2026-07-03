@@ -29,6 +29,7 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
   @override
   Widget build(BuildContext context) {
     final child = context.watch<ChildProvider>().child;
+    final hasDevice = child?.deviceId.isNotEmpty ?? false;
     final device = context.watch<DeviceProvider>();
     final state = device.state;
     final online = device.isOnline;
@@ -50,7 +51,7 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
           children: [
             ScreenHeader(
               title: 'ניטור ההתקן',
-              subtitle: child?.deviceId,
+              subtitle: hasDevice ? child!.deviceId : 'טרם חובר התקן',
             ),
             Expanded(
               child: ListView(
@@ -191,8 +192,11 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
-                          'אם החלפתם את ההתקן הפיזי, או שהמסך מראה קוד שאינו '
-                          'תואם — הקלידו כאן את הקוד החדש.',
+                          hasDevice
+                              ? 'אם החלפתם את ההתקן הפיזי, או שהמסך מראה קוד '
+                                  'שאינו תואם — הקלידו כאן את הקוד החדש.'
+                              : 'ודאו שההתקן דולק ומחובר ל-Wi-Fi, והקלידו כאן '
+                                  'את הקוד המופיע על מסכו כדי לחבר אותו.',
                           style: AppTextStyles.hint(context),
                         ),
                         const SizedBox(height: 14),
@@ -200,7 +204,9 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                           onPressed: (child == null || _repairing)
                               ? null
                               : _repair,
-                          child: Text(_repairing ? 'שומר…' : 'החלפת התקן'),
+                          child: Text(_repairing
+                              ? 'שומר…'
+                              : (hasDevice ? 'החלפת התקן' : 'חיבור התקן')),
                         ),
                       ],
                     ),
@@ -220,6 +226,7 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
     final cur = childProv.child;
     if (cur == null) return;
 
+    final wasEmpty = cur.deviceId.isEmpty;
     final newId = await showPairingSheet(context);
     if (!mounted || newId == null || newId == cur.deviceId) return;
 
@@ -228,7 +235,9 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
       await childProv.save(cur.copyWith(deviceId: newId));
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text('ההתקן הוחלף בהצלחה')),
+        SnackBar(
+          content: Text(wasEmpty ? 'ההתקן חובר בהצלחה' : 'ההתקן הוחלף בהצלחה'),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
