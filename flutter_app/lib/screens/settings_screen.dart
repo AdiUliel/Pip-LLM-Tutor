@@ -26,6 +26,9 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late int _sessionMin;
   late int _breakMin;
+  late int _breakFirstQ;
+  late int _breakEveryQ;
+  late int _breakAfterMin;
   bool _initialized = false;
   bool _dirty = false;
   bool _saving = false;
@@ -40,6 +43,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _initialized = true;
       _sessionMin = child.settings.sessionMinutes;
       _breakMin = child.settings.breakEveryMinutes;
+      _breakFirstQ = child.settings.breakFirstQuestions;
+      _breakEveryQ = child.settings.breakEveryQuestions;
+      _breakAfterMin = child.settings.breakAfterMinutes;
     }
 
     return Scaffold(
@@ -134,6 +140,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 8),
+                  _section('הפסקות'),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 2, bottom: 8),
+                    child: Text(
+                      'Pip ישאל את הילד אם הוא רוצה הפסקה לפי הכללים הבאים.',
+                      style: AppTextStyles.hint(context),
+                    ),
+                  ),
+                  _Slider(
+                    label: 'הפסקה ראשונה אחרי',
+                    value: _breakFirstQ,
+                    min: 1,
+                    max: 20,
+                    step: 1,
+                    unit: 'שאלות',
+                    onChanged: (v) => setState(() {
+                      _breakFirstQ = v;
+                      _dirty = true;
+                    }),
+                  ),
+                  const SizedBox(height: 8),
+                  _Slider(
+                    label: 'ואז כל',
+                    value: _breakEveryQ,
+                    min: 1,
+                    max: 10,
+                    step: 1,
+                    unit: 'שאלות',
+                    onChanged: (v) => setState(() {
+                      _breakEveryQ = v;
+                      _dirty = true;
+                    }),
+                  ),
+                  const SizedBox(height: 8),
+                  _Slider(
+                    label: 'או אחרי (זמן סשן)',
+                    value: _breakAfterMin,
+                    min: 1,
+                    max: 30,
+                    step: 1,
+                    unit: 'דק׳',
+                    onChanged: (v) => setState(() {
+                      _breakAfterMin = v;
+                      _dirty = true;
+                    }),
+                  ),
                   const SizedBox(height: 16),
                   PCard(
                     padding: EdgeInsets.zero,
@@ -165,6 +218,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       settings: cur.settings.copyWith(
         sessionMinutes: _sessionMin,
         breakEveryMinutes: _breakMin,
+        breakFirstQuestions: _breakFirstQ,
+        breakEveryQuestions: _breakEveryQ,
+        breakAfterMinutes: _breakAfterMin,
       ),
     );
     // Capture providers BEFORE the first await so we don't read across the

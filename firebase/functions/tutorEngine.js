@@ -508,13 +508,26 @@ async function processLearningTurn({
     return endSession(farewellText, "timeout");
   }
 
-  // ── Continue-check every 4 questions starting from Q7 ────────────────────────
-  // Trigger AFTER the Nth advancing answer so the child always hears the feedback
-  // for their last answer before being asked to continue.
+  // ── Continue-check: ask the child if they want a break, per this child's
+  // configured break policy — after the first `breakFirstQuestions` questions,
+  // then every `breakEveryQuestions`, OR after `breakAfterMinutes` of session,
+  // whichever comes first. Parents set these in the app (children/{id}.settings).
+  // Triggered AFTER the advancing answer so the child hears their feedback first.
+  const settings = child?.settings || {};
+  const breakFirstQ = Number(settings.breakFirstQuestions) > 0 ? Number(settings.breakFirstQuestions) : 7;
+  const breakEveryQ = Number(settings.breakEveryQuestions) > 0 ? Number(settings.breakEveryQuestions) : 4;
+  const breakAfterMin = Number(settings.breakAfterMinutes) > 0 ? Number(settings.breakAfterMinutes) : 15;
+
   const newQuestionsAsked = (session.questionsAsked || 0) + (advancesToNextQuestion ? 1 : 0);
-  const shouldAskToContinue = advancesToNextQuestion &&
-    newQuestionsAsked >= 7 &&
-    (newQuestionsAsked - 7) % 4 === 0;
+  const byQuestionCount = newQuestionsAsked >= breakFirstQ &&
+    (newQuestionsAsked - breakFirstQ) % breakEveryQ === 0;
+
+  // Time trigger — measured since the last break prompt (or session start).
+  const lastBreakMs = typeof session.lastBreakAskedAtMs === "number" ? session.lastBreakAskedAtMs : sessionStartMs;
+  const minutesSinceBreak = lastBreakMs > 0 ? (Date.now() - lastBreakMs) / 60000 : 0;
+  const byTime = breakAfterMin > 0 && minutesSinceBreak >= breakAfterMin;
+
+  const shouldAskToContinue = advancesToNextQuestion && (byQuestionCount || byTime);
 
   // Build the spoken utterance. In hint mode the feedback already contains
   // a "try again?" prompt — don't append the question again to avoid the
@@ -602,8 +615,12 @@ async function processLearningTurn({
         // Set flag so the next turn knows to interpret the child's response as yes/no.
         askToContinue: shouldAskToContinue ? true : false,
         // When asking to continue, the "current question" stays as the continue prompt
-        // so the ESP32 face strip shows something sensible.
-        ...(shouldAskToContinue && { currentQuestion: continuePromptText }),
+        // so the ESP32 face strip shows something sensible, and stamp the time so the
+        // next time-based break is measured from here.
+        ...(shouldAskToContinue && {
+          currentQuestion: continuePromptText,
+          lastBreakAskedAtMs: Date.now(),
+        }),
       },
       { merge: true }
     );

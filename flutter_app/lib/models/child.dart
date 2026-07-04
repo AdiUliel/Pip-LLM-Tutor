@@ -16,16 +16,30 @@ class ChildSettings {
   final int breakEveryMinutes;
   final int dailyLimitMinutes;
 
+  // Break policy honored by the cloud tutor engine (and, in turn, the device):
+  // offer a break after the first [breakFirstQuestions] questions, then every
+  // [breakEveryQuestions] questions — OR after [breakAfterMinutes] minutes of
+  // session, whichever comes first.
+  final int breakFirstQuestions;
+  final int breakEveryQuestions;
+  final int breakAfterMinutes;
+
   const ChildSettings({
     required this.sessionMinutes,
     required this.breakEveryMinutes,
     required this.dailyLimitMinutes,
+    required this.breakFirstQuestions,
+    required this.breakEveryQuestions,
+    required this.breakAfterMinutes,
   });
 
   factory ChildSettings.defaults() => const ChildSettings(
         sessionMinutes: AppConstants.defaultSessionMinutes,
         breakEveryMinutes: AppConstants.defaultBreakEveryMinutes,
         dailyLimitMinutes: AppConstants.defaultDailyLimitMinutes,
+        breakFirstQuestions: AppConstants.defaultBreakFirstQuestions,
+        breakEveryQuestions: AppConstants.defaultBreakEveryQuestions,
+        breakAfterMinutes: AppConstants.defaultBreakAfterMinutes,
       );
 
   factory ChildSettings.fromMap(Map<String, dynamic> m) => ChildSettings(
@@ -35,23 +49,38 @@ class ChildSettings {
             AppConstants.defaultBreakEveryMinutes,
         dailyLimitMinutes: (m['dailyLimitMinutes'] as num?)?.toInt() ??
             AppConstants.defaultDailyLimitMinutes,
+        breakFirstQuestions: (m['breakFirstQuestions'] as num?)?.toInt() ??
+            AppConstants.defaultBreakFirstQuestions,
+        breakEveryQuestions: (m['breakEveryQuestions'] as num?)?.toInt() ??
+            AppConstants.defaultBreakEveryQuestions,
+        breakAfterMinutes: (m['breakAfterMinutes'] as num?)?.toInt() ??
+            AppConstants.defaultBreakAfterMinutes,
       );
 
   Map<String, dynamic> toMap() => {
         'sessionMinutes': sessionMinutes,
         'breakEveryMinutes': breakEveryMinutes,
         'dailyLimitMinutes': dailyLimitMinutes,
+        'breakFirstQuestions': breakFirstQuestions,
+        'breakEveryQuestions': breakEveryQuestions,
+        'breakAfterMinutes': breakAfterMinutes,
       };
 
   ChildSettings copyWith({
     int? sessionMinutes,
     int? breakEveryMinutes,
     int? dailyLimitMinutes,
+    int? breakFirstQuestions,
+    int? breakEveryQuestions,
+    int? breakAfterMinutes,
   }) =>
       ChildSettings(
         sessionMinutes: sessionMinutes ?? this.sessionMinutes,
         breakEveryMinutes: breakEveryMinutes ?? this.breakEveryMinutes,
         dailyLimitMinutes: dailyLimitMinutes ?? this.dailyLimitMinutes,
+        breakFirstQuestions: breakFirstQuestions ?? this.breakFirstQuestions,
+        breakEveryQuestions: breakEveryQuestions ?? this.breakEveryQuestions,
+        breakAfterMinutes: breakAfterMinutes ?? this.breakAfterMinutes,
       );
 }
 

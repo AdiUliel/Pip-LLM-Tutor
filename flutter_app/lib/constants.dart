@@ -10,6 +10,15 @@ class AppConstants {
   static const int heartbeatTimeoutSec = 30;
   static const int mockDeviceTickSec = 2;
 
+  // --- Break policy (per child; shared contract with the cloud tutor engine
+  // and the ESP32). Pip offers a break after the first
+  // `defaultBreakFirstQuestions` questions, then every
+  // `defaultBreakEveryQuestions` questions — OR after `defaultBreakAfterMinutes`
+  // minutes of session, whichever comes first.
+  static const int defaultBreakFirstQuestions = 7;
+  static const int defaultBreakEveryQuestions = 4;
+  static const int defaultBreakAfterMinutes = 15;
+
   // --- Pairing (shared contract with ESP32 firmware) ---
   // The ESP32 displays a 6-digit code derived deterministically from its MAC.
   // The parent app types that code; deviceId is always `{deviceIdPrefix}{code}`.

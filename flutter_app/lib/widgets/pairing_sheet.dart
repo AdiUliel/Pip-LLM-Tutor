@@ -143,7 +143,8 @@ class _PairingSheetState extends State<_PairingSheet> {
         padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
         child: SafeArea(
           top: false,
-          child: Column(
+          child: SingleChildScrollView(
+            child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
@@ -169,6 +170,8 @@ class _PairingSheetState extends State<_PairingSheet> {
                 style: AppTextStyles.hint(context).copyWith(fontSize: 14),
               ),
               const SizedBox(height: 18),
+              const _InstructionsCard(),
+              const SizedBox(height: 14),
               PCard(
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
                 child: Column(
@@ -234,7 +237,92 @@ class _PairingSheetState extends State<_PairingSheet> {
               ),
             ],
           ),
+          ),
         ),
+      ),
+    );
+  }
+}
+
+/// Short "how to get the code" steps, shown above the code field so the parent
+/// knows how to make the 6-digit code appear on the device screen.
+class _InstructionsCard extends StatelessWidget {
+  const _InstructionsCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return PCard(
+      background: AppColors.skySoft.withValues(alpha: 0.45),
+      borderColor: AppColors.skySoft,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.help_outline, size: 18, color: AppColors.sky),
+              const SizedBox(width: 6),
+              Text(
+                'איך מוצאים את הקוד?',
+                style: AppTextStyles.label(context),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const _Step('1', 'ודאו שהראוטר וה‑Wi‑Fi בבית דלוקים.'),
+          const _Step('2', 'הדליקו את Pip והמתינו כ‑10–20 שניות שיתחבר לרשת.'),
+          const _Step(
+            '3',
+            'כשההתקן מחובר, קוד בן 6 ספרות יופיע על צג ההתקן. אם לא הופיע — '
+                'כבו והדליקו את Pip מחדש.',
+          ),
+          const _Step('4', 'הקלידו כאן את הקוד שמופיע על הצג.', last: true),
+        ],
+      ),
+    );
+  }
+}
+
+class _Step extends StatelessWidget {
+  const _Step(this.number, this.text, {this.last = false});
+  final String number;
+  final String text;
+  final bool last;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: last ? 0 : 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 22,
+            height: 22,
+            decoration: const BoxDecoration(
+              color: AppColors.sky,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              number,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 12.5,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                text,
+                style: AppTextStyles.hint(context).copyWith(fontSize: 13.5),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

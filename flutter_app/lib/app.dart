@@ -57,9 +57,15 @@ class AuthGate extends StatelessWidget {
     final auth = context.watch<AuthProvider>();
     if (!auth.isSignedIn) return const LoginScreen();
     // First-use intro: shown once after sign-in, before the setup wizard.
-    final config = context.watch<ConfigProvider>();
-    if (!config.hasSeenIntro) {
-      return OnboardingIntroScreen(onDone: () => config.setHasSeenIntro(true));
+    // Select ONLY hasSeenIntro — watching the whole ConfigProvider would
+    // rebuild AuthGate on any settings change (e.g. toggling mock mode),
+    // recreating the children stream and resetting the shell to the home tab.
+    final hasSeenIntro =
+        context.select<ConfigProvider, bool>((c) => c.hasSeenIntro);
+    if (!hasSeenIntro) {
+      return OnboardingIntroScreen(
+        onDone: () => context.read<ConfigProvider>().setHasSeenIntro(true),
+      );
     }
     return _ChildLoader(parentId: auth.user!.uid);
   }

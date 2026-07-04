@@ -1,5 +1,5 @@
-// DeviceMonitorScreen — live device hero, status grid, optional remote
-// start/stop. Reads from DeviceProvider's live stream.
+// DeviceMonitorScreen — live device hero, status grid, and pairing.
+// Reads from DeviceProvider's live stream.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -22,8 +22,6 @@ class DeviceMonitorScreen extends StatefulWidget {
 }
 
 class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
-  bool _starting = false;
-  bool _stopping = false;
   bool _repairing = false;
 
   @override
@@ -126,62 +124,6 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                   Padding(
                     padding: const EdgeInsets.only(right: 2, bottom: 10),
                     child: Text(
-                      'שליטה מרחוק',
-                      style:
-                          AppTextStyles.title(context).copyWith(fontSize: 16),
-                    ),
-                  ),
-                  PCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'בדרך כלל הילד מפעיל את ההתקן בעצמו עם הכפתור הפיזי. ניתן גם להפעיל מכאן.',
-                          style: AppTextStyles.hint(context),
-                        ),
-                        const SizedBox(height: 14),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppColors.mint,
-                                ),
-                                onPressed: !online || running || _starting
-                                    ? null
-                                    : () => _send(action: 'start'),
-                                child: Text(
-                                    _starting ? 'שולח…' : '▶ התחלה'),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: !online || !running || _stopping
-                                    ? null
-                                    : () => _send(action: 'stop'),
-                                child:
-                                    Text(_stopping ? 'שולח…' : '■ עצירה'),
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (!online) ...[
-                          const SizedBox(height: 12),
-                          Text(
-                            '⚠️ ההתקן לא מחובר כרגע',
-                            textAlign: TextAlign.center,
-                            style: AppTextStyles.hint(context)
-                                .copyWith(color: AppColors.coral),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 22),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 2, bottom: 10),
-                    child: Text(
                       'חיבור התקן',
                       style:
                           AppTextStyles.title(context).copyWith(fontSize: 16),
@@ -247,32 +189,6 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
     } finally {
       if (mounted) setState(() => _repairing = false);
     }
-  }
-
-  Future<void> _send({required String action}) async {
-    final dev = context.read<DeviceProvider>();
-    if (!dev.isOnline) {
-      _showToast('ההתקן לא מחובר — לא ניתן לשלוח פקודה');
-      return;
-    }
-    setState(() {
-      if (action == 'start') _starting = true;
-      if (action == 'stop') _stopping = true;
-    });
-    if (action == 'start') await dev.sendStart();
-    if (action == 'stop') await dev.sendStop();
-    await Future.delayed(const Duration(milliseconds: 1100));
-    if (!mounted) return;
-    setState(() {
-      _starting = false;
-      _stopping = false;
-    });
-  }
-
-  void _showToast(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
   }
 
   static String _heartbeatAge(DateTime? at, bool online) {
