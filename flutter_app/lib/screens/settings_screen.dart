@@ -14,6 +14,7 @@ import '../widgets/p_card.dart';
 import '../widgets/screen_header.dart';
 import 'admin_view_screen.dart';
 import 'child_config_screen.dart';
+import 'onboarding_intro_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -104,6 +105,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             onChanged: (v) {
                               context.read<ConfigProvider>().setNotificationsEnabled(v);
                             },
+                          ),
+                        ),
+                        const _Divider(),
+                        _Row(
+                          icon: Icons.play_circle_outline,
+                          label: 'צפה שוב בהדרכה',
+                          sub: 'הצגת מסך הפתיחה של האפליקציה',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => OnboardingIntroScreen(
+                                onDone: () => Navigator.of(context).pop(),
+                              ),
+                            ),
                           ),
                         ),
                         const _Divider(),

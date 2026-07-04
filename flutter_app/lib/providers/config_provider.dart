@@ -14,6 +14,7 @@ class ConfigProvider extends ChangeNotifier {
   static const _kBreakMin = 'config.breakMin';
   static const _kDailyLimitMin = 'config.dailyLimitMin';
   static const _kNotifEnabled = 'config.notificationsEnabled';
+  static const _kSeenIntro = 'config.hasSeenIntro';
 
   int get sessionMinutes => _prefs.getInt(_kSessionMin) ?? AppConstants.defaultSessionMinutes;
   int get breakEveryMinutes => _prefs.getInt(_kBreakMin) ?? AppConstants.defaultBreakEveryMinutes;
@@ -21,6 +22,16 @@ class ConfigProvider extends ChangeNotifier {
   /// Default true so existing users keep getting notifications after the
   /// toggle ships; opt-out is explicit.
   bool get notificationsEnabled => _prefs.getBool(_kNotifEnabled) ?? true;
+
+  /// Whether the first-use app intro has been shown once on this device.
+  /// Deliberately left out of resetToDefaults so a settings reset doesn't
+  /// make the intro reappear.
+  bool get hasSeenIntro => _prefs.getBool(_kSeenIntro) ?? false;
+
+  Future<void> setHasSeenIntro(bool v) async {
+    await _prefs.setBool(_kSeenIntro, v);
+    notifyListeners();
+  }
 
   Future<void> setNotificationsEnabled(bool v) async {
     await _prefs.setBool(_kNotifEnabled, v);

@@ -10,9 +10,11 @@ import 'package:provider/provider.dart';
 import 'models/child.dart';
 import 'providers/auth_provider.dart';
 import 'providers/child_provider.dart';
+import 'providers/config_provider.dart';
 import 'providers/device_provider.dart';
 import 'providers/stats_provider.dart';
 import 'screens/login_screen.dart';
+import 'screens/onboarding_intro_screen.dart';
 import 'screens/setup_wizard_screen.dart';
 import 'screens/shell_screen.dart';
 import 'services/firebase_service.dart';
@@ -54,6 +56,11 @@ class AuthGate extends StatelessWidget {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     if (!auth.isSignedIn) return const LoginScreen();
+    // First-use intro: shown once after sign-in, before the setup wizard.
+    final config = context.watch<ConfigProvider>();
+    if (!config.hasSeenIntro) {
+      return OnboardingIntroScreen(onDone: () => config.setHasSeenIntro(true));
+    }
     return _ChildLoader(parentId: auth.user!.uid);
   }
 }
