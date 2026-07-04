@@ -335,21 +335,26 @@ async function processLearningTurn({
   const childAnswer = exchangeData.childAnswer || exchangeData.childAnswerTranscript || exchangeData.question || "";
 
   // ── Shared session-end helper ─────────────────────────────────────────────────
-  async function endSession(farewellText, label) {
-    const audioUrl = synthesize ? await synthesize(farewellText, `${exchangeId}_${label}`) : "";
+  // `reason` is one of "child_request" | "declined_continue" | "timeout" — stored
+  // on both the exchange and the session doc so the parent app's session summary
+  // can show *why* it ended, not just that it ended. farewellText already states
+  // the reason out loud (it's synthesized to speech and played on the device).
+  async function endSession(farewellText, reason) {
+    const audioUrl = synthesize ? await synthesize(farewellText, `${exchangeId}_${reason}`) : "";
     const now = FieldValue.serverTimestamp();
     await db.runTransaction(async (tx) => {
       tx.update(exchangeRef, {
         status: "done",
         sessionEnded: true,
+        endReason: reason,
         spokenFeedback: farewellText,
         audioData: audioUrl,
         emotion: "happy",
         answeredAt: now,
       });
-      tx.set(sessionRef, { status: "ended", endedAt: now, lastActivity: now }, { merge: true });
+      tx.set(sessionRef, { status: "ended", endedAt: now, endReason: reason, lastActivity: now }, { merge: true });
     });
-    return { sessionEnded: true, spokenFeedback: farewellText, audioData: audioUrl };
+    return { sessionEnded: true, endReason: reason, spokenFeedback: farewellText, audioData: audioUrl };
   }
 
   // ── Continue-prompt response ──────────────────────────────────────────────────
@@ -362,9 +367,9 @@ async function processLearningTurn({
     if (wantsToStop) {
       const childName = child?.name || "";
       const farewellText = childName
-        ? `כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
-        : `כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
-      return endSession(farewellText, "continue_no");
+        ? `בסדר, מסיימים כאן. כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
+        : `בסדר, מסיימים כאן. כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+      return endSession(farewellText, "declined_continue");
     }
     // Child said "כן" — clear the flag and fall through to normal processing
     // (we'll re-generate the next question as if it were a normal correct turn).
@@ -375,9 +380,9 @@ async function processLearningTurn({
   if (detectExitIntent(childAnswer)) {
     const childName = child?.name || "";
     const farewellText = childName
-      ? `כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
-      : `כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
-    return endSession(farewellText, "farewell");
+      ? `בסדר, מסיימים כי ביקשת לעצור. כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
+      : `בסדר, מסיימים כי ביקשת לעצור. כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+    return endSession(farewellText, "child_request");
   }
 
   // ── 50-minute session auto-end ────────────────────────────────────────────────
@@ -498,9 +503,9 @@ async function processLearningTurn({
     const childName = child?.name || "";
     const farewellText = feedback.spokenFeedback.trim() + " " +
       (childName
-        ? `כל הכבוד ${childName}! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`
-        : `כל הכבוד! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`);
-    return endSession(farewellText, "auto_end");
+        ? `עברו 50 דקות, וזה הזמן שקבענו לשיעור. כל הכבוד ${childName}! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`
+        : `עברו 50 דקות, וזה הזמן שקבענו לשיעור. כל הכבוד! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`);
+    return endSession(farewellText, "timeout");
   }
 
   // ── Continue-check every 4 questions starting from Q7 ────────────────────────

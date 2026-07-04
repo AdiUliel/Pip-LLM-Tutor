@@ -87,6 +87,14 @@ class SessionDetailScreen extends StatelessWidget {
                                   style: AppTextStyles.hint(context)
                                       .copyWith(fontSize: 13),
                                 ),
+                                if (session.endReasonLabel != null) ...[
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    'סיום: ${session.endReasonLabel}',
+                                    style: AppTextStyles.hint(context)
+                                        .copyWith(fontSize: 13),
+                                  ),
+                                ],
                               ],
                             ),
                           ),

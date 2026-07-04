@@ -457,6 +457,7 @@ struct TurnResult {
   bool   shouldTakeBreak = false;
   bool   isCorrect       = false;
   bool   sessionEnded    = false;  // backend signals explicit session end (exit intent / continue declined)
+  String endReason;        // "child_request" | "declined_continue" | "timeout" — set iff sessionEnded
   bool   sttEmpty        = false;  // Phase 2 audio path: server STT found no speech → caller reprompts
   // Phase 1 (processTurn): MP3 bytes returned inline in the HTTP body. Owned by
   // the caller — free(audioBuf) after playback. Empty on the old path.
@@ -524,6 +525,7 @@ bool firestorePollForTurnResult(const String& sessionId,
       out.shouldTakeBreak= resp["fields"]["shouldTakeBreak"]["booleanValue"].as<bool>();
       out.isCorrect      = resp["fields"]["isCorrect"]["booleanValue"].as<bool>();
       out.sessionEnded   = resp["fields"]["sessionEnded"]["booleanValue"].as<bool>();
+      out.endReason      = resp["fields"]["endReason"]["stringValue"].as<String>();
       http.end();
       return true;
     }
@@ -605,7 +607,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
   String bodyStr; serializeJson(body, bodyStr);
 
   const char* hdrKeys[] = {
-    "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended",
+    "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended", "X-End-Reason",
     "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id"
   };
 
@@ -617,7 +619,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Authorization", "Bearer " + g_idToken);
     http.setTimeout(60000);
-    http.collectHeaders(hdrKeys, 7);
+    http.collectHeaders(hdrKeys, sizeof(hdrKeys) / sizeof(hdrKeys[0]));
 
     int code = http.POST(bodyStr);
     if (code == 401 && attempt == 0) { firebaseRefreshToken(); http.end(); continue; }
@@ -632,6 +634,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     out.emotion         = http.header("X-Emotion");
     out.shouldTakeBreak = http.header("X-Should-Break")  == "1";
     out.sessionEnded    = http.header("X-Session-Ended") == "1";
+    out.endReason       = http.header("X-End-Reason");
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
 
@@ -665,7 +668,7 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
                "&lang=" + String(langCode);
 
   const char* hdrKeys[] = {
-    "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended",
+    "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended", "X-End-Reason",
     "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id",
     "X-Stt-Empty", "X-Transcript-B64"
   };
@@ -707,6 +710,7 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
     out.emotion         = http.header("X-Emotion");
     out.shouldTakeBreak = http.header("X-Should-Break")  == "1";
     out.sessionEnded    = http.header("X-Session-Ended") == "1";
+    out.endReason       = http.header("X-End-Reason");
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
     String transcript   = _b64ToString(http.header("X-Transcript-B64"));

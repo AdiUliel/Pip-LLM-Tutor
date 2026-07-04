@@ -43,6 +43,17 @@ function verbFinishedFor(gender) {
   return gender === "girl" ? "סיימה" : "סיים";
 }
 
+const END_REASON_HE = {
+  child_request:     "לבקשת הילד/ה",
+  declined_continue: "לבקשת הילד/ה",
+  timeout:           "הגיע זמן השיעור (50 דק')",
+  inactivity:        "החיבור להתקן נקטע",
+};
+
+function endReasonLabel(reason) {
+  return END_REASON_HE[reason] || null;
+}
+
 async function fetchChild(db, childId) {
   if (!childId) return null;
   const snap = await db.collection("children").doc(childId).get();
@@ -121,8 +132,10 @@ async function sendSessionEndedNow(db, sessionId, sessionData) {
     const parts = [`מקצוע: ${subj}`];
     if (accuracy !== null) parts.push(`${accuracy}% דיוק`);
     if (stars > 0) parts.push(`${stars}★`);
+    const reasonLabel = endReasonLabel(sessionData.endReason);
+    if (reasonLabel) parts.push(reasonLabel);
     await sendToParent(db, parentId, `${name} ${verb} את השיעור`, parts.join(" · "),
-      { type: "session.ended", sessionId, childId: sessionData.childId || "" });
+      { type: "session.ended", sessionId, childId: sessionData.childId || "", endReason: sessionData.endReason || "" });
   } catch (err) {
     console.warn("[notify] sendSessionEndedNow failed:", err.message);
   }
@@ -191,10 +204,14 @@ exports.monitorTutor = onSchedule(
       if (ageMs < END_INACTIVITY_MS) continue;
 
       // Mark ended atomically — set fields only if still active to avoid races.
+      // reason "inactivity": no heartbeat-driven exchange for END_INACTIVITY_MS,
+      // as opposed to the 50-min active-session cap (endReason "timeout" in
+      // tutorEngine.js) or the child explicitly asking to stop.
       try {
         await sdoc.ref.update({
           status: "ended",
           endedAt: now,
+          endReason: "inactivity",
         });
       } catch (e) {
         console.error(`[notify end] failed to mark ${sdoc.id} ended:`, e);
@@ -216,13 +233,14 @@ exports.monitorTutor = onSchedule(
       const bodyParts = [`מקצוע: ${subj}`];
       if (accuracy !== null) bodyParts.push(`${accuracy}% דיוק`);
       if (stars > 0) bodyParts.push(`${stars}★`);
+      bodyParts.push(endReasonLabel("inactivity"));
 
       await sendToParent(
         db,
         parentId,
         `${name} ${verb} את השיעור`,
         bodyParts.join(" · "),
-        { type: "session.ended", sessionId: sdoc.id, childId: s.childId || "" }
+        { type: "session.ended", sessionId: sdoc.id, childId: s.childId || "", endReason: "inactivity" }
       );
     }
 

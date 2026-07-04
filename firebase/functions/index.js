@@ -313,21 +313,27 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
     }
   }
   if (!parentId) {
-    // Device's anonymous UID isn't in any children.deviceId — the parent hasn't
-    // paired the device yet. Don't throw (that bubbles up as exchange.error and
-    // the kid hears silence); instead finish the exchange cleanly with a spoken
-    // prompt explaining what's wrong. The device-side flow will see matchedChildId=""
-    // and fall back to the legacy "awaitingFirstQuestion" path.
+    // Device's anonymous UID isn't in any children.deviceId — either no parent
+    // has paired this device, or one has but hasn't configured a child yet
+    // (pairing and child-creation are the same step in this schema: a child
+    // doc's deviceId IS the pairing link). Don't throw (that bubbles up as
+    // exchange.error and the kid hears silence); finish the exchange cleanly
+    // with needsPairing:true instead. NO session may start on this device
+    // until it's paired — the device-side flow waits and retries (see
+    // homework_assistant.ino's setup()), it does NOT fall back to a generic
+    // session anymore.
+    // promptText is kept here for visibility in the Firestore console only —
+    // the device speaks its OWN local cached phrase for this (not audioData),
+    // because this can retry every ~15s indefinitely, and synthesizing fresh
+    // TTS on every retry would be wasteful.
     console.warn(`[identify] device ${session.deviceId} not paired to any child`);
-    const promptText = "ההתקן הזה לא מקושר עדיין. בקשי מההורה לפתוח את האפליקציה כדי לחבר אותי.";
-    const audioData = await safeSynthesize(promptText, `${exchangeId}_unpaired`);
+    const promptText = "אין משתמש משויך למכשיר הזה, ולא הוגדר תלמיד. יש להגדיר אותי דרך האפליקציה.";
     await exchangeRef.set({
       status: "done",
       matchedChildId: "",
       matchedChildName: "",
       needsPairing: true,
       promptText,
-      audioData,
     }, { merge: true });
     return;
   }
@@ -872,6 +878,7 @@ exports.processTurn = onRequest(
       res.set("X-Emotion",           result.emotion || "neutral");
       res.set("X-Should-Break",      result.shouldTakeBreak ? "1" : "0");
       res.set("X-Session-Ended",     result.sessionEnded ? "1" : "0");
+      res.set("X-End-Reason",        result.endReason || "");
       res.set("X-Feedback-B64",      b64(result.spokenFeedback));
       res.set("X-Next-Question-B64", b64(result.nextQuestion));
       // Echo what we heard so the audio path can log/show it (Phase 2 STT result).

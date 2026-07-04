@@ -11,9 +11,11 @@
  *   2. Create a session (auto-detects the child profile by deviceId)
  *   3. Backend (onSessionCreated) generates the first question + its TTS audio
  *   4. Device SPEAKS the question (face: speaking) then LISTENS (face: listening)
- *   5. Child says the wake word "hey pip" and answers → I2S capture (ended on
- *      silence) → STT proxy.  (Legacy push-to-talk button kept behind
- *      USE_WAKE_WORD=0 — see wake_word.h / Documentation/WAKE_WORD.md.)
+ *   5. Child holds the push-to-talk button and answers → I2S capture (ended on
+ *      release/silence) → STT proxy. (Wake word "hey pip" is disabled by
+ *      default — unreliable in practice; the model + code are kept behind
+ *      USE_WAKE_WORD=1 for anyone who wants to pick it back up. See
+ *      wake_word.h / Documentation/WAKE_WORD.md.)
  *   6. Device posts a learning_turn → backend grades + Gemini feedback +
  *      next question + combined TTS audio
  *   7. Device shows the returned EMOTION on pip_face, SPEAKS feedback+next
@@ -57,11 +59,12 @@
 
 // ── Wake-word ("hey pip") on/off switch ───────────────────────────────────────
 // 1 = say "hey pip" to start an answer (REPLACES the button).
-// 0 = legacy push-to-talk button (kept intact below; we may still want it).
-// The model is fully self-contained (wake_word.h / ww_infer.h / hey_pip_model.h)
-// — NOTHING to install. See Documentation/WAKE_WORD.md for how it was trained + tuning.
+// 0 = push-to-talk button (default). We dropped wake-word as a shipped feature
+// — real-world recall/false-fire rate wasn't good enough (it was trained on
+// synthetic voices, see Documentation/WAKE_WORD.md's "honest caveats"). The
+// button (pins.h: PIN_BTN) was never removed, so this is a one-line revert.
 #ifndef USE_WAKE_WORD
-#define USE_WAKE_WORD 1
+#define USE_WAKE_WORD 0
 #endif
 
 // ── Phase 1: collapse the turn into ONE synchronous processTurn call ──────────
@@ -414,8 +417,10 @@ String identifyCaptureAnswer(const char* retryPrompt) {
 //      → identify_subject exchange
 //   3. The identify_subject reply also contains the FIRST question — so
 //      after this returns, the main loop is ready to start practising.
-// Returns true on success; on failure the caller can fall back to the
-// legacy "awaitingFirstQuestion" flow.
+// Returns true on success. Returns false when the device isn't paired to any
+// parent/child (needsPairing) or the welcome TTS itself failed to play — in
+// BOTH cases the caller must NOT fall back to a generic/anonymous session; it
+// should wait and retry instead (see setup()).
 bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // ── Step 1 — ask "who's here?" ────────────────────────────────────────────
 #if USE_WAKE_WORD
@@ -453,8 +458,12 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
                   child.matchedChildName.c_str(), child.matchedChildId.c_str());
     if (child.matchedChildId.length() > 0) break;            // success
     if (child.needsPairing) {
-      if (!child.audioUrl.isEmpty()) { faceEmotion("speaking"); speakAudio(child.audioUrl); }
-      Serial.println("[Identify] device not paired — cannot identify; falling back.");
+      // Local cached phrase, not child.audioUrl — this can retry every ~15s
+      // indefinitely (see setup()), so we don't want a fresh cloud TTS
+      // synthesis on every retry. Text must match STATIC_TTS_PHRASES verbatim.
+      faceEmotion("encouraging");
+      speakTextCached("אין משתמש משויך למכשיר הזה, ולא הוגדר תלמיד. יש להגדיר אותי דרך האפליקציה.");
+      Serial.println("[Identify] device not paired to any parent/child.");
       return false;
     }
     // Name not recognised — re-ask and keep looping (cached static phrase).
@@ -622,6 +631,8 @@ void setup() {
     "לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.",
     "לא שמעתי. חשבון או אנגלית?",
     "לא הבנתי. תגיד חשבון או אנגלית?",
+    "אופס, הייתה בעיית תקשורת. בוא ננסה שוב.",
+    "אין משתמש משויך למכשיר הזה, ולא הוגדר תלמיד. יש להגדיר אותי דרך האפליקציה.",
   };
   sdCacheWarm(STATIC_TTS_PHRASES,
               sizeof(STATIC_TTS_PHRASES) / sizeof(STATIC_TTS_PHRASES[0]));
@@ -649,22 +660,26 @@ void setup() {
   if (useIdentifyFlow) {
     Serial.println("[Tutor] Running voice identification flow...");
     ready = runIdentifyFlow(g_currentQuestion, firstAudio);
-    if (!ready) {
-      Serial.println("⚠️  Identify flow failed — falling back to legacy generic-session path.");
-      // Recreate the session in legacy mode so onSessionCreated kicks in.
-      g_sessionId = firestoreCreateSession(SESSION_SUBJECT, true);
+    // runIdentifyFlow() returns false when the device isn't paired to any
+    // parent/child yet, or on a transient local TTS failure. NO session may
+    // start in either case (no generic/anonymous fallback): keep waiting and
+    // retrying until the parent pairs the device and configures a child.
+    while (!ready) {
+      Serial.println("[Tutor] Not ready to start (unpaired or a transient error) — retrying in 15s...");
+      firestoreWriteDeviceState("error");
+      delay(15000);
+      ready = runIdentifyFlow(g_currentQuestion, firstAudio);
     }
-  }
-  if (!ready) {
+  } else {
     Serial.println("[Tutor] Waiting for the first question from the backend...");
     faceEmotion("thinking");
     ready = firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio, 30000, &g_currentSubject);
-  }
-  if (!ready) {
-    Serial.println("❌ No first question. Check Cloud Functions / Vertex AI setup.");
-    faceStatus("error");
-    firestoreWriteDeviceState("error");
-    while (true) { faceTick(); delay(200); }
+    if (!ready) {
+      Serial.println("❌ No first question. Check Cloud Functions / Vertex AI setup.");
+      faceStatus("error");
+      firestoreWriteDeviceState("error");
+      while (true) { faceTick(); delay(200); }
+    }
   }
 
   askCurrentQuestion(firstAudio);
@@ -703,6 +718,17 @@ void repromptAfterMiss() {
   String msg = String("לא שמעתי אותך. ") + tail;
   faceEmotion("encouraging");
   speakTextCached(msg);
+  backToListening();
+}
+
+// The upload to processTurn/processTurnAudio failed (WiFi hiccup, backend
+// down, etc). Previously this was a silent backToListening() — the child got
+// no feedback at all and could easily think the device just didn't hear them.
+// Speak a short fixed phrase (SD-cached, so it's instant) so at least the
+// child knows something went wrong and to try again.
+void repromptAfterNetworkError() {
+  faceEmotion("encouraging");
+  speakTextCached("אופס, הייתה בעיית תקשורת. בוא ננסה שוב.");
   backToListening();
 }
 
@@ -775,7 +801,7 @@ void processCapturedAnswer() {
   // and the base64 upload overhead entirely.
   uint32_t _latPreTurn = millis();
   if (!firestoreProcessTurnAudio(g_sessionId, recordBuf, recordBytes, sttLang, turn)) {
-    backToListening();
+    repromptAfterNetworkError();
     return;
   }
   uint32_t _latPostTurn = millis();
@@ -806,7 +832,7 @@ void processCapturedAnswer() {
   // Replaces the device write + Eventarc trigger + poll loop + separate download.
   uint32_t _latPreTurn = millis();
   if (!firestoreProcessTurn(g_sessionId, answer, turn)) {
-    backToListening();
+    repromptAfterNetworkError();
     return;
   }
   uint32_t _latPostTurn = millis();
@@ -882,7 +908,7 @@ void processCapturedAnswer() {
 
   // Session ended explicitly (exit intent / continue declined / 50-min limit).
   if (turn.sessionEnded) {
-    Serial.println("[Main] Session ended by child or time limit. Restarting in 3s...");
+    Serial.println("[Main] Session ended, reason=" + turn.endReason + ". Restarting in 3s...");
     faceStatus("idle");
     firestoreWriteDeviceState("idle");
     delay(3000);

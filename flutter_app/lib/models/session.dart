@@ -16,6 +16,10 @@ class Session {
   final int longestStreak;
   /// 1..5 mood summary (see [MoodScale]).
   final int moodSummary;
+  /// Why the session ended: "child_request" | "declined_continue" | "timeout"
+  /// | "inactivity" | null (still active, or an older session written before
+  /// this field existed).
+  final String? endReason;
 
   const Session({
     required this.id,
@@ -29,6 +33,7 @@ class Session {
     required this.starsEarned,
     required this.longestStreak,
     required this.moodSummary,
+    this.endReason,
   });
 
   /// 0..100 percent rounded. Recomputed from counts so the model has no
@@ -39,6 +44,21 @@ class Session {
   Duration? get duration => endedAt?.difference(startedAt);
 
   int get durationMinutes => (duration?.inSeconds ?? 0) ~/ 60;
+
+  /// Hebrew label for [endReason], or null if there's nothing to show.
+  String? get endReasonLabel {
+    switch (endReason) {
+      case 'child_request':
+      case 'declined_continue':
+        return 'הילד/ה ביקש/ה לסיים';
+      case 'timeout':
+        return 'הגיע זמן השיעור (50 דק\')';
+      case 'inactivity':
+        return 'החיבור להתקן נקטע';
+      default:
+        return null;
+    }
+  }
 
   factory Session.fromMap(String id, Map<String, dynamic> m) => Session(
         id: id,
@@ -54,6 +74,7 @@ class Session {
         longestStreak: (m['longestStreak'] as num?)?.toInt() ?? 0,
         moodSummary:
             MoodScale.clamp((m['moodSummary'] as num?)?.toInt() ?? 3),
+        endReason: m['endReason'] as String?,
       );
 
   Map<String, dynamic> toMap() => {
@@ -67,5 +88,6 @@ class Session {
         'starsEarned': starsEarned,
         'longestStreak': longestStreak,
         'moodSummary': moodSummary,
+        'endReason': endReason,
       };
 }
