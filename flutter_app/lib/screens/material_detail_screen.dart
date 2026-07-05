@@ -48,6 +48,10 @@ class MaterialDetailScreen extends StatelessWidget {
                 children: [
                   if (_hasFile)
                     _FileSection(url: material.fileUrl!, isImage: _isImage),
+                  if (material.extractionIssueHe != null) ...[
+                    const SizedBox(height: 14),
+                    _IssueBanner(message: material.extractionIssueHe!),
+                  ],
                   if (material.items.isNotEmpty) ...[
                     const SizedBox(height: 18),
                     Padding(
@@ -63,7 +67,9 @@ class MaterialDetailScreen extends StatelessWidget {
                       const SizedBox(height: 10),
                     ],
                   ],
-                  if (!_hasFile && material.items.isEmpty)
+                  if (!_hasFile &&
+                      material.items.isEmpty &&
+                      material.extractionIssueHe == null)
                     Padding(
                       padding: const EdgeInsets.only(top: 40),
                       child: Text(
@@ -155,6 +161,41 @@ class _FileSection extends StatelessWidget {
             onPressed: () => _open(context),
             icon: const Icon(Icons.open_in_new, color: AppColors.sky),
             label: Text(isImage ? 'פתיחה במסך מלא' : 'פתיחת הקובץ'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Warning card shown when extraction found no questions, hit an error, or
+/// flagged the content as unsuitable for the child.
+class _IssueBanner extends StatelessWidget {
+  const _IssueBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    const warn = Color(0xFFCC4B37);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFDECEA),
+        borderRadius: BorderRadius.circular(AppRadii.sm),
+        border: Border.all(color: warn.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: warn, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: AppTextStyles.title(context)
+                  .copyWith(fontSize: 14, color: warn),
+            ),
           ),
         ],
       ),

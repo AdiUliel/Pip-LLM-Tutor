@@ -57,6 +57,53 @@ class MaterialDoc {
       fileUrl != null && fileUrl!.isNotEmpty &&
       items.isEmpty && itemsGeneratedAt == null;
 
+  /// A parent-facing Hebrew description of an extraction problem, or null when
+  /// the material is fine or still pending. Maps the technical codes written by
+  /// the extractQuestionsFromMaterial Cloud Function into readable text.
+  String? get extractionIssueHe {
+    if (isExtractionPending) return null;
+    // A material that already has questions is usable — never flag a failure
+    // for it, even if a stale extractionError lingers from an earlier attempt.
+    if (items.isNotEmpty) return null;
+    final err = extractionError;
+    if (err != null && err.isNotEmpty) {
+      if (err.startsWith('inappropriate')) {
+        final i = err.indexOf(':');
+        final reason = i >= 0 ? err.substring(i + 1).trim() : '';
+        return reason.isNotEmpty
+            ? 'התוכן לא סומן כמתאים לילד ($reason). החומר לא הופעל.'
+            : 'התוכן לא סומן כמתאים לילד. החומר לא הופעל.';
+      }
+      if (err.startsWith('no_questions')) {
+        return 'לא נמצאו שאלות במסמך. נסה קובץ ברור יותר.';
+      }
+      if (err.startsWith('download')) {
+        return 'הקובץ לא נטען. נסה להעלות שוב.';
+      }
+      if (err.startsWith('gemini')) {
+        return 'עיבוד השאלות נכשל. נסה שוב.';
+      }
+      return 'אירעה תקלה בעיבוד החומר.';
+    }
+    // Legacy docs (extracted before the no_questions flag existed): a processed
+    // file that yielded nothing still deserves the same hint.
+    if (fileUrl != null && fileUrl!.isNotEmpty &&
+        items.isEmpty && itemsGeneratedAt != null) {
+      return 'לא נמצאו שאלות במסמך. נסה קובץ ברור יותר.';
+    }
+    return null;
+  }
+
+  bool get hasExtractionIssue => extractionIssueHe != null;
+
+  /// True when extraction flagged the content as unsuitable for the child
+  /// (wrong subject / not age-appropriate). The Cloud Function force-disables
+  /// such a material; the parent must NOT be able to re-include it in practice,
+  /// so the UI locks its enable toggle. Distinct from a plain parent-disabled
+  /// material (enabled == false with no such error), which stays re-enableable.
+  bool get isBlockedForContent =>
+      (extractionError ?? '').startsWith('inappropriate');
+
   factory MaterialDoc.fromMap(String id, Map<String, dynamic> m) => MaterialDoc(
         id: id,
         childId: (m['childId'] ?? '') as String,

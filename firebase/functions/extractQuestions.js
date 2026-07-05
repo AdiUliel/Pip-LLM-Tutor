@@ -33,9 +33,13 @@ const CHILD_SAFETY_SETTINGS = [
 ];
 
 // JSON schema enforced on Gemini's response — eliminates parse failures.
+// `appropriate` gates whether the material is suitable for this child's age and
+// subject; `reason` is a short Hebrew explanation when it is not.
 const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
+    appropriate: { type: "boolean" },
+    reason:      { type: "string" },
     items: {
       type: "array",
       items: {
@@ -48,7 +52,7 @@ const RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ["items"],
+  required: ["appropriate", "items"],
 };
 
 function mimeFromUrl(url) {
@@ -67,17 +71,21 @@ function buildPrompt({ subject, age }) {
     ? "המקצוע אנגלית, ולכן השאלה והתשובה יהיו באנגלית."
     : "השאלה והתשובה יהיו בעברית.";
 
-  return `אתה עוזר ליצור שאלות תרגול מחומר שלמד הורה העלה.
+  return `אתה עוזר ליצור שאלות תרגול מחומר לימוד שהורה העלה.
 
 מצורף קובץ (PDF / תמונה / טקסט) שמכיל חומר לימוד.
-חלץ ממנו 5-12 שאלות מתאימות לילד בגיל ${age} במקצוע ${subjectLabel}.
+קודם בדוק האם החומר מתאים לילד בגיל ${age} ולמקצוע ${subjectLabel}, ואז חלץ ממנו 5-12 שאלות תרגול.
 
 דרישות:
 - שאלות קצרות וברורות, ברמה מתאימה לגיל.
 - התשובה מדויקת ותמציתית (מילה, מספר, או משפט קצר).
 - אל תיצור שאלות עם תוכן לא מתאים לילדים.
-- אם החומר ריק או לא ברור, החזר items: [] — אל תמציא תוכן.
+- אם החומר ריק או לא ברור, החזר appropriate: true עם items: [] — אל תמציא תוכן.
 - ${langInstruction}
+
+התאמה (appropriate):
+- אם החומר מתאים לגיל ${age} ולמקצוע ${subjectLabel} — החזר appropriate: true.
+- אם החומר לא מתאים (תוכן מבוגר/מפחיד/אלים/לא בטיחותי, או שאינו קשור למקצוע ${subjectLabel}) — החזר appropriate: false, שדה reason עם משפט קצר בעברית שמסביר למה, ו-items ריק.
 
 החזר JSON בלבד.`;
 }
@@ -144,6 +152,8 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
     }
 
     let items = [];
+    let appropriate = true;
+    let reason = "";
     try {
       const result = await ai().models.generateContent({
         model: GEMINI_MODEL,
@@ -164,6 +174,10 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
       });
 
       const parsed = JSON.parse(result.text);
+      // Default to appropriate:true when the field is missing so a malformed
+      // response never blocks a legitimate upload.
+      appropriate = parsed?.appropriate !== false;
+      reason = typeof parsed?.reason === "string" ? parsed.reason.trim() : "";
       if (Array.isArray(parsed?.items)) {
         items = parsed.items
           .filter((i) => i && i.question && i.answer)
@@ -178,6 +192,32 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
       await ref.update({
         itemsGeneratedAt: FieldValue.serverTimestamp(),
         extractionError:   `gemini failed: ${e.message}`,
+      });
+      return;
+    }
+
+    // ── Content deemed unsuitable for this child → don't store questions, and
+    // disable the material so the device never draws from it. The parent sees a
+    // clear reason in the app (extractionError starts with "inappropriate:").
+    if (!appropriate) {
+      console.log(`[${materialId}] marked inappropriate: ${reason || "(no reason)"}`);
+      await ref.update({
+        items: [],
+        enabled: false,
+        itemsGeneratedAt: FieldValue.serverTimestamp(),
+        extractionError:  `inappropriate: ${reason || "תוכן לא מתאים לילד"}`,
+      });
+      return;
+    }
+
+    // ── No usable question came out of the file → flag it so the parent gets a
+    // "no questions found" warning instead of a silent "0 שאלות".
+    if (items.length === 0) {
+      console.log(`[${materialId}] extraction produced 0 questions`);
+      await ref.update({
+        items: [],
+        itemsGeneratedAt: FieldValue.serverTimestamp(),
+        extractionError:  "no_questions",
       });
       return;
     }

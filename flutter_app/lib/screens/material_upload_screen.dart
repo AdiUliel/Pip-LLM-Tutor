@@ -520,11 +520,16 @@ class _MaterialTile extends StatelessWidget {
     final count = material.items.length;
     final when = _heAgo(material.uploadedAt);
     final disabled = !material.enabled;
+    final blocked = material.isBlockedForContent;
+    final issue = material.extractionIssueHe;
     // While the Cloud Function is still parsing the uploaded file, show a
-    // friendlier line than "0 שאלות".
+    // friendlier line than "0 שאלות"; if extraction hit a problem (no questions
+    // found, content unsuitable, error) show that instead of a bare count.
     final subtitle = material.isExtractionPending
         ? 'מעבד שאלות… · $when'
-        : '$count שאלות · $when';
+        : issue != null
+            ? '⚠️ $issue'
+            : '$count שאלות · $when';
     return Opacity(
       opacity: disabled ? 0.55 : 1,
       child: PCard(
@@ -559,8 +564,14 @@ class _MaterialTile extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         subtitle,
-                        style: AppTextStyles.hint(context)
-                            .copyWith(fontSize: 12.5),
+                        style: AppTextStyles.hint(context).copyWith(
+                          fontSize: 12.5,
+                          color: issue != null
+                              ? const Color(0xFFCC4B37)
+                              : null,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
@@ -605,16 +616,23 @@ class _MaterialTile extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      material.enabled
-                          ? 'כלול בתרגול של הילד'
-                          : 'מושבת — לא ייכלל בתרגול',
-                      style: AppTextStyles.hint(context)
-                          .copyWith(fontSize: 12.5),
+                      blocked
+                          ? 'נחסם — תוכן לא מתאים, לא ניתן לכלול בתרגול'
+                          : material.enabled
+                              ? 'כלול בתרגול של הילד'
+                              : 'מושבת — לא ייכלל בתרגול',
+                      style: AppTextStyles.hint(context).copyWith(
+                        fontSize: 12.5,
+                        color: blocked ? const Color(0xFFCC4B37) : null,
+                      ),
                     ),
                   ),
+                  // A content-blocked material can never be included in
+                  // practice — lock the toggle OFF so the parent can't re-enable
+                  // it (onChanged:null greys the Switch out).
                   Switch(
-                    value: material.enabled,
-                    onChanged: onEnabledChanged,
+                    value: blocked ? false : material.enabled,
+                    onChanged: blocked ? null : onEnabledChanged,
                     activeThumbColor: Colors.white,
                     activeTrackColor: AppColors.sky,
                   ),
