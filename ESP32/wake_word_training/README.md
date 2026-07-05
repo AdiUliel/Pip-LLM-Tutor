@@ -1,9 +1,12 @@
 # "hey pip" wake-word — training pipeline
 
-> 🤖 **Retraining for robustness? START WITH [`RETRAIN_RUNBOOK.md`](RETRAIN_RUNBOOK.md).**
-> It's a self-contained, step-by-step handoff (real device recordings + neural-TTS +
-> heavy augmentation) meant to be executed by Claude on an Ubuntu machine. The notes
-> below describe the original v1 pipeline.
+> 🤖 **Retraining for robustness? START WITH [`CAPTURE_CHECKLIST.md`](CAPTURE_CHECKLIST.md)**
+> (Hebrew, ~15 min of device recordings + one command per step) — the runbook's
+> reference snippets are now real, smoke-tested scripts: `build_dataset.py`
+> (assembles real + neural-TTS + synthetic shards for `train.py`), `real_data.py`,
+> `augment.py`, `tts_edge.py`. The full background/contract lives in
+> [`RETRAIN_RUNBOOK.md`](RETRAIN_RUNBOOK.md). The notes below describe the
+> original v1 pipeline.
 
 
 This is exactly how the bundled model (`ESP32/homework_assistant/hey_pip_model.h`)
