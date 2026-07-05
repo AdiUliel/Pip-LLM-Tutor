@@ -1043,9 +1043,19 @@ void loop() {
 
 #if USE_WAKE_WORD
   // ── IDLE → listen for the Hebrew wake word "היי פיפ" ───────────────────────
-  // Replaces the button: each loop iteration feeds one audio slice to the Edge
-  // Impulse classifier. On a hit we hand I2S to the recorder, capture the answer
-  // (ended by silence), and process it through the shared pipeline.
+  // Replaces the button: each loop iteration feeds one audio slice to the
+  // self-contained CNN classifier (wake_word.h). On a hit we hand I2S to the
+  // recorder, capture the answer (ended by silence), and process it through the
+  // shared pipeline.
+  //
+  // False-fire damage control: a trigger followed by 6 s of NO speech at all is
+  // most likely a false fire (room noise), so we re-arm SILENTLY — the device
+  // must never talk to an empty room. Two such events within a minute nudge the
+  // detection threshold up temporarily so a false-fire storm quenches itself.
+  // A real garbled answer still gets the spoken reprompt via
+  // processCapturedAnswer() → repromptAfterMiss(), unchanged.
+  static int      g_wwNoSpeechStreak = 0;
+  static uint32_t g_wwLastNoSpeechMs = 0;
   if (state == IDLE) {
     if (wakeWordPoll() == 1) {
       Serial.println("[Main] 🪄 \"היי פיפ\" detected — listening for the answer.");
@@ -1054,10 +1064,18 @@ void loop() {
       faceEmotion("listening");
       state = RECORDING;
       if (recordUntilSilence()) {
+        g_wwNoSpeechStreak = 0;         // real speech followed the trigger
         state = PROCESSING;
         processCapturedAnswer();        // returns to IDLE + re-arms the wake word
       } else {
-        Serial.println("[Main] No speech after the wake word.");
+        uint32_t now = millis();
+        if (now - g_wwLastNoSpeechMs > 60000UL) g_wwNoSpeechStreak = 0;  // stale streak
+        g_wwLastNoSpeechMs = now;
+        if (++g_wwNoSpeechStreak >= 2) {
+          wakeWordNudgeThreshold(0.05f, 30000UL);  // self-quench a false-fire storm
+          g_wwNoSpeechStreak = 0;
+        }
+        Serial.println("[Main] No speech after the wake word — silent re-arm.");
         backToListening();
       }
     }
