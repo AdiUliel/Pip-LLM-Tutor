@@ -19,6 +19,14 @@ class AppConstants {
   static const int defaultBreakEveryQuestions = 4;
   static const int defaultBreakAfterMinutes = 15;
 
+  // --- Idle power policy (per child; enforced locally on the ESP32). After
+  // `defaultScreenOffMinutes` of no interaction the device turns its screen
+  // off; after `defaultDeviceSleepMinutes` it enters deep sleep and wakes on
+  // the push-to-talk button. Replaces the old fixed 5-min inactivity cut.
+  // 0 disables that step.
+  static const int defaultScreenOffMinutes = 15;
+  static const int defaultDeviceSleepMinutes = 50;
+
   // --- Pairing (shared contract with ESP32 firmware) ---
   // The ESP32 displays a 6-digit code derived deterministically from its MAC.
   // The parent app types that code; deviceId is always `{deviceIdPrefix}{code}`.

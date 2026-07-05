@@ -47,6 +47,13 @@ static String g_sessionId    = "";
 static String g_childId      = "";   // resolved child profile (may be empty)
 static String g_firebaseUid  = "";   // Firebase anonymous UID == deviceId
 
+// Idle power policy, read from children/{id}.settings at boot (see
+// firestoreResolveChildId). After g_screenOffMinutes of no interaction the
+// device turns its screen off; after g_deviceSleepMinutes it deep-sleeps and
+// wakes on the push-to-talk button. Defaults match AppConstants in the app.
+static int g_screenOffMinutes   = 15;
+static int g_deviceSleepMinutes = 50;
+
 // Shared SSL client — setInsecure() skips cert verification (fine for IoT prototypes)
 static WiFiClientSecure _sslClient;
 
@@ -276,6 +283,18 @@ String firestoreResolveChildId() {
       String name = resp[0]["document"]["name"].as<String>();
       String childId = name.substring(name.lastIndexOf('/') + 1);
       Serial.println("[Firestore] Auto-detected child: " + childId);
+
+      // Cache the idle power policy (screen-off / deep-sleep) from settings.
+      // Firestore REST returns integers as decimal strings under "integerValue".
+      JsonVariant sf = resp[0]["document"]["fields"]["settings"]["mapValue"]["fields"];
+      if (!sf.isNull()) {
+        String so = sf["screenOffMinutes"]["integerValue"].as<String>();
+        String ds = sf["deviceSleepMinutes"]["integerValue"].as<String>();
+        if (so.length() && so.toInt() > 0) g_screenOffMinutes   = so.toInt();
+        if (ds.length() && ds.toInt() > 0) g_deviceSleepMinutes = ds.toInt();
+      }
+      Serial.printf("[Firestore] idle policy: screen-off %d min, sleep %d min\n",
+                    g_screenOffMinutes, g_deviceSleepMinutes);
       return childId;
     }
   } else {

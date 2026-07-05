@@ -24,6 +24,12 @@ class ChildSettings {
   final int breakEveryQuestions;
   final int breakAfterMinutes;
 
+  // Idle power policy enforced by the device: turn the screen off after
+  // [screenOffMinutes] of no interaction, deep-sleep after [deviceSleepMinutes]
+  // (wakes on the push-to-talk button). 0 = that step disabled.
+  final int screenOffMinutes;
+  final int deviceSleepMinutes;
+
   const ChildSettings({
     required this.sessionMinutes,
     required this.breakEveryMinutes,
@@ -31,6 +37,8 @@ class ChildSettings {
     required this.breakFirstQuestions,
     required this.breakEveryQuestions,
     required this.breakAfterMinutes,
+    required this.screenOffMinutes,
+    required this.deviceSleepMinutes,
   });
 
   factory ChildSettings.defaults() => const ChildSettings(
@@ -40,6 +48,8 @@ class ChildSettings {
         breakFirstQuestions: AppConstants.defaultBreakFirstQuestions,
         breakEveryQuestions: AppConstants.defaultBreakEveryQuestions,
         breakAfterMinutes: AppConstants.defaultBreakAfterMinutes,
+        screenOffMinutes: AppConstants.defaultScreenOffMinutes,
+        deviceSleepMinutes: AppConstants.defaultDeviceSleepMinutes,
       );
 
   factory ChildSettings.fromMap(Map<String, dynamic> m) => ChildSettings(
@@ -55,6 +65,10 @@ class ChildSettings {
             AppConstants.defaultBreakEveryQuestions,
         breakAfterMinutes: (m['breakAfterMinutes'] as num?)?.toInt() ??
             AppConstants.defaultBreakAfterMinutes,
+        screenOffMinutes: (m['screenOffMinutes'] as num?)?.toInt() ??
+            AppConstants.defaultScreenOffMinutes,
+        deviceSleepMinutes: (m['deviceSleepMinutes'] as num?)?.toInt() ??
+            AppConstants.defaultDeviceSleepMinutes,
       );
 
   Map<String, dynamic> toMap() => {
@@ -64,6 +78,8 @@ class ChildSettings {
         'breakFirstQuestions': breakFirstQuestions,
         'breakEveryQuestions': breakEveryQuestions,
         'breakAfterMinutes': breakAfterMinutes,
+        'screenOffMinutes': screenOffMinutes,
+        'deviceSleepMinutes': deviceSleepMinutes,
       };
 
   ChildSettings copyWith({
@@ -73,6 +89,8 @@ class ChildSettings {
     int? breakFirstQuestions,
     int? breakEveryQuestions,
     int? breakAfterMinutes,
+    int? screenOffMinutes,
+    int? deviceSleepMinutes,
   }) =>
       ChildSettings(
         sessionMinutes: sessionMinutes ?? this.sessionMinutes,
@@ -81,6 +99,8 @@ class ChildSettings {
         breakFirstQuestions: breakFirstQuestions ?? this.breakFirstQuestions,
         breakEveryQuestions: breakEveryQuestions ?? this.breakEveryQuestions,
         breakAfterMinutes: breakAfterMinutes ?? this.breakAfterMinutes,
+        screenOffMinutes: screenOffMinutes ?? this.screenOffMinutes,
+        deviceSleepMinutes: deviceSleepMinutes ?? this.deviceSleepMinutes,
       );
 }
 

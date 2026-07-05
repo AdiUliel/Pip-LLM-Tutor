@@ -29,6 +29,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late int _breakFirstQ;
   late int _breakEveryQ;
   late int _breakAfterMin;
+  late int _screenOffMin;
+  late int _deviceSleepMin;
   bool _initialized = false;
   bool _dirty = false;
   bool _saving = false;
@@ -46,6 +48,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _breakFirstQ = child.settings.breakFirstQuestions;
       _breakEveryQ = child.settings.breakEveryQuestions;
       _breakAfterMin = child.settings.breakAfterMinutes;
+      _screenOffMin = child.settings.screenOffMinutes;
+      _deviceSleepMin = child.settings.deviceSleepMinutes;
     }
 
     return Scaffold(
@@ -187,6 +191,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       _dirty = true;
                     }),
                   ),
+                  const SizedBox(height: 8),
+                  _section('כיבוי אוטומטי'),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 2, bottom: 8),
+                    child: Text(
+                      'כשאף אחד לא מדבר עם Pip: אחרי הזמן הראשון המסך נכבה, '
+                      'ואחרי הזמן השני ההתקן נכנס לשינה (לחיצה על הכפתור מעירה אותו).',
+                      style: AppTextStyles.hint(context),
+                    ),
+                  ),
+                  _Slider(
+                    label: 'כיבוי מסך אחרי',
+                    value: _screenOffMin,
+                    min: 5,
+                    max: 60,
+                    step: 5,
+                    unit: 'דק׳',
+                    onChanged: (v) => setState(() {
+                      _screenOffMin = v;
+                      _dirty = true;
+                    }),
+                  ),
+                  const SizedBox(height: 8),
+                  _Slider(
+                    label: 'כיבוי ההתקן אחרי',
+                    value: _deviceSleepMin,
+                    min: 10,
+                    max: 120,
+                    step: 5,
+                    unit: 'דק׳',
+                    onChanged: (v) => setState(() {
+                      _deviceSleepMin = v;
+                      _dirty = true;
+                    }),
+                  ),
                   const SizedBox(height: 16),
                   PCard(
                     padding: EdgeInsets.zero,
@@ -221,6 +260,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         breakFirstQuestions: _breakFirstQ,
         breakEveryQuestions: _breakEveryQ,
         breakAfterMinutes: _breakAfterMin,
+        screenOffMinutes: _screenOffMin,
+        deviceSleepMinutes: _deviceSleepMin,
       ),
     );
     // Capture providers BEFORE the first await so we don't read across the

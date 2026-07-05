@@ -56,6 +56,8 @@
 #include "stt_client.h"
 #include "tts_player.h"
 #include "tts_cache.h"     // SD-backed cache for static/repeated phrases (after the 3 above)
+#include "esp_sleep.h"     // deep sleep + ext1 button wake (idle power policy)
+#include "driver/rtc_io.h" // hold the button pins through deep sleep
 
 // ── Wake-word ("hey pip") on/off switch ───────────────────────────────────────
 // 1 = say "hey pip" to start an answer (REPLACES the button).
@@ -140,6 +142,14 @@ bool   g_haveFace        = false; // pip_face initialised OK
 // ── Heartbeat ─────────────────────────────────────────────────────────────────
 uint32_t g_lastHeartbeat = 0;
 const uint32_t HEARTBEAT_MS = 10000;  // app online-timeout is 30s
+
+// ── Idle power policy ─────────────────────────────────────────────────────────
+// Timestamp of the child's last interaction (button press / finished answer).
+// The loop turns the screen off after g_screenOffMinutes and deep-sleeps after
+// g_deviceSleepMinutes of no interaction (both from the child's settings; see
+// firebase_client.h). g_screenOff tracks whether the backlight is currently off.
+uint32_t g_lastInteractionMs = 0;
+bool     g_screenOff         = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // I2S setup for RECORDING (raw driver, full-duplex)
@@ -532,6 +542,17 @@ void setup() {
   delay(500);
   Serial.println("\n=== Homework Assistant (Emotional Tutor) Booting ===");
 
+  // If we woke from deep sleep (idle power policy), the button pins were held
+  // through the RTC domain — release them and return them to normal GPIO so the
+  // pinMode/digitalRead below work. Harmless on a cold boot.
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
+    Serial.println("[Boot] Woke from deep sleep (button press).");
+  }
+  rtc_gpio_hold_dis((gpio_num_t)PIN_BTN_GND);
+  rtc_gpio_hold_dis((gpio_num_t)PIN_BTN);
+  rtc_gpio_deinit((gpio_num_t)PIN_BTN_GND);
+  rtc_gpio_deinit((gpio_num_t)PIN_BTN);
+
   // Button — COMMENTED OUT: the Hebrew wake word "היי פיפ" now triggers
   // recording (see USE_WAKE_WORD). Kept here, compiled only when the wake word
   // is disabled, so we can fall back to push-to-talk if we ever need it.
@@ -683,6 +704,7 @@ void setup() {
   }
 
   askCurrentQuestion(firstAudio);
+  noteInteraction();  // start the idle timers from the first question
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -934,12 +956,80 @@ void processCapturedAnswer() {
 #else
   Serial.println("\n🎤 Hold the button and say your answer.");
 #endif
+  noteInteraction();                  // answer finished — restart the idle timers
   backToListening();                  // re-arms wake-word detection in wake mode
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Idle power policy — screen off, then deep sleep, after periods of no
+// interaction. Both thresholds come from the child's settings (g_screenOffMinutes
+// / g_deviceSleepMinutes) and replace the old fixed 5-min cloud inactivity cut.
+// ─────────────────────────────────────────────────────────────────────────────
+void screenOff() {
+  if (g_screenOff) return;
+  Serial.println("[Idle] No interaction — turning the screen off.");
+  digitalWrite(PIN_LCD_BL, LOW);
+  g_screenOff = true;
+}
+
+void wakeScreen() {
+  if (!g_screenOff) return;
+  Serial.println("[Idle] Waking the screen.");
+  digitalWrite(PIN_LCD_BL, HIGH);
+  g_screenOff = false;
+}
+
+// "The child just did something" — reset the idle timers and wake the screen.
+void noteInteraction() {
+  g_lastInteractionMs = millis();
+  wakeScreen();
+}
+
+// Deep sleep until the push-to-talk button is pressed. Waking from deep sleep is
+// a full reset, so setup() re-runs the identify flow — same effect as the
+// session-end ESP.restart(), just power-saving instead of an immediate reboot.
+void enterDeepSleep() {
+  Serial.println("[Idle] No interaction — entering deep sleep. Press the button to wake.");
+  faceStatus("idle");
+  firestoreWriteDeviceState("idle");
+  digitalWrite(PIN_LCD_BL, LOW);
+  delay(200);  // let the Firestore write flush before the CPU halts
+
+  // The button is wired between IO2 (driven LOW as its GND) and IO3
+  // (INPUT_PULLUP). In deep sleep the normal GPIO drivers are off, so hold IO2
+  // LOW through the RTC domain and enable the RTC pull-up on IO3, then wake when
+  // IO3 goes LOW (button pressed). setup() releases these holds on boot.
+  rtc_gpio_init((gpio_num_t)PIN_BTN_GND);
+  rtc_gpio_set_direction((gpio_num_t)PIN_BTN_GND, RTC_GPIO_MODE_OUTPUT_ONLY);
+  rtc_gpio_set_level((gpio_num_t)PIN_BTN_GND, 0);
+  rtc_gpio_hold_en((gpio_num_t)PIN_BTN_GND);
+
+  rtc_gpio_init((gpio_num_t)PIN_BTN);
+  rtc_gpio_set_direction((gpio_num_t)PIN_BTN, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN);
+  rtc_gpio_pullup_en((gpio_num_t)PIN_BTN);
+
+  esp_sleep_enable_ext1_wakeup(1ULL << PIN_BTN, ESP_EXT1_WAKEUP_ANY_LOW);
+  esp_deep_sleep_start();  // does not return
+}
+
+// Called each idle loop: enforce the screen-off, then the deep-sleep, threshold.
+void checkIdlePolicy() {
+  if (state != IDLE) return;
+  uint32_t idleMs = millis() - g_lastInteractionMs;
+  if (g_deviceSleepMinutes > 0 &&
+      idleMs >= (uint32_t)g_deviceSleepMinutes * 60000UL) {
+    enterDeepSleep();  // does not return
+  } else if (g_screenOffMinutes > 0 && !g_screenOff &&
+             idleMs >= (uint32_t)g_screenOffMinutes * 60000UL) {
+    screenOff();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void loop() {
   faceTick();  // ~30fps internally; cheap to call every iteration
+  checkIdlePolicy();  // screen-off / deep-sleep after inactivity
 
   // Heartbeat so the app keeps showing the device online. Uses the keep-alive
   // path (firestoreHeartbeat) so repeats cost ~0.1 s instead of a ~2 s handshake —
@@ -959,6 +1049,7 @@ void loop() {
   if (state == IDLE) {
     if (wakeWordPoll() == 1) {
       Serial.println("[Main] 🪄 \"היי פיפ\" detected — listening for the answer.");
+      noteInteraction();                // wake the screen + reset the idle timers
       wakeWordStopListening();          // release I2S so the recorder can install it
       faceEmotion("listening");
       state = RECORDING;
@@ -978,6 +1069,7 @@ void loop() {
   // IDLE → start recording the child's answer when the button is pressed.
   if (state == IDLE && btnDown) {
     Serial.println("[Main] Recording answer...");
+    noteInteraction();                // wake the screen + reset the idle timers
     state = RECORDING;
     recordBytes = 0;
     faceEmotion("listening");

@@ -23,7 +23,11 @@ const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestor
 const { getMessaging } = require("firebase-admin/messaging");
 
 const OFFLINE_THRESHOLD_MS  = 60 * 1000;        // 60 s without heartbeat → offline
-const END_INACTIVITY_MS     = 5 * 60 * 1000;    // 5 min no exchange → lesson ended
+// A lesson is ended by inactivity once it has had no new exchange for the
+// child's configured deviceSleepMinutes — the same threshold at which the
+// device itself turns its screen off and deep-sleeps. Replaces the old fixed
+// 5-min cut. DEFAULT_SLEEP_MINUTES is the fallback when the child has no value.
+const DEFAULT_SLEEP_MINUTES = 50;
 
 const SUBJECT_HE = { math: "חשבון", english: "אנגלית" };
 
@@ -47,7 +51,7 @@ const END_REASON_HE = {
   child_request:     "לבקשת הילד/ה",
   declined_continue: "לבקשת הילד/ה",
   timeout:           "הגיע זמן השיעור (50 דק')",
-  inactivity:        "החיבור להתקן נקטע",
+  inactivity:        "אין פעילות — Pip נכנס לשינה",
 };
 
 function endReasonLabel(reason) {
@@ -200,11 +204,19 @@ exports.monitorTutor = onSchedule(
       const s = sdoc.data();
       const lastActivity = s.lastActivity || s.startedAt;
       if (!lastActivity) continue;
+
+      // Per-child inactivity threshold — the same deviceSleepMinutes the device
+      // uses locally to screen-off + deep-sleep, so the parent's "lesson ended"
+      // notification lines up with Pip actually going to sleep.
+      const child = await fetchChild(db, s.childId);
+      const sleepMin = Number(child?.settings?.deviceSleepMinutes) > 0
+        ? Number(child.settings.deviceSleepMinutes)
+        : DEFAULT_SLEEP_MINUTES;
       const ageMs = now.toMillis() - lastActivity.toMillis();
-      if (ageMs < END_INACTIVITY_MS) continue;
+      if (ageMs < sleepMin * 60 * 1000) continue;
 
       // Mark ended atomically — set fields only if still active to avoid races.
-      // reason "inactivity": no heartbeat-driven exchange for END_INACTIVITY_MS,
+      // reason "inactivity": no heartbeat-driven exchange for deviceSleepMinutes,
       // as opposed to the 50-min active-session cap (endReason "timeout" in
       // tutorEngine.js) or the child explicitly asking to stop.
       try {
@@ -220,7 +232,6 @@ exports.monitorTutor = onSchedule(
 
       const parentId = await resolveParentId(db, s);
       if (!parentId) continue;
-      const child = await fetchChild(db, s.childId);
       const name = child?.name || "הילד";
       const verb = verbFinishedFor(child?.gender);
       const subj = subjectLabel(s.subject);
