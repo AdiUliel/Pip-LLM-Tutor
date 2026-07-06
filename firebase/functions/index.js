@@ -62,6 +62,11 @@ exports.monitorTutor = monitorTutor;
 const { extractQuestionsFromMaterial } = require("./extractQuestions");
 exports.extractQuestionsFromMaterial = extractQuestionsFromMaterial;
 
+// Enforce one-device-↔-one-child: clears a device's link from any previously
+// paired child when it's paired to a new one (europe-west10 via setGlobalOptions).
+const { enforceDeviceUniqueness } = require("./enforceDevicePairing");
+exports.enforceDeviceUniqueness = enforceDeviceUniqueness;
+
 const app = initializeApp();
 // preferRest: skip the Admin SDK's gRPC Firestore channel (whose lazy init adds
 // ~2–5 s on a cold start) and use the REST transport, which matches this code's
