@@ -68,7 +68,9 @@ function mimeFromUrl(url) {
 function buildPrompt({ subject, age }) {
   const subjectLabel = subject === "english" ? "אנגלית" : "חשבון";
   const langInstruction = subject === "english"
-    ? "המקצוע אנגלית, ולכן השאלה והתשובה יהיו באנגלית."
+    ? `המקצוע אנגלית. הילד דובר עברית ולומד אנגלית, לכן נסח כל שאלה בעברית והתשובה תהיה מילה או ביטוי באנגלית.
+- לחומר של אוצר מילים (מילה מול תמונה, או תרגום): שאל "איך אומרים <המילה בעברית> באנגלית?" והתשובה היא המילה באנגלית. לדוגמה: תמונה של כלב עם המילה dog → שאלה: "איך אומרים כלב באנגלית?", תשובה: "dog".
+- אל תבקש מהילד לאיית אות-אות, ואל תיצור תשובות של אותיות מופרדות.`
     : "השאלה והתשובה יהיו בעברית.";
 
   return `אתה עוזר ליצור שאלות תרגול מחומר לימוד שהורה העלה.
@@ -77,7 +79,8 @@ function buildPrompt({ subject, age }) {
 קודם בדוק האם החומר מתאים לילד בגיל ${age} ולמקצוע ${subjectLabel}, ואז חלץ ממנו 5-12 שאלות תרגול.
 
 דרישות:
-- נסח כל שאלה כמשפט שאלה טבעי, ברור וידידותי שאפשר להקריא בקול לילד — לא ביטוי גולמי. השאלה תוקרא בקול על ידי רובוט, אז היא חייבת להישמע כמו שאלה מדוברת. לדוגמה: "7+2" → "כמה זה 7 ועוד 2?"; "8×4" → "כמה זה 8 כפול 4?"; "12-5" → "כמה זה 12 פחות 5?"; מילה לאיות → "איך כותבים את המילה ...?".
+- הילד לא רואה את הדף — השאלה נשמעת בקול בלבד. לכן אסור להתייחס לתמונות, למיקום בדף, לצבעים, לקווים או ל"התמונה של...". אם החומר מבוסס תמונות (כמו התאמת מילה לתמונה), המר כל פריט לשאלה מילולית עצמאית שמובנת רק מהשמע.
+- נסח כל שאלה כמשפט שאלה טבעי, ברור וידידותי שאפשר להקריא בקול לילד — לא ביטוי גולמי. השאלה תוקרא בקול על ידי רובוט, אז היא חייבת להישמע כמו שאלה מדוברת. לדוגמה: "7+2" → "כמה זה 7 ועוד 2?"; "8×4" → "כמה זה 8 כפול 4?"; "12-5" → "כמה זה 12 פחות 5?".
 - שאלה קצרה וברורה, ברמה מתאימה לגיל.
 - התשובה מדויקת ותמציתית (מילה, מספר, או משפט קצר). למספרים — כתוב את התשובה כספרה (למשל 9), לא כמילה.
 - אל תיצור שאלות עם תוכן לא מתאים לילדים.
@@ -89,6 +92,78 @@ function buildPrompt({ subject, age }) {
 - אם החומר לא מתאים (תוכן מבוגר/מפחיד/אלים/לא בטיחותי, או שאינו קשור למקצוע ${subjectLabel}) — החזר appropriate: false, שדה reason עם משפט קצר בעברית שמסביר למה, ו-items ריק.
 
 החזר JSON בלבד.`;
+}
+
+// Filter raw {question, answer} objects down to clean, non-empty, trimmed pairs.
+function normalizeItems(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((i) => i && i.question && i.answer)
+    .map((i) => ({
+      question: String(i.question).trim(),
+      answer:   String(i.answer).trim(),
+    }))
+    .filter((i) => i.question.length > 0 && i.answer.length > 0);
+}
+
+// Pull every COMPLETE object out of the "items" array by scanning brace depth
+// with full string/escape awareness. A trailing object that was cut off mid-way
+// (token limit, dropped stream) never closes its brace, so it is skipped — every
+// complete pair that arrived before the cut is preserved. Each candidate is run
+// through the real JSON parser so per-object escaping stays correct.
+function salvageItems(text) {
+  const open = text.match(/"items"\s*:\s*\[/);
+  if (!open) return [];
+  const objects = [];
+  let depth = 0, inString = false, escaped = false, objStart = -1;
+  for (let i = open.index + open[0].length; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") { if (depth === 0) objStart = i; depth++; }
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) { objects.push(text.slice(objStart, i + 1)); objStart = -1; }
+    } else if (ch === "]" && depth === 0) {
+      break;   // clean end of the items array
+    }
+  }
+  const out = [];
+  for (const obj of objects) {
+    try { out.push(JSON.parse(obj)); } catch (_) { /* skip a malformed object */ }
+  }
+  return out;
+}
+
+// Parse Gemini's JSON, tolerating truncation. On a clean parse we read fields
+// directly; when the whole-response parse fails (e.g. the response was cut off
+// mid-array) we salvage the complete items and recover appropriate/reason from
+// the partial text — those two fields precede `items` in the schema, so they are
+// intact on a mid-array cut. `truncated` marks that fallback path for logging.
+function parseExtraction(text) {
+  const raw = String(text || "");
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      appropriate: parsed?.appropriate !== false,   // missing → treat as appropriate
+      reason: typeof parsed?.reason === "string" ? parsed.reason.trim() : "",
+      items: normalizeItems(parsed?.items),
+      truncated: false,
+    };
+  } catch (_) {
+    const reasonMatch = raw.match(/"reason"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    return {
+      appropriate: !/"appropriate"\s*:\s*false/.test(raw),
+      reason: reasonMatch ? reasonMatch[1].trim() : "",
+      items: normalizeItems(salvageItems(raw)),
+      truncated: true,
+    };
+  }
 }
 
 // Lazy-init the GenAI client + Firestore so cold-start cost only hits this
@@ -152,9 +227,10 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
       return;
     }
 
-    let items = [];
-    let appropriate = true;
-    let reason = "";
+    // API call — a throw here is a genuine, unrecoverable failure (network /
+    // auth / hard safety block). Parsing is handled separately below so a merely
+    // truncated response never lands in this bucket and loses everything.
+    let responseText;
     try {
       const result = await ai().models.generateContent({
         model: GEMINI_MODEL,
@@ -166,35 +242,28 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
           ],
         }],
         config: {
-          maxOutputTokens:   2000,
+          maxOutputTokens:   4000,
           temperature:       0.3,
           responseMimeType:  "application/json",
           responseSchema:    RESPONSE_SCHEMA,
           safetySettings:    CHILD_SAFETY_SETTINGS,
         },
       });
-
-      const parsed = JSON.parse(result.text);
-      // Default to appropriate:true when the field is missing so a malformed
-      // response never blocks a legitimate upload.
-      appropriate = parsed?.appropriate !== false;
-      reason = typeof parsed?.reason === "string" ? parsed.reason.trim() : "";
-      if (Array.isArray(parsed?.items)) {
-        items = parsed.items
-          .filter((i) => i && i.question && i.answer)
-          .map((i) => ({
-            question: String(i.question).trim(),
-            answer:   String(i.answer).trim(),
-          }))
-          .filter((i) => i.question.length > 0 && i.answer.length > 0);
-      }
+      responseText = result.text || "";
     } catch (e) {
-      console.error(`[${materialId}] Gemini extraction failed:`, e.message);
+      console.error(`[${materialId}] Gemini call failed:`, e.message);
       await ref.update({
         itemsGeneratedAt: FieldValue.serverTimestamp(),
         extractionError:   `gemini failed: ${e.message}`,
       });
       return;
+    }
+
+    // Tolerant parse: a response cut off mid-array still yields every complete
+    // Q&A pair that arrived before the cut, instead of discarding all of them.
+    const { appropriate, reason, items, truncated } = parseExtraction(responseText);
+    if (truncated) {
+      console.warn(`[${materialId}] response partial/truncated — salvaged ${items.length} complete item(s)`);
     }
 
     // ── Content deemed unsuitable for this child → don't store questions, and
