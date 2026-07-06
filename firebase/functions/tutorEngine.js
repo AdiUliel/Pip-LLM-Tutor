@@ -1,5 +1,5 @@
 const { FieldValue } = require("firebase-admin/firestore");
-const { checkAnswer, clamp, generateQuestion } = require("./questionGenerator");
+const { answerVariants, checkAnswer, clamp, generateQuestion } = require("./questionGenerator");
 
 // Default model — kept in sync with index.js. gemini-2.0-flash-001 was
 // discontinued (404); 2.5-flash is the current child-safe default.
@@ -107,7 +107,9 @@ async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
     expectedAnswer: q.answer,
     topic: subject,
     difficulty: session.currentDifficulty || 1,
-    answerVariants: [q.answer.toLowerCase().trim()],
+    // Same smart grading as generated questions: normalization + Hebrew
+    // number-words, so a child answering "תשע" to a material "9" still counts.
+    answerVariants: answerVariants(q.answer),
     fromMaterial: true,
   };
 }

@@ -344,6 +344,7 @@ function generateQuestion({ subject = "math", age = 8, difficulty = 1, topics = 
 module.exports = {
   clamp,
   normalizeText,
+  answerVariants,
   checkAnswer,
   generateQuestion,
   generateMathQuestion,
