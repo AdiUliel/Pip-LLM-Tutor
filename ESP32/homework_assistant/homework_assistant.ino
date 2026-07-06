@@ -284,14 +284,13 @@ bool processRecordedAudio() {
     for (size_t i = 0; i < frames; i++) dst[i] = src[i * 2 + micChannel];
     recordBytes = frames * 2;
   }
-  // Silence reject.
+  // Boost quiet / far-field speech to a healthy STT level, then reject only true
+  // silence (see micAutoGainMono). Floor lowered 250→130 because the auto-gain now
+  // rescues quiet-but-real speech that used to be discarded.
   {
-    int16_t* samples = (int16_t*)recordBuf;
-    int64_t sumSq = 0; size_t n = recordBytes / 2;
-    for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
-    float rms = sqrt((float)(sumSq / (int64_t)n));
+    float rms = micAutoGainMono();
     Serial.printf("[Audio] mono RMS: %.0f\n", rms);
-    if (rms < 250) {
+    if (rms < 130) {
       Serial.println("[Audio] near-silence; speak closer.");
       return false;
     }
@@ -302,7 +301,49 @@ bool processRecordedAudio() {
 // RMS above which a chunk counts as speech (computed over the interleaved
 // stereo stream — the silent codec channel halves it, so this sits a bit below
 // the mono speech levels the ES8311 produces). Used for silence endpointing.
-#define VOICE_RMS_THRESHOLD 300
+// Lowered 300→200 so a child speaking at a normal (not up-against-the-mic)
+// distance is still registered as "talking" and gets recorded. If a NOISY room
+// stops the recording from ever ending (it keeps hearing "voice"), raise this
+// back toward 300.
+#define VOICE_RMS_THRESHOLD 200
+
+// ── Software mic auto-gain (far-field boost) ─────────────────────────────────
+// The ES8311 analog PGA is already maxed (es8311.h reg14=0x1A), so a child who
+// isn't right on top of the mic records quietly and the near-silence rejects
+// below used to discard the turn ("speak closer"). This scales the captured mono
+// utterance up toward a healthy full-scale peak — EXACTLY what the wake-word
+// front-end does for its model input (wake_word.h ww_normalize) — so quiet/distant
+// speech reaches STT at a usable level. It's adaptive and peak-based: a loud close
+// answer gets ~1x (never amplified into clipping), a quiet distant one up to
+// MIC_MAX_GAIN. Operates in place on recordBuf (already stripped to mono); returns
+// the PRE-gain RMS so the caller can still reject true silence.
+#define MIC_TARGET_PEAK  22000   // ~-3.4 dBFS: loud, with headroom (full scale 32767)
+#define MIC_MAX_GAIN     8.0f    // cap (+18 dB) so a silent room's noise floor isn't blown up
+static float micAutoGainMono() {
+  int16_t* s = (int16_t*)recordBuf;
+  size_t   n = recordBytes / 2;
+  if (n == 0) return 0.0f;
+  int32_t peak = 1; int64_t sumSq = 0;
+  for (size_t i = 0; i < n; i++) {
+    int32_t a = s[i] < 0 ? -s[i] : s[i];
+    if (a > peak) peak = a;
+    sumSq += (int64_t)s[i] * s[i];
+  }
+  float rms = sqrtf((float)(sumSq / (int64_t)n));   // pre-gain (for the silence reject)
+  float g   = (float)MIC_TARGET_PEAK / (float)peak;
+  if (g > MIC_MAX_GAIN) g = MIC_MAX_GAIN;
+  if (g > 1.0f) {                                   // never attenuate a healthy signal
+    for (size_t i = 0; i < n; i++) {
+      int32_t v = (int32_t)lroundf(s[i] * g);
+      if (v >  32767) v =  32767;                   // saturate (rare: g is derived from peak)
+      if (v < -32768) v = -32768;
+      s[i] = (int16_t)v;
+    }
+    Serial.printf("[Mic] auto-gain x%.1f (RMS %.0f -> %.0f)\n",
+                  (double)g, (double)rms, (double)(rms * g));
+  }
+  return rms;
+}
 
 // Record an answer that ENDS ON SILENCE (the wake-word replacement for "record
 // while the button is held"). Fills recordBuf with stereo PCM and sets
@@ -789,14 +830,14 @@ void processCapturedAnswer() {
     recordBytes = frames * 2;
   }
 
-  // Reject near-silence before paying for STT (STT hallucinates on noise).
+  // Boost quiet / far-field speech to a healthy STT level, THEN reject only true
+  // silence (see micAutoGainMono). The server STT-empty path (turn.sttEmpty) is the
+  // backstop for noise that slips through, so this floor can sit low (250→130)
+  // without wasting real turns.
   {
-    int16_t* samples = (int16_t*)recordBuf;
-    int64_t sumSq = 0; size_t n = recordBytes / 2;
-    for (size_t i = 0; i < n; i++) sumSq += (int64_t)samples[i] * samples[i];
-    float rms = sqrt((float)(sumSq / (int64_t)n));
+    float rms = micAutoGainMono();
     Serial.printf("[Main] Answer RMS: %.0f\n", rms);
-    if (rms < 250) {
+    if (rms < 130) {
       Serial.println("[Main] ⚠️  Near-silence — skipping. Speak close to the mic.");
       repromptAfterMiss();   // re-speak the question so the child knows what to answer
       return;
