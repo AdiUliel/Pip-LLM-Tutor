@@ -58,6 +58,7 @@
 #include "tts_cache.h"     // SD-backed cache for static/repeated phrases (after the 3 above)
 #include "esp_sleep.h"     // deep sleep + ext1 button wake (idle power policy)
 #include "driver/rtc_io.h" // hold the button pins through deep sleep
+#include "driver/gpio.h"   // hold the (non-RTC) backlight pin off through deep sleep
 
 // ── Wake-word ("hey pip") on/off switch ───────────────────────────────────────
 // 1 = say "hey pip" to start an answer (REPLACES the button).
@@ -622,7 +623,10 @@ void setup() {
   pinMode(PIN_AUDIO_EN, OUTPUT);
   digitalWrite(PIN_AUDIO_EN, HIGH);
 
-  // Display backlight (pip_face / TFT_eSPI does not manage it).
+  // Display backlight (pip_face / TFT_eSPI does not manage it). Release any hold
+  // left on the pin by enterDeepSleep() first (no-op on a cold boot) so it can be
+  // driven again.
+  gpio_hold_dis((gpio_num_t)PIN_LCD_BL);
   pinMode(PIN_LCD_BL, OUTPUT);
   digitalWrite(PIN_LCD_BL, HIGH);
 
@@ -982,12 +986,14 @@ void processCapturedAnswer() {
 #endif
 
   // Session ended explicitly (exit intent / continue declined / 50-min limit).
+  // Power down rather than reboot: on this board there is no power-latch, so deep
+  // sleep IS "off" (screen dark, CPU halted). A button press wakes it, and setup()
+  // re-runs the identify flow into a fresh session — same end state as the old
+  // ESP.restart(), minus the device springing back to life fully powered.
   if (turn.sessionEnded) {
-    Serial.println("[Main] Session ended, reason=" + turn.endReason + ". Restarting in 3s...");
-    faceStatus("idle");
-    firestoreWriteDeviceState("idle");
-    delay(3000);
-    ESP.restart();   // fresh boot → new session + re-identification
+    Serial.println("[Main] Session ended, reason=" + turn.endReason + ". Powering down — press the button to start again.");
+    delay(1500);         // brief beat after the spoken goodbye before the screen goes dark
+    enterDeepSleep();    // does not return; wakes on button into a fresh session
     return;
   }
 
@@ -1038,14 +1044,20 @@ void noteInteraction() {
   wakeScreen();
 }
 
-// Deep sleep until the push-to-talk button is pressed. Waking from deep sleep is
-// a full reset, so setup() re-runs the identify flow — same effect as the
-// session-end ESP.restart(), just power-saving instead of an immediate reboot.
+// Deep sleep until the push-to-talk button is pressed. Waking is a full reset, so
+// setup() re-runs the identify flow into a fresh session. Called both by the idle
+// timeout and at explicit session end — on this board (no power latch) this deep
+// sleep is the device's "off": screen dark, CPU halted, wakes on the button.
 void enterDeepSleep() {
-  Serial.println("[Idle] No interaction — entering deep sleep. Press the button to wake.");
+  Serial.println("[Power] Entering deep sleep — press the button to wake.");
   faceStatus("idle");
   firestoreWriteDeviceState("idle");
   digitalWrite(PIN_LCD_BL, LOW);
+  // IO45 is not an RTC pad, so rtc_gpio_hold can't keep it low. Latch it with the
+  // digital IO hold + deep-sleep hold so the backlight stays fully off (not
+  // floating) for the whole sleep; setup() releases the hold on wake.
+  gpio_hold_en((gpio_num_t)PIN_LCD_BL);
+  gpio_deep_sleep_hold_en();
   delay(200);  // let the Firestore write flush before the CPU halts
 
   // The button is wired between IO2 (driven LOW as its GND) and IO3
