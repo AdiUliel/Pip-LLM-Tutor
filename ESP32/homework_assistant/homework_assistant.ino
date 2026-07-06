@@ -1124,15 +1124,22 @@ void loop() {
   if (state == IDLE) {
     if (wakeWordPoll() == 1) {
       Serial.println("[Main] 🪄 \"היי פיפ\" detected — listening for the answer.");
-      noteInteraction();                // wake the screen + reset the idle timers
       wakeWordStopListening();          // release I2S so the recorder can install it
       faceEmotion("listening");
       state = RECORDING;
       if (recordUntilSilence()) {
-        g_wwNoSpeechStreak = 0;         // real speech followed the trigger
+        // Real speech followed the trigger — only NOW does it count as a child
+        // interaction: wake the screen and reset the idle timers. Doing this on
+        // the bare trigger (before this check) let room-noise false fires keep
+        // resetting the timers, so the screen-off / deep-sleep policy never
+        // elapsed. False fires (the else branch) must NOT touch the idle timers.
+        noteInteraction();
+        g_wwNoSpeechStreak = 0;
         state = PROCESSING;
         processCapturedAnswer();        // returns to IDLE + re-arms the wake word
       } else {
+        // False fire (trigger, then no speech): re-arm SILENTLY and deliberately
+        // leave g_lastInteractionMs untouched so noise can't keep the device awake.
         uint32_t now = millis();
         if (now - g_wwLastNoSpeechMs > 60000UL) g_wwNoSpeechStreak = 0;  // stale streak
         g_wwLastNoSpeechMs = now;
