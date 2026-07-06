@@ -252,6 +252,17 @@ void faceTick() {
 #endif
 }
 
+// Show the device's pairing code ON THE SCREEN (not just the Serial Monitor) so
+// a parent can read it and link the device in the app. Shown whenever the device
+// is unpaired — the code is stable (MAC-derived, devicePairingDocId in
+// firebase_client.h), so it's the same value the parent types under "TUTOR-".
+void showPairingCode() {
+  const String code = devicePairingDocId();     // "TUTOR-XXXXXX"
+  Serial.println("[Pairing] Show on screen — enter this code in the app: " + code);
+  faceEmotion("sleepy");                         // calm "waiting to be set up" face
+  faceStrip("להגדרה באפליקציה: " + code);
+}
+
 // Post-process the audio in recordBuf in-place: pick the channel that
 // actually carries the mic, strip to mono, and reject near-silence.
 // Returns true if the audio is usable for STT; false if too short / silent.
@@ -515,6 +526,7 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
       faceEmotion("encouraging");
       speakTextCached("אין משתמש משויך למכשיר הזה, ולא הוגדר תלמיד. יש להגדיר אותי דרך האפליקציה.");
       Serial.println("[Identify] device not paired to any parent/child.");
+      showPairingCode();   // put the code on the SCREEN so the parent can pair
       return false;
     }
     // Name not recognised — re-ask and keep looping (cached static phrase).
