@@ -85,6 +85,18 @@ Future<void> main() async {
   auth.addListener(evalFcm);
   config.addListener(evalFcm);
 
+  // Child + device providers are constructed eagerly and wired together: the
+  // DeviceProvider reactively follows the active child's linked device. So when
+  // the parent pairs, swaps, or switches child, `child.deviceId` changes → the
+  // ChildProvider stream notifies → DeviceProvider re-watches the new device
+  // and "connected" updates immediately (fixes the "must log out to see it" bug).
+  final childProvider =
+      ChildProvider(firebaseService, prefs, offlineQueue: offlineQueue);
+  final deviceProvider = DeviceProvider(deviceSync);
+  childProvider.addListener(
+    () => deviceProvider.syncTo(childProvider.child?.deviceId),
+  );
+
   runApp(
     MultiProvider(
       providers: [
@@ -94,10 +106,8 @@ Future<void> main() async {
         Provider<DeviceSyncService>.value(value: deviceSync),
         Provider<FcmService>.value(value: fcm),
         ChangeNotifierProvider.value(value: auth),
-        ChangeNotifierProvider(
-          create: (_) => ChildProvider(firebaseService, prefs, offlineQueue: offlineQueue),
-        ),
-        ChangeNotifierProvider(create: (_) => DeviceProvider(deviceSync)),
+        ChangeNotifierProvider.value(value: childProvider),
+        ChangeNotifierProvider.value(value: deviceProvider),
         ChangeNotifierProvider(create: (_) => StatsProvider(firebaseService)),
       ],
       child: EmotionalTutorApp(navigatorKey: _navKey),

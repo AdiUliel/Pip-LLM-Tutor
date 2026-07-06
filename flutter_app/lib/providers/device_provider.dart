@@ -34,6 +34,27 @@ class DeviceProvider extends ChangeNotifier {
     });
   }
 
+  /// Reactively follow whichever device the active child is linked to. Wired to
+  /// ChildProvider in main.dart, so pairing / device-swap / switching child
+  /// updates the "connected" state IMMEDIATELY — no logout+login needed. An
+  /// empty/absent id (child not yet paired) stops watching. Idempotent.
+  void syncTo(String? deviceId) {
+    if (deviceId == null || deviceId.isEmpty) {
+      _stop();
+      return;
+    }
+    watch(deviceId);
+  }
+
+  void _stop() {
+    if (_sub == null && _deviceId == null && _state == null) return;
+    _sub?.cancel();
+    _sub = null;
+    _deviceId = null;
+    _state = null;
+    notifyListeners();
+  }
+
   Future<void> sendStart() async {
     if (_deviceId != null) await _svc.sendCommand(_deviceId!, 'start');
   }

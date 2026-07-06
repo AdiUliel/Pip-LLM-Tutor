@@ -11,7 +11,6 @@ import 'models/child.dart';
 import 'providers/auth_provider.dart';
 import 'providers/child_provider.dart';
 import 'providers/config_provider.dart';
-import 'providers/device_provider.dart';
 import 'providers/stats_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/onboarding_intro_screen.dart';
@@ -100,11 +99,9 @@ class _ChildLoader extends StatelessWidget {
           if (childProv.activeChildId != active.id || childProv.child == null) {
             childProv.setActive(active.id);
           }
-          // deviceId is empty when the parent chose to pair the device later;
-          // skip watching until one is linked from the device monitor.
-          if (active.deviceId.isNotEmpty) {
-            context.read<DeviceProvider>().watch(active.deviceId);
-          }
+          // The device to watch is no longer wired here: DeviceProvider follows
+          // ChildProvider.child.deviceId reactively (see main.dart), so pairing
+          // and device-swap update "connected" without waiting on this callback.
           context.read<StatsProvider>().load(active.id);
         });
         return const ShellScreen();
