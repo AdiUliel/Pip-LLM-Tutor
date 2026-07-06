@@ -180,6 +180,20 @@ async function getAccessToken() {
 // the body, which we base64 here for Google). Throws on a non-OK STT response.
 async function recognizeSpeech(audioBase64, languageCode = "he-IL") {
   const accessToken = await getAccessToken();
+  const config = {
+    encoding:        "LINEAR16",
+    sampleRateHertz: 16000,
+    languageCode,
+    model:           "default",
+  };
+  // English lessons ask the question in Hebrew ("איך אומרים כלב באנגלית?"), so
+  // children often answer in Hebrew ("כלב", "לא יודע") instead of the English word.
+  // Let Google auto-detect Hebrew too — otherwise en-US mis-hears "כלב" as "Caleb".
+  // Math stays Hebrew-only: an English alternative there risks mis-reading spoken
+  // Hebrew numbers.
+  if (languageCode === "en-US") {
+    config.alternativeLanguageCodes = ["he-IL"];
+  }
   const sttRes = await fetch(
     "https://speech.googleapis.com/v1/speech:recognize",
     {
@@ -190,12 +204,7 @@ async function recognizeSpeech(audioBase64, languageCode = "he-IL") {
       },
       body: JSON.stringify({
         audio: { content: audioBase64 },
-        config: {
-          encoding:        "LINEAR16",
-          sampleRateHertz: 16000,
-          languageCode,
-          model:           "default",
-        },
+        config,
       }),
     }
   );
