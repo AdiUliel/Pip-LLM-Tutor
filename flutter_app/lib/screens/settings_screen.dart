@@ -204,9 +204,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _Slider(
                     label: 'כיבוי מסך אחרי',
                     value: _screenOffMin,
-                    min: 5,
+                    min: 1,
                     max: 60,
-                    step: 5,
+                    step: 1,
                     unit: 'דק׳',
                     onChanged: (v) => setState(() {
                       _screenOffMin = v;
@@ -217,9 +217,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _Slider(
                     label: 'כיבוי ההתקן אחרי',
                     value: _deviceSleepMin,
-                    min: 10,
+                    min: 2,
                     max: 120,
-                    step: 5,
+                    step: 1,
                     unit: 'דק׳',
                     onChanged: (v) => setState(() {
                       _deviceSleepMin = v;
