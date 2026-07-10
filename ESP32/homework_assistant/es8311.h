@@ -76,9 +76,11 @@ bool initES8311() {
                                 // the low digital gain below it no longer over-drives.
   // ADC DIGITAL volume. With the HPF now removing DC, this gain is clean. At 0xC8 the
   // mic worked but Hebrew speech was quiet (RMS ~928, -31dBFS) and STT returned empty.
-  // 0xDA is ~+9dB: targets speech RMS ~2600 / peak ~24500 (-22dBFS) with headroom.
-  // Each step = 0.5dB. If loud speech clips (peak hits 32767), step down toward 0xD0.
-  es8311_write(0x17, 0xDA);   // ADC digital volume (~+9dB for healthy STT level)
+  // Each step = 0.5dB. Bumped 0xDA→0xE0 (~+12dB, +3dB over the old level) so quiet /
+  // far-field speech reaches STT louder — the "mic sometimes can't hear me" fix. Still
+  // ~-19dBFS at normal speech, so there's headroom; if a LOUD close answer clips (watch
+  // "peak=…/32767" in tts_player, or the [Audio]/[Main] RMS logs), step back toward 0xDA.
+  es8311_write(0x17, 0xE0);   // ADC digital volume (~+12dB for a louder capture)
 
   // ── ADC high-pass filter — REMOVES DC OFFSET (two-stage) ──────────────────
   // CRITICAL: both stages must be written. Stage 1 (0x1B) was previously MISSING,

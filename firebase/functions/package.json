@@ -4,7 +4,8 @@
   "scripts": {
     "serve": "firebase emulators:start --only functions,firestore",
     "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "mock:pair": "node mock_pair.js"
   },
   "engines": {
     "node": "22"

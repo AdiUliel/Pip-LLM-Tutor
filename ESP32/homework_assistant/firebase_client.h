@@ -957,10 +957,13 @@ uint8_t* cloudSynthesizeBytes(const String& text, size_t* outLen) {
 // The app reads deviceState/{uid}.status + lastHeartbeat (freshness => online),
 // currentQuestion and activeSubject. Rules allow any signed-in user to write.
 // Call writeDeviceState() on every status change and periodically (heartbeat).
-void firestoreWriteDeviceState(const String& status,
-                               const String& currentQuestion = "",
-                               const String& subject = SESSION_SUBJECT) {
-  if (g_firebaseUid.isEmpty()) return;
+// Returns the HTTP status code of the PATCH (200 = the app can now see this
+// device online). Returns -1 if we never even tried (no UID yet). Most callers
+// ignore the return; setup() uses it to print an explicit app-link boot check.
+int firestoreWriteDeviceState(const String& status,
+                              const String& currentQuestion = "",
+                              const String& subject = SESSION_SUBJECT) {
+  if (g_firebaseUid.isEmpty()) return -1;
 
   // PATCH with an updateMask so we only touch the fields we own.
   String url = "https://firestore.googleapis.com/v1/projects/";
@@ -993,6 +996,7 @@ void firestoreWriteDeviceState(const String& status,
     Serial.printf("[Firestore] deviceState PATCH HTTP %d\n", code);
   }
   http.end();
+  return code;
 }
 
 // ── Keep-alive heartbeat (loop() only) ───────────────────────────────────────

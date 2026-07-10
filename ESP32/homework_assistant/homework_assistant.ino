@@ -100,6 +100,28 @@
 #define DEEP_SLEEP_TEST_SECONDS 0
 #endif
 
+// ── Show the pairing code on boot (re-pairing / verification) ─────────────────
+// The device only shows its "TUTOR-XXXXXX" pairing code on screen when it's
+// UNPAIRED. Once paired it boots straight into a session, so you can't read the
+// code to pair a NEW app/device. Set this to how many SECONDS to hold the code on
+// screen at EVERY boot (regardless of pairing); 0 = only show it when unpaired
+// (normal). The code is ALSO always printed to Serial at boot either way.
+#ifndef SHOW_PAIRING_CODE_SECONDS
+#define SHOW_PAIRING_CODE_SECONDS 0
+#endif
+
+// ── Demo: boot as a BRAND-NEW (unpaired) device ───────────────────────────────
+// 1 = wipe the saved Firebase identity (NVS) at boot, so the device signs up
+// fresh, gets a UID no child is linked to, and therefore runs the UNPAIRED flow:
+// it shows its "TUTOR-XXXXXX" pairing code and waits for the app to pair it —
+// exactly what a factory-new unit does. Use this to SHOWCASE app↔device pairing on
+// an already-paired device (each reboot = a fresh pairing demo). 0 = normal (keep
+// the saved identity across reboots). Turn OFF after the demo, or the device needs
+// re-pairing on every boot.
+#ifndef DEMO_FRESH_DEVICE
+#define DEMO_FRESH_DEVICE 0
+#endif
+
 // ── State machine ─────────────────────────────────────────────────────────────
 enum State { IDLE, RECORDING, PROCESSING, SPEAKING };
 State state = IDLE;
@@ -284,7 +306,9 @@ bool processRecordedAudio() {
 // MIC_MAX_GAIN. Operates in place on recordBuf (already stripped to mono); returns
 // the PRE-gain RMS so the caller can still reject true silence.
 #define MIC_TARGET_PEAK  22000   // ~-3.4 dBFS: loud, with headroom (full scale 32767)
-#define MIC_MAX_GAIN     8.0f    // cap (+18 dB) so a silent room's noise floor isn't blown up
+#define MIC_MAX_GAIN     12.0f   // cap (~+21.6 dB) — raised 8→12 so quiet/far speech can reach
+                                 // MIC_TARGET_PEAK instead of being capped short. Peak-targeted,
+                                 // so close/loud speech still gets ~1x (no clipping).
 static float micAutoGainMono() {
   int16_t* s = (int16_t*)recordBuf;
   size_t   n = recordBytes / 2;
@@ -538,6 +562,12 @@ void setup() {
   // a `children.deviceId` paired via the Flutter app keeps matching across
   // device reboots. Falls back to a fresh signUp on the very first boot or if
   // the saved refresh token has been invalidated.
+#if DEMO_FRESH_DEVICE
+  // Showcase mode: forget the saved identity so this boots as a brand-new,
+  // UNPAIRED device (fresh UID → shows its pairing code → waits for the app).
+  firebaseClearCreds();
+  Serial.println("[Demo] DEMO_FRESH_DEVICE=1 — cleared saved identity; booting as a NEW unpaired device.");
+#endif
   g_idToken = firebaseBootAuth();
   if (g_idToken.isEmpty()) {
     Serial.println("❌ Firebase auth failed. Check FIREBASE_WEB_API_KEY in secrets.h");
@@ -548,6 +578,15 @@ void setup() {
   // Publish the user-visible pairing code → this device's UID so the parent app
   // can pair against the right Firebase identity. Cheap (one PATCH) and idempotent.
   firestoreWritePairingCode();
+
+  // Always surface this device's pairing code on boot so you can read it even when
+  // the device is already paired (it otherwise only appears on screen when
+  // unpaired). Enter this in the app to pair a new device/app.
+  Serial.println("[Pairing] Device code: " + devicePairingDocId() + "  — enter this in the app to pair.");
+#if SHOW_PAIRING_CODE_SECONDS
+  showPairingCode();   // put TUTOR-XXXXXX on the screen…
+  delay((uint32_t)SHOW_PAIRING_CODE_SECONDS * 1000UL);   // …long enough to read + pair
+#endif
 
   // Prefetch the FIXED phrases (boot + reprompts) into the SD cache so their first
   // use is an instant hit, not a ~2–3 s synth. Strings here MUST match the ones
@@ -581,7 +620,15 @@ void setup() {
     firestoreWriteDeviceState("error");
     while (true) { faceTick(); delay(200); }
   }
-  firestoreWriteDeviceState("idle");
+
+  // App-link boot check: the app shows this device "online" only while its
+  // deviceState/{uid} doc keeps getting fresh writes. Print the result of the FIRST
+  // one so you can confirm at boot whether the app can see this device (200 = yes).
+  // The loop() heartbeat then keeps it fresh; if THAT starts failing (e.g. the
+  // HTTP -11/-1 you saw), the app drops it back offline ~30 s later.
+  int appLink = firestoreWriteDeviceState("idle");
+  if (appLink == 200) Serial.println("[AppLink] deviceState OK (HTTP 200) — the app can see this device now.");
+  else Serial.printf("[AppLink] deviceState write FAILED (HTTP %d) — the app will NOT see this device until this succeeds (check Wi-Fi/Firestore).\n", appLink);
 
   // ── Pairing gate ──────────────────────────────────────────────────────────
   // firestoreCreateSession() just resolved this device's child by deviceId into
@@ -604,8 +651,15 @@ void setup() {
         g_childId = firestoreResolveChildId();      // also refreshes idle-policy settings
       }
     }
-    Serial.println("[Pairing] Child linked — continuing to the identify flow.");
+    // ── Paired! On-screen handoff so a live audience sees the pairing land ──────
+    // The poll above just detected this device's UID got linked to a child. Only
+    // reached when the device STARTED unpaired, so it never fires on a normal
+    // already-paired boot — it's purely the "just got paired" confirmation.
+    Serial.println("[Pairing] Paired! Child linked — showing confirmation, then greeting.");
+    faceEmotion("celebrating");
+    faceStrip("מחובר!");                 // "Connected!" — the celebrating face is the ✓
     firestoreWriteDeviceState("idle");
+    for (uint32_t _t = millis(); millis() - _t < 2500; ) { faceTick(); delay(20); }
   }
 
   String firstAudio;
@@ -1002,16 +1056,27 @@ void loop() {
     firestoreHeartbeat(hb, g_currentQuestion);
   }
 
-  // ── IDLE → start recording the child's answer when the button is pressed ────
+  // ── IDLE → button press ────────────────────────────────────────────────────
+  // If the screen is currently OFF, the FIRST press only WAKES it (backlight on +
+  // restart the idle timers) and is consumed here — the child must press AGAIN to
+  // record. This stops a "tap to wake" from being swallowed as a (usually empty)
+  // answer. If the screen is already on, the press starts recording as before.
   bool btnDown = (digitalRead(PIN_BTN) == LOW);
 
   if (state == IDLE && btnDown) {
-    Serial.println("[Main] Recording answer...");
-    noteInteraction();                // wake the screen + reset the idle timers
-    state = RECORDING;
-    recordBytes = 0;
-    faceEmotion("listening");
-    i2s_start_recording();
+    if (g_screenOff) {
+      Serial.println("[Main] Wake press — screen on; press again to answer.");
+      noteInteraction();              // backlight on + reset the idle timers
+      // Consume THIS press so the same hold doesn't roll straight into a recording.
+      while (digitalRead(PIN_BTN) == LOW) { faceTick(); delay(10); }
+    } else {
+      Serial.println("[Main] Recording answer...");
+      noteInteraction();              // reset the idle timers
+      state = RECORDING;
+      recordBytes = 0;
+      faceEmotion("listening");
+      i2s_start_recording();
+    }
   }
 
   // RECORDING → capture while the button is held.
