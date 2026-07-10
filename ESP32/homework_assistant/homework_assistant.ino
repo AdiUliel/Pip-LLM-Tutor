@@ -83,15 +83,21 @@
 #endif
 #define ES8311_DAC_VOL_LOW 0x8F   // ~-24 dB vs unity — clearly quiet but audible
 
-// ── Screen-off bench testing ──────────────────────────────────────────────────
-// >0 forces the screen-off timeout to this many SECONDS, ignoring the child's
-// minutes setting AND the Firestore/app override, and prints a live idle countdown
-// every ~2 s so you can confirm screen-off on the bench in seconds instead of
-// minutes. The countdown also prints the state each tick, so if the screen never
-// sleeps you can see why (e.g. state never returns to IDLE, or the timer keeps
-// resetting). Set back to 0 for the normal minute-based policy.
+// ── Idle-policy bench testing ─────────────────────────────────────────────────
+// Each >0 forces that threshold to this many SECONDS, ignoring the child's minutes
+// setting AND the Firestore/app override, and enables a live idle countdown every
+// ~2 s (state, idle seconds, both thresholds) so you can watch screen-off and
+// deep-sleep fire on the bench in seconds instead of minutes. Keep deep-sleep ≥
+// screen-off, or the device sleeps before the screen ever turns off. Set both back
+// to 0 for the normal minute-based policy.
+//   SCREEN_OFF_TEST_SECONDS : seconds of no interaction → backlight off
+//   DEEP_SLEEP_TEST_SECONDS : seconds of no interaction → deep sleep ("off");
+//                             screen dark + CPU halted, wakes on the button
 #ifndef SCREEN_OFF_TEST_SECONDS
 #define SCREEN_OFF_TEST_SECONDS 0
+#endif
+#ifndef DEEP_SLEEP_TEST_SECONDS
+#define DEEP_SLEEP_TEST_SECONDS 0
 #endif
 
 // ── State machine ─────────────────────────────────────────────────────────────
@@ -938,27 +944,35 @@ void enterDeepSleep() {
 
 // Called each idle loop: enforce the screen-off, then the deep-sleep, threshold.
 void checkIdlePolicy() {
-  // Screen-off threshold in ms. Normally g_screenOffMinutes (child setting, read
-  // from Firestore at boot). SCREEN_OFF_TEST_SECONDS forces a short, override-proof
-  // value for bench testing and logs a live countdown (see top of this file).
+  // Screen-off / deep-sleep thresholds in ms. Normally from the child's settings
+  // (g_screenOffMinutes / g_deviceSleepMinutes, read from Firestore at boot).
+  // SCREEN_OFF_TEST_SECONDS / DEEP_SLEEP_TEST_SECONDS force short, override-proof
+  // values for bench testing (see the top of this file).
 #if SCREEN_OFF_TEST_SECONDS
   uint32_t screenOffMs = (uint32_t)SCREEN_OFF_TEST_SECONDS * 1000UL;
+#else
+  uint32_t screenOffMs = (uint32_t)g_screenOffMinutes * 60000UL;
+#endif
+#if DEEP_SLEEP_TEST_SECONDS
+  uint32_t sleepMs = (uint32_t)DEEP_SLEEP_TEST_SECONDS * 1000UL;
+#else
+  uint32_t sleepMs = (uint32_t)g_deviceSleepMinutes * 60000UL;
+#endif
+
+#if SCREEN_OFF_TEST_SECONDS || DEEP_SLEEP_TEST_SECONDS
   static uint32_t _idleDbgMs = 0;
   if (millis() - _idleDbgMs > 2000) {
     _idleDbgMs = millis();
-    Serial.printf("[Idle] state=%d  idle=%lus / off=%lus  screenOff=%d  (sleep=%d min)\n",
+    Serial.printf("[Idle] state=%d  idle=%lus  off=%lus  sleep=%lus  screenOff=%d\n",
                   (int)state, (unsigned long)((millis() - g_lastInteractionMs) / 1000UL),
-                  (unsigned long)(screenOffMs / 1000UL), g_screenOff ? 1 : 0,
-                  g_deviceSleepMinutes);
+                  (unsigned long)(screenOffMs / 1000UL),
+                  (unsigned long)(sleepMs / 1000UL), g_screenOff ? 1 : 0);
   }
-#else
-  uint32_t screenOffMs = (uint32_t)g_screenOffMinutes * 60000UL;
 #endif
 
   if (state != IDLE) return;
   uint32_t idleMs = millis() - g_lastInteractionMs;
-  if (g_deviceSleepMinutes > 0 &&
-      idleMs >= (uint32_t)g_deviceSleepMinutes * 60000UL) {
+  if (sleepMs > 0 && idleMs >= sleepMs) {
     enterDeepSleep();  // does not return
   } else if (screenOffMs > 0 && !g_screenOff && idleMs >= screenOffMs) {
     screenOff();
