@@ -12,10 +12,7 @@
  *   3. Backend (onSessionCreated) generates the first question + its TTS audio
  *   4. Device SPEAKS the question (face: speaking) then LISTENS (face: listening)
  *   5. Child holds the push-to-talk button and answers → I2S capture (ended on
- *      release/silence) → STT proxy. (Wake word "hey pip" is disabled by
- *      default — unreliable in practice; the model + code are kept behind
- *      USE_WAKE_WORD=1 for anyone who wants to pick it back up. See
- *      wake_word.h / Documentation/WAKE_WORD.md.)
+ *      button release) → STT proxy.
  *   6. Device posts a learning_turn → backend grades + Gemini feedback +
  *      next question + combined TTS audio
  *   7. Device shows the returned EMOTION on pip_face, SPEAKS feedback+next
@@ -24,8 +21,6 @@
  * Required libraries (Arduino IDE → Manage Libraries):
  *   - ArduinoJson      by Benoit Blanchon (v7.x)
  *   - TFT_eSPI         by Bodmer            (for pip_face; configure User_Setup)
- *   (Wake word "hey pip" needs NO extra library — the model is bundled in
- *    wake_word.h / ww_infer.h / hey_pip_model.h. See Documentation/WAKE_WORD.md.)
  *   See INTEGRATION.md for the TFT_eSPI User_Setup for this exact board.
  *
  * Board settings (Arduino IDE):
@@ -42,16 +37,11 @@
 #include "secrets.h"
 #include "pins.h"
 #include "es8311.h"
-// ── pip_face on/off switch ────────────────────────────────────────────────────
-// Set to 0 to build & boot WITHOUT the display. The audio tutor loop runs fine
-// without it — use this to isolate a display/TFT_eSPI problem from the rest of
-// the device. With USE_PIP_FACE=1 you MUST have TFT_eSPI installed AND its
+// pip_face animated face (TFT_eSPI). You MUST have TFT_eSPI installed AND its
 // User_Setup configured for this board (copy pip_face/User_Setup_LCDWIKI.h over
-// libraries/TFT_eSPI/User_Setup.h), or TFT_eSPI will crash at init.
-#define USE_PIP_FACE 1
-#if USE_PIP_FACE
-  #include "PipFace.h"     // animated face (TFT_eSPI). See INTEGRATION.md.
-#endif
+// libraries/TFT_eSPI/User_Setup.h), or TFT_eSPI will crash at init. See
+// INTEGRATION.md.
+#include "PipFace.h"
 #include "firebase_client.h"
 #include "stt_client.h"
 #include "tts_player.h"
@@ -59,16 +49,6 @@
 #include "esp_sleep.h"     // deep sleep + ext1 button wake (idle power policy)
 #include "driver/rtc_io.h" // hold the button pins through deep sleep
 #include "driver/gpio.h"   // hold the (non-RTC) backlight pin off through deep sleep
-
-// ── Wake-word ("hey pip") on/off switch ───────────────────────────────────────
-// 1 = say "hey pip" to start an answer (REPLACES the button).
-// 0 = push-to-talk button (default). We dropped wake-word as a shipped feature
-// — real-world recall/false-fire rate wasn't good enough (it was trained on
-// synthetic voices, see Documentation/WAKE_WORD.md's "honest caveats"). The
-// button (pins.h: PIN_BTN) was never removed, so this is a one-line revert.
-#ifndef USE_WAKE_WORD
-#define USE_WAKE_WORD 0
-#endif
 
 // ── Phase 1: collapse the turn into ONE synchronous processTurn call ──────────
 // 1 = device calls processTurn (grade + Gemini + TTS + writes done server-side,
@@ -92,35 +72,16 @@
 #define USE_PROCESS_TURN_AUDIO 1
 #endif
 
-// ── Wake-word TEST MODE (threshold tuning / "it's unresponsive" debugging) ─────
-// Set to 1 to boot straight into a serial score printer: it SKIPS WiFi/Firebase
-// and, every ~200 ms, prints the live "hey pip" score plus the mic level so you
-// can see exactly why it isn't triggering. Set back to 0 for normal operation.
-// How to read the output (Serial Monitor @115200):
-//   • rms/peak stay ~0 while you speak  → mic/I2S problem (no audio reaching the model)
-//   • score spikes on "hey pip" but stays under the threshold → lower WAKE_WORD_THRESHOLD
-//   • score never moves at all          → model/feature problem
-// Once you know the score your real "hey pip" hits, set WAKE_WORD_THRESHOLD just
-// below it (in wake_word.h), flip this back to 0, and reflash.
-#ifndef WW_TEST_MODE
-#define WW_TEST_MODE 0
+// ── Low speaker volume (bench-testing) ────────────────────────────────────────
+// 1 = quiet the TTS at boot so you're not blasted while testing at your desk.
+//     Purely a digital-gain change on the ES8311 DAC (reg 0x32) — the audio path
+//     is otherwise identical, just softer. 0 = normal shipping loudness.
+// Tune ES8311_DAC_VOL_LOW to taste: higher hex = louder (0xBF = 0 dB unity;
+// 0xC5 ≈ +3 dB is the normal level in es8311.h).
+#ifndef SPEAKER_LOW_VOLUME
+#define SPEAKER_LOW_VOLUME 0
 #endif
-
-// ── Wake-word DATA CAPTURE mode (record real samples to SD for RETRAINING) ─────
-// Set to 1 to boot straight into the SD recorder (see ww_capture.h): say "hey pip"
-// and capture room/bed noise through THIS device's real mic, then retrain the model
-// on it. Skips WiFi/Firebase and never returns. Mutually exclusive with normal use
-// and with WW_TEST_MODE — reflash with WW_CAPTURE_MODE 0 to go back to the tutor.
-#ifndef WW_CAPTURE_MODE
-#define WW_CAPTURE_MODE 0
-#endif
-#if WW_CAPTURE_MODE
-  #include "ww_capture.h"     // needs the codec (initES8311) + SD (sdCacheBegin)
-#endif
-
-#if USE_WAKE_WORD
-  #include "wake_word.h"
-#endif
+#define ES8311_DAC_VOL_LOW 0x8F   // ~-24 dB vs unity — clearly quiet but audible
 
 // ── State machine ─────────────────────────────────────────────────────────────
 enum State { IDLE, RECORDING, PROCESSING, SPEAKING };
@@ -224,33 +185,19 @@ const char* pipEmotionFor(const String& e) {
   return "encouraging";
 }
 
-// These are no-ops when USE_PIP_FACE==0 (or when begin() failed) so the rest of
-// the firmware never has to care whether the display is present.
+// These are no-ops when pip_face begin() failed, so the rest of the firmware
+// never has to care whether the display actually came up.
 void faceEmotion(const char* label) {
-#if USE_PIP_FACE
   if (g_haveFace) Pip::setEmotion(label);
-#else
-  (void)label;
-#endif
 }
 void faceStatus(const char* status, int mood = -1) {
-#if USE_PIP_FACE
   if (g_haveFace) Pip::setDeviceStatus(status, mood);
-#else
-  (void)status; (void)mood;
-#endif
 }
 void faceStrip(const String& text) {
-#if USE_PIP_FACE
   if (g_haveFace) Pip::setStrip(text.c_str(), g_stars);
-#else
-  (void)text;
-#endif
 }
 void faceTick() {
-#if USE_PIP_FACE
   if (g_haveFace) Pip::tick();
-#endif
 }
 
 // Show the device's pairing code ON THE SCREEN (not just the Serial Monitor) so
@@ -310,21 +257,11 @@ bool processRecordedAudio() {
   return true;
 }
 
-// RMS above which a chunk counts as speech (computed over the interleaved
-// stereo stream — the silent codec channel halves it, so this sits a bit below
-// the mono speech levels the ES8311 produces). Used for silence endpointing.
-// Lowered 300→200 so a child speaking at a normal (not up-against-the-mic)
-// distance is still registered as "talking" and gets recorded. If a NOISY room
-// stops the recording from ever ending (it keeps hearing "voice"), raise this
-// back toward 300.
-#define VOICE_RMS_THRESHOLD 200
-
 // ── Software mic auto-gain (far-field boost) ─────────────────────────────────
 // The ES8311 analog PGA is already maxed (es8311.h reg14=0x1A), so a child who
 // isn't right on top of the mic records quietly and the near-silence rejects
 // below used to discard the turn ("speak closer"). This scales the captured mono
-// utterance up toward a healthy full-scale peak — EXACTLY what the wake-word
-// front-end does for its model input (wake_word.h ww_normalize) — so quiet/distant
+// utterance up toward a healthy full-scale peak, so quiet/distant
 // speech reaches STT at a usable level. It's adaptive and peak-based: a loud close
 // answer gets ~1x (never amplified into clipping), a quiet distant one up to
 // MIC_MAX_GAIN. Operates in place on recordBuf (already stripped to mono); returns
@@ -357,76 +294,11 @@ static float micAutoGainMono() {
   return rms;
 }
 
-// Record an answer that ENDS ON SILENCE (the wake-word replacement for "record
-// while the button is held"). Fills recordBuf with stereo PCM and sets
-// recordBytes, exactly like the button capture, so processRecordedAudio() /
-// processCapturedAnswer() handle it unchanged. Installs and uninstalls I2S
-// itself. Returns true if speech was captured, false on timeout/too-short.
-//   startTimeoutMs : how long to wait for the child to START talking
-//   trailSilenceMs : how much trailing quiet ends the utterance. Lowered 1200→800
-//     to shave perceived end-of-speech delay (Phase 0.5). TUNE THIS: too low and
-//     a child who pauses mid-answer gets cut off — raise it back toward 1000–1200
-//     if you see premature endpoints in the logs.
-bool recordUntilSilence(uint32_t startTimeoutMs = 6000, uint32_t trailSilenceMs = 800) {
-  i2s_start_recording();
-  recordBytes = 0;
-  uint32_t startMs    = millis();
-  uint32_t lastVoice  = startMs;
-  bool     heardVoice = false;
-  const size_t CHUNK  = 1024;   // bytes per i2s_read (256 stereo frames)
-
-  while (recordBytes + CHUNK <= RECORD_BUF_SIZE) {
-    size_t br = 0;
-    i2s_read(I2S_PORT, recordBuf + recordBytes, CHUNK, &br, portMAX_DELAY);
-
-    // RMS of this chunk (both channels) → voice-activity decision.
-    int16_t* s = (int16_t*)(recordBuf + recordBytes);
-    size_t n = br / 2;
-    int64_t sumSq = 0;
-    for (size_t i = 0; i < n; i++) sumSq += (int64_t)s[i] * s[i];
-    float rms = (n > 0) ? sqrt((float)(sumSq / (int64_t)n)) : 0;
-    recordBytes += br;
-
-    uint32_t now = millis();
-    if (rms > VOICE_RMS_THRESHOLD) { heardVoice = true; lastVoice = now; }
-    faceTick();
-
-    if (heardVoice && (now - lastVoice) > trailSilenceMs) break;        // end of speech
-    if (!heardVoice && (now - startMs) > startTimeoutMs) break;         // nobody spoke
-    if ((now - startMs) > MAX_RECORD_MS) break;                          // hard cap
-  }
-  i2s_stop_recording();
-  Serial.printf("[Rec] %u bytes (%.1f s)%s\n", recordBytes,
-                recordBytes / (float)(SAMPLE_RATE * 2 * 2),
-                heardVoice ? "" : " — no speech");
-  return heardVoice && recordBytes > 1000;
-}
-
-// Blocking record: face listens, waits for the trigger, captures the answer.
-// In wake-word mode the trigger is the Hebrew wake word and capture ends on
-// silence; in button mode it is the original push-to-talk. Used by the
-// boot-time identify flow before the main state-machine loop takes over.
+// Blocking record: face listens, waits for the push-to-talk button, captures the
+// answer while it's held. Used by the boot-time identify flow before the main
+// state-machine loop takes over.
 bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
   faceEmotion("listening");
-#if USE_WAKE_WORD
-  // Wake-word trigger: wait for "היי פיפ", then record until the child stops.
-  Serial.println("[Identify] Say \"היי פיפ\", then answer...");
-  wakeWordStartListening();
-  uint32_t waitStart = millis();
-  bool triggered = false;
-  while (millis() - waitStart < maxWaitMs) {
-    if (wakeWordPoll() == 1) { triggered = true; break; }
-    faceTick();
-  }
-  wakeWordStopListening();
-  if (!triggered) {
-    Serial.println("[Identify] No wake word within timeout.");
-    return false;
-  }
-  Serial.println("[Identify] Recording...");
-  return recordUntilSilence();
-#else
-  // ── Legacy push-to-talk (kept; we may still want the button) ──────────────
   Serial.println("[Identify] Press the button and answer...");
   uint32_t waitStart = millis();
   while (digitalRead(PIN_BTN) != LOW) {
@@ -452,7 +324,6 @@ bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
   Serial.printf("[Identify] Recorded %u bytes (%.1f s)\n",
                 recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
   return true;
-#endif
 }
 
 // Capture one spoken answer during the boot identify flow, RE-ASKING until the
@@ -486,11 +357,7 @@ String identifyCaptureAnswer(const char* retryPrompt) {
 // should wait and retry instead (see setup()).
 bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // ── Step 1 — ask "who's here?" ────────────────────────────────────────────
-#if USE_WAKE_WORD
-  const char* welcomeText = "היי! מי כאן? תגיד \"היי פיפ\" ואז את השם שלך.";
-#else
   const char* welcomeText = "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.";
-#endif
   faceEmotion("speaking");
   if (!speakTextCached(welcomeText)) {     // SD cache → instant after first boot
     Serial.println("[Identify] TTS welcome failed.");
@@ -502,11 +369,7 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // mis-recognised. The only non-retry exit is needsPairing: the device's UID
   // isn't linked to any parent, so no spoken name can ever match and looping
   // would trap the child forever.
-#if USE_WAKE_WORD
-  const char* nameRetry = "לא שמעתי. תגיד \"היי פיפ\" ואז את השם שלך שוב.";
-#else
   const char* nameRetry = "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.";
-#endif
   IdentifyResult child;
   while (true) {
     String nameTranscript = identifyCaptureAnswer(nameRetry);
@@ -582,12 +445,7 @@ void askCurrentQuestion(const String& audioUrl) {
   state = IDLE;
   faceStatus("listening");
   firestoreWriteDeviceState("listening", g_currentQuestion);
-#if USE_WAKE_WORD
-  Serial.println("\n🪄 Say \"היי פיפ\" then your answer.");
-  wakeWordStartListening();        // begin continuous wake-word detection
-#else
   Serial.println("\n🎤 Hold the button and say your answer.");
-#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -607,17 +465,12 @@ void setup() {
   rtc_gpio_deinit((gpio_num_t)PIN_BTN_GND);
   rtc_gpio_deinit((gpio_num_t)PIN_BTN);
 
-  // Button — COMMENTED OUT: the Hebrew wake word "היי פיפ" now triggers
-  // recording (see USE_WAKE_WORD). Kept here, compiled only when the wake word
-  // is disabled, so we can fall back to push-to-talk if we ever need it.
-#if !USE_WAKE_WORD
-  // IO3 reads press, IO2 acts as GND (OUTPUT LOW).
+  // Push-to-talk button. IO3 reads press, IO2 acts as GND (OUTPUT LOW).
   // (If the IO3 expansion line is flaky on your unit, switch PIN_BTN to GPIO0 /
   //  the onboard BOOT button in pins.h — see INTEGRATION.md.)
   pinMode(PIN_BTN_GND, OUTPUT);
   digitalWrite(PIN_BTN_GND, LOW);
   pinMode(PIN_BTN, INPUT_PULLUP);
-#endif
 
   // Speaker amp — disabled until needed.
   pinMode(PIN_AUDIO_EN, OUTPUT);
@@ -644,33 +497,20 @@ void setup() {
 
   // pip_face (needs PSRAM for its 240x240 sprite, and a correct TFT_eSPI
   // User_Setup for this board).
-#if USE_PIP_FACE
   g_haveFace = Pip::begin();
   if (!g_haveFace) Serial.println("⚠️  pip_face init failed (PSRAM/TFT_eSPI). Continuing audio-only.");
   faceEmotion("thinking");
   faceTick();
-#else
-  Serial.println("[pip_face] disabled at build time (USE_PIP_FACE=0).");
-#endif
 
   // ES8311 codec via I2C.
   if (!initES8311()) Serial.println("⚠️  ES8311 init failed. Audio may not work.");
 
-#if WW_CAPTURE_MODE
-  // Data-collection build: record real "hey pip" + noise to the SD card, then halt.
-  // Needs the codec (just above) and the SD card (sdCacheBegin, above). Never returns.
-  wakeWordRunCaptureMode();
-#endif
-
-#if USE_WAKE_WORD
-  // Self-contained "hey pip" model (no Edge Impulse). Needs the codec up (shares the mic).
-  if (!wakeWordBegin())
-    Serial.println("⚠️  Wake-word model not ready — PSRAM allocation failed (enable OPI PSRAM).");
-  #if WW_TEST_MODE
-  // Diagnostic build: stream the live score for threshold tuning. Never returns,
-  // so we skip WiFi/Firebase entirely — just open the Serial Monitor @115200.
-  wakeWordRunTestMode();
-  #endif
+  // Low-volume bench-testing mode: quiet the TTS so you're not blasted at your
+  // desk. Compile-time toggle (SPEAKER_LOW_VOLUME) — see the top of this file.
+#if SPEAKER_LOW_VOLUME
+  es8311SetDacVolume(ES8311_DAC_VOL_LOW);
+  Serial.printf("[Audio] LOW-VOLUME test mode: DAC vol = 0x%02X (normal 0x%02X)\n",
+                ES8311_DAC_VOL_LOW, ES8311_DAC_VOL_DEFAULT);
 #endif
 
   // Network + time + auth.
@@ -697,15 +537,9 @@ void setup() {
   // passed to speakTextCached() below verbatim (same bytes → same cache key). Runs
   // once; on later boots every phrase is already on the card and is skipped.
   static const char* const STATIC_TTS_PHRASES[] = {
-#if USE_WAKE_WORD
-    "היי! מי כאן? תגיד \"היי פיפ\" ואז את השם שלך.",
-    "לא שמעתי. תגיד \"היי פיפ\" ואז את השם שלך שוב.",
-    "לא שמעתי אותך. תגיד \"היי פיפ\" ותענה שוב.",
-#else
     "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.",
     "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.",
     "לא שמעתי אותך. נסה לענות שוב.",
-#endif
     "לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.",
     "לא שמעתי. חשבון או אנגלית?",
     "לא הבנתי. תגיד חשבון או אנגלית?",
@@ -765,30 +599,22 @@ void setup() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Return to the IDLE "waiting for the child" state. In wake-word mode this also
-// re-arms continuous "היי פיפ" detection, so the device is never left deaf after
-// a turn or an early-out (empty STT, silence, backend hiccup).
+// Return to the IDLE "waiting for the child" state, so the device is ready for
+// the next button press after a turn or an early-out (empty STT, silence,
+// backend hiccup).
 void backToListening() {
   state = IDLE;
   faceStatus("listening");
-#if USE_WAKE_WORD
-  wakeWordStartListening();
-#endif
 }
 
 // A capture didn't yield a usable answer (empty STT or near-silence). Re-speak
 // the CURRENT question so the child knows what to answer — not just a generic
 // "try again" — then re-arm listening so the device never goes silently "stuck".
-// In wake-word mode also remind them to say "היי פיפ" first. The full question
-// is also already shown on the strip via askCurrentQuestion().
+// The full question is also already shown on the strip via askCurrentQuestion().
 void repromptAfterMiss() {
   String q = g_currentQuestion;
   q.trim();
-#if USE_WAKE_WORD
-  const char* tail = "תגיד \"היי פיפ\" ותענה שוב.";
-#else
   const char* tail = "נסה לענות שוב.";
-#endif
   // STATIC reprompt (no embedded question) so it's one fixed, prefetchable phrase
   // — an instant SD hit instead of a unique per-question synth every miss. The
   // question itself is already shown on the strip via faceStrip(), so the child
@@ -1010,13 +836,9 @@ void processCapturedAnswer() {
 
   // Ready for the next answer.
   firestoreWriteDeviceState("listening", g_currentQuestion);
-#if USE_WAKE_WORD
-  Serial.println("\n🪄 Say \"היי פיפ\" then your answer.");
-#else
   Serial.println("\n🎤 Hold the button and say your answer.");
-#endif
   noteInteraction();                  // answer finished — restart the idle timers
-  backToListening();                  // re-arms wake-word detection in wake mode
+  backToListening();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1098,65 +920,17 @@ void loop() {
 
   // Heartbeat so the app keeps showing the device online. Uses the keep-alive
   // path (firestoreHeartbeat) so repeats cost ~0.1 s instead of a ~2 s handshake —
-  // the device stays responsive to "היי פיפ" between heartbeats. Meaningful state
-  // transitions still use firestoreWriteDeviceState().
+  // the device stays responsive to the button between heartbeats. Meaningful
+  // state transitions still use firestoreWriteDeviceState().
   if (millis() - g_lastHeartbeat > HEARTBEAT_MS) {
     g_lastHeartbeat = millis();
     const char* hb = (state == IDLE) ? "listening" : "asking";
     firestoreHeartbeat(hb, g_currentQuestion);
   }
 
-#if USE_WAKE_WORD
-  // ── IDLE → listen for the Hebrew wake word "היי פיפ" ───────────────────────
-  // Replaces the button: each loop iteration feeds one audio slice to the
-  // self-contained CNN classifier (wake_word.h). On a hit we hand I2S to the
-  // recorder, capture the answer (ended by silence), and process it through the
-  // shared pipeline.
-  //
-  // False-fire damage control: a trigger followed by 6 s of NO speech at all is
-  // most likely a false fire (room noise), so we re-arm SILENTLY — the device
-  // must never talk to an empty room. Two such events within a minute nudge the
-  // detection threshold up temporarily so a false-fire storm quenches itself.
-  // A real garbled answer still gets the spoken reprompt via
-  // processCapturedAnswer() → repromptAfterMiss(), unchanged.
-  static int      g_wwNoSpeechStreak = 0;
-  static uint32_t g_wwLastNoSpeechMs = 0;
-  if (state == IDLE) {
-    if (wakeWordPoll() == 1) {
-      Serial.println("[Main] 🪄 \"היי פיפ\" detected — listening for the answer.");
-      wakeWordStopListening();          // release I2S so the recorder can install it
-      faceEmotion("listening");
-      state = RECORDING;
-      if (recordUntilSilence()) {
-        // Real speech followed the trigger — only NOW does it count as a child
-        // interaction: wake the screen and reset the idle timers. Doing this on
-        // the bare trigger (before this check) let room-noise false fires keep
-        // resetting the timers, so the screen-off / deep-sleep policy never
-        // elapsed. False fires (the else branch) must NOT touch the idle timers.
-        noteInteraction();
-        g_wwNoSpeechStreak = 0;
-        state = PROCESSING;
-        processCapturedAnswer();        // returns to IDLE + re-arms the wake word
-      } else {
-        // False fire (trigger, then no speech): re-arm SILENTLY and deliberately
-        // leave g_lastInteractionMs untouched so noise can't keep the device awake.
-        uint32_t now = millis();
-        if (now - g_wwLastNoSpeechMs > 60000UL) g_wwNoSpeechStreak = 0;  // stale streak
-        g_wwLastNoSpeechMs = now;
-        if (++g_wwNoSpeechStreak >= 2) {
-          wakeWordNudgeThreshold(0.05f, 30000UL);  // self-quench a false-fire storm
-          g_wwNoSpeechStreak = 0;
-        }
-        Serial.println("[Main] No speech after the wake word — silent re-arm.");
-        backToListening();
-      }
-    }
-  }
-#else
-  // ── Legacy push-to-talk (kept; we may still want the button) ───────────────
+  // ── IDLE → start recording the child's answer when the button is pressed ────
   bool btnDown = (digitalRead(PIN_BTN) == LOW);
 
-  // IDLE → start recording the child's answer when the button is pressed.
   if (state == IDLE && btnDown) {
     Serial.println("[Main] Recording answer...");
     noteInteraction();                // wake the screen + reset the idle timers
@@ -1186,8 +960,7 @@ void loop() {
       state = PROCESSING;
       Serial.printf("[Main] Recorded %u bytes (%.1f sec)\n",
                     recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
-      processCapturedAnswer();          // shared pipeline (same as wake-word path)
+      processCapturedAnswer();          // STT → grade → speak pipeline
     }
   }
-#endif
 }

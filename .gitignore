@@ -1,4 +1,3 @@
-ESP32/SECRETS.h
 firebase/*.log
 firebase/firestore-debug.log
 firebase/firebase-debug.log

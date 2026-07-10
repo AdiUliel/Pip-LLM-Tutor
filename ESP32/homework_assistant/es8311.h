@@ -2,6 +2,14 @@
 #include <Wire.h>
 #include "pins.h"
 
+// Master DAC (speaker) digital volume — ES8311 reg 0x32: 0.5 dB/step,
+// 0xBF = 0 dB (unity), higher hex = louder. 0xC5 ≈ +3 dB, a bit louder since the
+// speaker opening is partly covered. Exposed so firmware can change loudness at
+// runtime (e.g. the low-volume bench-testing toggle). Back off toward 0xBF if
+// loud TTS distorts — it's pure digital gain, so it can clip near-full-scale
+// source peaks (watch the "peak=…/32767" line in tts_player).
+#define ES8311_DAC_VOL_DEFAULT 0xC5
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ES8311 Audio Codec Driver — derived from official LCD Wiki example
 // (Example_17_echo / Example_16_music / es8311.cpp)
@@ -83,14 +91,16 @@ bool initES8311() {
   // ── DAC equalizer bypass ──────────────────────────────────────────────────
   es8311_write(0x37, 0x08);   // Bypass DAC EQ
 
-  // ── DAC volume (TTS loudness) ─────────────────────────────────────────────
-  // Reg 0x32 is the master DAC digital volume: 0.5 dB/step, 0xBF = 0 dB (unity).
-  // Bumped 0xBF→0xC5 (+3 dB) so TTS is a bit louder now that the speaker opening is
-  // partly covered. Each +2 steps ≈ +1 dB (e.g. 0xC8 ≈ +4.5 dB); back off toward
-  // 0xBF if loud TTS distorts — this is pure digital gain, so it can clip source
-  // peaks that are already near full-scale (watch the "peak=…/32767" line in tts_player).
-  es8311_write(0x32, 0xC5);
+  // ── DAC volume (TTS loudness) — see ES8311_DAC_VOL_DEFAULT at top of file ──
+  es8311_write(0x32, ES8311_DAC_VOL_DEFAULT);
 
   Serial.println("[ES8311] Init OK");
   return true;
+}
+
+// ── Runtime DAC (speaker) volume ──────────────────────────────────────────────
+// reg 0x32: 0.5 dB/step, 0xBF = 0 dB (unity), higher hex = louder. Lets firmware
+// change TTS loudness after init — used by the low-volume bench-testing toggle.
+static void es8311SetDacVolume(uint8_t vol) {
+  es8311_write(0x32, vol);
 }
