@@ -166,6 +166,26 @@ function parseExtraction(text) {
   }
 }
 
+// Turn a bare arithmetic expression a parent typed ("6+8", "12 - 5", "8×4",
+// "9/3") into a natural spoken question — the same phrasing the LLM uses for
+// extracted questions, so typed math reads aloud naturally instead of the raw
+// "6+8". Anything that isn't a pure "number op number" (word problems, an
+// already-natural question) is returned unchanged, which also makes this a safe
+// idempotent no-op on its own output.
+function naturalizeMathExpression(question) {
+  const s = String(question == null ? "" : question).trim();
+  const m = s.match(/^(\d+)\s*([+\-*x×÷/:])\s*(\d+)\s*=?\s*\??$/);
+  if (!m) return question;
+  const a = m[1], op = m[2], b = m[3];
+  switch (op) {
+    case "+":                     return `כמה זה ${a} ועוד ${b}?`;
+    case "-":                     return `כמה זה ${a} פחות ${b}?`;
+    case "*": case "x": case "×": return `כמה זה ${a} כפול ${b}?`;
+    case "/": case ":": case "÷": return `כמה זה ${a} חלקי ${b}?`;
+    default:                      return question;
+  }
+}
+
 // Lazy-init the GenAI client + Firestore so cold-start cost only hits this
 // function when it actually fires.
 let _ai;
@@ -185,12 +205,33 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
   async (event) => {
     const after = event.data?.after?.data();
     if (!after) return;                          // deletion
-    if (!after.fileUrl) return;                  // text-only material; nothing to extract
-    if (after.itemsGeneratedAt) return;          // already processed once
-    if (Array.isArray(after.items) && after.items.length > 0) return; // parent typed Q&A
 
     const { materialId } = event.params;
     const ref = event.data.after.ref;
+
+    // Manual Q&A (parent typed the items; no file to extract from). The Gemini
+    // path is skipped, but for math we still normalize a bare arithmetic
+    // expression ("6+8" → "כמה זה 6 ועוד 8?") so a typed question reads aloud
+    // like the generated/extracted ones. Idempotent: naturalizeMathExpression is
+    // a no-op on its own Hebrew output, so the resulting write re-triggers into
+    // this same branch and changes nothing.
+    if (!after.fileUrl) {
+      const isMath = (after.subject || "math") !== "english";
+      if (isMath && Array.isArray(after.items) && after.items.length > 0) {
+        const normalized = after.items.map((it) => ({
+          ...it,
+          question: naturalizeMathExpression(it && it.question),
+        }));
+        if (normalized.some((n, i) => n.question !== after.items[i].question)) {
+          await ref.update({ items: normalized });
+          console.log(`[${materialId}] normalized typed math expression(s)`);
+        }
+      }
+      return;                                    // no file → nothing to extract
+    }
+
+    if (after.itemsGeneratedAt) return;          // already processed once
+    if (Array.isArray(after.items) && after.items.length > 0) return; // parent typed Q&A alongside a file
 
     // Mark this doc as in-flight so concurrent re-triggers don't double-bill
     // Gemini. We write the timestamp at the end too — that "completed" marker
@@ -292,9 +333,16 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
       return;
     }
 
-    console.log(`[${materialId}] extracted ${items.length} Q&A pairs`);
+    // Safety net: the prompt already tells Gemini to phrase math naturally, but
+    // if a raw "6+8" slips through, normalize it here too (no-op for English and
+    // for already-natural questions).
+    const finalItems = subject === "english"
+      ? items
+      : items.map((it) => ({ ...it, question: naturalizeMathExpression(it.question) }));
+
+    console.log(`[${materialId}] extracted ${finalItems.length} Q&A pairs`);
     await ref.update({
-      items,
+      items: finalItems,
       itemsGeneratedAt: FieldValue.serverTimestamp(),
       extractionError:  FieldValue.delete(),
     });

@@ -566,6 +566,31 @@ void setup() {
   }
   firestoreWriteDeviceState("idle");
 
+  // ── Pairing gate ──────────────────────────────────────────────────────────
+  // firestoreCreateSession() just resolved this device's child by deviceId into
+  // g_childId. Empty ⇒ no child is linked ⇒ the device is unpaired. Show the
+  // pairing code ON SCREEN from boot and wait here — a brand-new device has no
+  // child to name, so running the spoken "מי כאן?" flow first would keep the code
+  // hidden behind a prompt nobody can answer (the old behaviour). Re-check every
+  // ~8 s until the parent enters the code in the app and assigns a child (which
+  // sets that child's deviceId to this device's UID).
+  if (useIdentifyFlow && g_childId.isEmpty()) {
+    Serial.println("[Pairing] Unpaired — showing pairing code on screen, waiting to be linked.");
+    faceStatus("idle");
+    showPairingCode();
+    int tick = 0;
+    while (g_childId.isEmpty()) {
+      faceTick();
+      delay(200);
+      if (++tick >= 40) {                          // ~8 s between cloud checks
+        tick = 0;
+        g_childId = firestoreResolveChildId();      // also refreshes idle-policy settings
+      }
+    }
+    Serial.println("[Pairing] Child linked — continuing to the identify flow.");
+    firestoreWriteDeviceState("idle");
+  }
+
   String firstAudio;
   bool ready = false;
 
