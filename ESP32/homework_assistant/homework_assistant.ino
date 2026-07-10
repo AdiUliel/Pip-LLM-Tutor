@@ -83,6 +83,17 @@
 #endif
 #define ES8311_DAC_VOL_LOW 0x8F   // ~-24 dB vs unity — clearly quiet but audible
 
+// ── Screen-off bench testing ──────────────────────────────────────────────────
+// >0 forces the screen-off timeout to this many SECONDS, ignoring the child's
+// minutes setting AND the Firestore/app override, and prints a live idle countdown
+// every ~2 s so you can confirm screen-off on the bench in seconds instead of
+// minutes. The countdown also prints the state each tick, so if the screen never
+// sleeps you can see why (e.g. state never returns to IDLE, or the timer keeps
+// resetting). Set back to 0 for the normal minute-based policy.
+#ifndef SCREEN_OFF_TEST_SECONDS
+#define SCREEN_OFF_TEST_SECONDS 0
+#endif
+
 // ── State machine ─────────────────────────────────────────────────────────────
 enum State { IDLE, RECORDING, PROCESSING, SPEAKING };
 State state = IDLE;
@@ -927,13 +938,29 @@ void enterDeepSleep() {
 
 // Called each idle loop: enforce the screen-off, then the deep-sleep, threshold.
 void checkIdlePolicy() {
+  // Screen-off threshold in ms. Normally g_screenOffMinutes (child setting, read
+  // from Firestore at boot). SCREEN_OFF_TEST_SECONDS forces a short, override-proof
+  // value for bench testing and logs a live countdown (see top of this file).
+#if SCREEN_OFF_TEST_SECONDS
+  uint32_t screenOffMs = (uint32_t)SCREEN_OFF_TEST_SECONDS * 1000UL;
+  static uint32_t _idleDbgMs = 0;
+  if (millis() - _idleDbgMs > 2000) {
+    _idleDbgMs = millis();
+    Serial.printf("[Idle] state=%d  idle=%lus / off=%lus  screenOff=%d  (sleep=%d min)\n",
+                  (int)state, (unsigned long)((millis() - g_lastInteractionMs) / 1000UL),
+                  (unsigned long)(screenOffMs / 1000UL), g_screenOff ? 1 : 0,
+                  g_deviceSleepMinutes);
+  }
+#else
+  uint32_t screenOffMs = (uint32_t)g_screenOffMinutes * 60000UL;
+#endif
+
   if (state != IDLE) return;
   uint32_t idleMs = millis() - g_lastInteractionMs;
   if (g_deviceSleepMinutes > 0 &&
       idleMs >= (uint32_t)g_deviceSleepMinutes * 60000UL) {
     enterDeepSleep();  // does not return
-  } else if (g_screenOffMinutes > 0 && !g_screenOff &&
-             idleMs >= (uint32_t)g_screenOffMinutes * 60000UL) {
+  } else if (screenOffMs > 0 && !g_screenOff && idleMs >= screenOffMs) {
     screenOff();
   }
 }
