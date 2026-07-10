@@ -938,6 +938,14 @@ void enterDeepSleep() {
   rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN);
   rtc_gpio_pullup_en((gpio_num_t)PIN_BTN);
 
+  // CRITICAL: EXT1 powers the RTC-peripheral domain DOWN by default, which turns
+  // OFF the internal pull-up we just enabled on IO3. IO3 (a strapping pin with no
+  // default pull) then floats LOW, so ANY_LOW wakes the chip the instant it sleeps
+  // — the "it reboots immediately without a button press" symptom. Keep that domain
+  // powered so the pull-up holds IO3 HIGH until the button actually pulls it down to
+  // IO2's LOW. (Costs a few µA more in sleep — negligible here.)
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+
   esp_sleep_enable_ext1_wakeup(1ULL << PIN_BTN, ESP_EXT1_WAKEUP_ANY_LOW);
   esp_deep_sleep_start();  // does not return
 }
