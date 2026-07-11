@@ -213,11 +213,30 @@ function answerVariants(answer) {
   return Array.from(variants).filter(Boolean);
 }
 
+// Common lead-in / filler words a child may say around the real answer
+// ("התשובה היא תשע", "it is dog"). Stripping these before an exact match keeps a
+// number embedded in a phrase counting as correct — WITHOUT the loose substring
+// match below wrongly accepting "תשע" inside "תשע עשרה" (9 vs 19) or "9" in "19".
+const ANSWER_FILLER = new Set([
+  "התשובה", "היא", "הוא", "זה", "זהו", "שווה", "הפתרון", "אולי", "נראה", "לי", "אה", "אמ",
+  "the", "answer", "is", "it", "um", "uh", "like", "maybe",
+]);
+
+function stripAnswerFiller(text) {
+  return text.split(" ").filter((t) => t && !ANSWER_FILLER.has(t)).join(" ");
+}
+
 function checkAnswer(expectedAnswer, childAnswer) {
   const expected = answerVariants(expectedAnswer);
   const actual = normalizeText(childAnswer);
   if (!actual) return false;
-  if (expected.includes(actual)) return true;
+  if (expected.includes(actual)) return true;                  // exact / variant match
+  const stripped = stripAnswerFiller(actual);                  // "זה תשע" → "תשע"
+  if (stripped && expected.includes(stripped)) return true;
+  // Loose substring match lets a child pad a TEXT answer ("a dog", "dog!").
+  // Skip it for numbers: "9" must not match inside "19"/"90", nor "תשע" (9)
+  // inside "תשע עשרה" (19).
+  if (/^\d+$/.test(String(expectedAnswer).trim())) return false;
   return expected.some((v) => v.length > 1 && actual.includes(v));
 }
 

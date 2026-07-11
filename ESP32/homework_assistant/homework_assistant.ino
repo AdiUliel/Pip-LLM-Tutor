@@ -191,9 +191,25 @@ void i2s_stop_recording() {
 void connectWiFi() {
   Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  uint32_t attemptStart = millis();
+  bool warned = false;
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    faceTick();                 // keep the face animating instead of a silent hang
+    delay(250);
     Serial.print(".");
+    // Never hang forever & silently: after ~20 s with no link, tell the user on
+    // screen and kick a fresh association attempt, then keep trying. It recovers
+    // on its own once the router / credentials are back.
+    if (millis() - attemptStart > 20000) {
+      if (!warned) {
+        faceStatus("error");
+        faceStrip("אין חיבור לרשת — מנסה שוב...");
+        warned = true;
+      }
+      Serial.println("\n[WiFi] Not connected yet — retrying association...");
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+      attemptStart = millis();
+    }
   }
   Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
   delay(500);

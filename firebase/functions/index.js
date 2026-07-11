@@ -358,7 +358,21 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
   const children = childrenSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   const transcript = String(data.childNameTranscript || data.childAnswer || "").trim();
-  const matched = matchChildByName(children, transcript);
+  let matched = matchChildByName(children, transcript);
+
+  // Renamed / mis-heard name recovery: this device is paired to one child
+  // (child.deviceId == the device UID). If the spoken name matches nobody, use
+  // that linked child (or the parent's only child) instead of looping "מי אתה?"
+  // forever — a common trap when a parent renames the child after pairing, or
+  // when STT mishears an unusual name.
+  if (!matched) {
+    const linked = session.deviceId ? children.filter((c) => c.deviceId === session.deviceId) : [];
+    if (linked.length === 1) matched = linked[0];
+    else if (children.length === 1) matched = children[0];
+    if (matched) {
+      console.log(`[identify] name "${transcript}" unmatched — fell back to linked child ${matched.id}`);
+    }
+  }
 
   let promptText;
   if (matched) {

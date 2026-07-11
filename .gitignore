@@ -3,7 +3,12 @@ firebase/firestore-debug.log
 firebase/firebase-debug.log
 firebase/test-client/
 PROJECT_HANDOFF.md
+PROJECT_STATUS.md
+# macOS junk
+.DS_Store
+**/.DS_Store
 # dependencies & build output (never commit)
+**/__pycache__/
 **/node_modules/
 firebase/node_modules/
 **/build/
