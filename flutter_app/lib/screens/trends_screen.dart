@@ -154,6 +154,12 @@ class TrendsScreen extends StatelessWidget {
   }
 
   Widget _timeCard(BuildContext c, List<Session> oldestFirst) {
+    // Scale the Y axis to the longest session (+15% headroom) so a long session's
+    // bar never overflows the card. Floor at 22 min so short sessions still read
+    // on a sensible scale. (fl_chart does NOT clip a rod taller than maxY.)
+    final maxDur = oldestFirst.fold<int>(
+        0, (m, s) => s.durationMinutes > m ? s.durationMinutes : m);
+    final chartMaxY = maxDur <= 20 ? 22.0 : (maxDur * 1.15).ceilToDouble();
     return _ChartCard(
       title: 'זמן לימוד',
       hint: 'דקות לכל מפגש (לפי מקצוע)',
@@ -209,7 +215,7 @@ class TrendsScreen extends StatelessWidget {
                       ],
                     ),
                 ],
-                maxY: 22,
+                maxY: chartMaxY,
               ),
             ),
           ),
