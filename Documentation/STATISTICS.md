@@ -69,7 +69,11 @@ no further backend work:
 | `session.longestStreak` (now maintained) | **Longest correct streak** — the app already renders it; previously always 0, now real |
 | `children.levelHistory[]` (`{subject, level, at}`) | **Level progression over time** — the clearest "is my child improving" curve |
 | `exchange.llmUsed` | **LLM skip rate**: % of turns answered deterministically (the `needsLLM` gate) — quantifies the cost/latency win |
-| `exchange.processingMs` | **Live turn-latency distribution (p50/p95)** in production, continuing the LATENCY.md story |
+| `exchange.processingMs` + `session.processingMsTotal` | **Live turn-latency distribution / averages** in production, continuing the LATENCY.md story |
+| `exchange.llmInputTokens`/`llmOutputTokens` + `session.llmInputTokensTotal`/`llmOutputTokensTotal` | **Gemini token usage & cost per lesson** — "a full lesson costs ~X agora" |
+| `exchange.ttsChars` + `session.ttsCharsTotal` | **TTS characters synthesized** — the other half of the per-lesson cost model |
+| `session.sttEmptyCount` | **STT-empty / reprompt rate** — real-world audio-robustness signal (how often no speech was recognised) |
+| `material.itemsCount` + `material.extractionTruncated` | **Materials funnel** — questions extracted per uploaded file, and whether extraction was cut off |
 
 ## 4. Computable now from existing session data
 
@@ -86,17 +90,17 @@ surfaced in §1; the rest are a small `StatsProvider` addition away):
 - Materials funnel: files uploaded → questions extracted → blocked by validation
   (`materials` docs: `items.length`, `status`).
 
-## 5. Future work (needs instrumentation)
+## 5. Future work (needs device firmware / instrumentation)
 
-Lower priority — each needs a new counter or a monitoring hook:
+Lower priority — these are device-side (need a reflash) or need a monitoring hook:
 
-- **Gemini token usage / cost per session** — `usageMetadata` on the Gemini
-  response (currently discarded); "a full lesson costs ~X agorot" is a strong
-  demo stat.
-- **STT-empty / reprompt rate** — a counter on the `X-Stt-Empty` path; measures
-  real-world audio robustness.
-- **TTS cache hit rate** — currently only in device serial logs.
+- **TTS cache hit rate** — the device logs SD cache HIT/MISS to serial only; would
+  need a counter sent up via `deviceState`.
+- **Device telemetry: Wi-Fi RSSI, free heap, wake count, recording duration** —
+  all measurable on-device (`WiFi.RSSI()`, `ESP.getFreeHeap()`, RTC-memory wake
+  counter) but only serial-logged today; would ship in a `deviceState.telemetry`
+  field.
 - **Device uptime % / heartbeat gaps** — needs a log or Cloud Monitoring, since
   `deviceState.lastHeartbeat` is overwritten each beat.
-- **Answers-per-hour cloud cost** — combine the token, STT-seconds and
-  TTS-character counters above into a per-device economics figure.
+- **Answers-per-hour cloud cost** — the token, STT-seconds and TTS-character
+  counters (now captured) can be combined into a per-device economics figure.

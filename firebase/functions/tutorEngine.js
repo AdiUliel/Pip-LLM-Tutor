@@ -260,7 +260,17 @@ async function llmFeedback(ai, payload, model = DEFAULT_MODEL, safetySettings = 
       safetySettings,
     },
   });
-  return safeJsonParse(result.text);
+  const parsed = safeJsonParse(result.text);
+  // Attach Gemini token usage so the caller can log per-turn cost telemetry.
+  if (parsed && typeof parsed === "object") {
+    const u = result.usageMetadata || {};
+    parsed._usage = {
+      inputTokens: u.promptTokenCount || 0,
+      outputTokens: u.candidatesTokenCount || 0,
+      totalTokens: u.totalTokenCount || 0,
+    };
+  }
+  return parsed;
 }
 
 function buildSessionPatch({ isCorrect, nextDifficulty, feedback, currentQuestion, streakCorrect, previousLongest }) {
@@ -471,6 +481,7 @@ async function processLearningTurn({
       });
 
   let feedback = deterministic;
+  let llmUsage = null;   // Gemini token counts for this turn (null when LLM skipped)
   if (needsLLM) {
     const llmPromise = readRecentQuestions(db, sessionId, 5).then((recentQuestions) =>
       llmFeedback(ai, {
@@ -508,6 +519,7 @@ async function processLearningTurn({
           shouldTakeBreak: Boolean(llm.shouldTakeBreak) || deterministic.shouldTakeBreak,
         };
       }
+      if (llm && llm._usage) llmUsage = llm._usage;
     } catch (err) {
       console.warn("LLM feedback failed, using deterministic fallback", err.message);
     }
@@ -613,10 +625,16 @@ async function processLearningTurn({
       nextQuestion: nextQuestion.prompt,
       expectedAnswer: nextQuestion.expectedAnswer,
       difficultyChange: nextDifficulty > currentDifficulty ? "up" : nextDifficulty < currentDifficulty ? "down" : "same",
-      // Telemetry: whether the Gemini call ran (the needsLLM gate) and the total
-      // server-side turn time — powers LLM-skip-rate and live latency stats.
+      // Telemetry: whether the Gemini call ran (the needsLLM gate), the total
+      // server-side turn time, TTS characters synthesized, and Gemini token
+      // usage — powers LLM-skip-rate, live latency, and per-lesson cost stats.
       llmUsed: needsLLM,
       processingMs: Date.now() - t0,
+      ttsChars: spokenText.length,
+      ...(llmUsage && {
+        llmInputTokens: llmUsage.inputTokens,
+        llmOutputTokens: llmUsage.outputTokens,
+      }),
       answeredAt: now,
     });
 
@@ -648,6 +666,14 @@ async function processLearningTurn({
         consecutiveWrong: streakWrong,
         wrongAttemptsOnCurrent: nextWrongOnCurrent,
         moodSummary: mood,
+        // Running per-session cost/telemetry totals (for the "a lesson costs ~X"
+        // stat and average turn latency).
+        ttsCharsTotal: FieldValue.increment(spokenText.length),
+        processingMsTotal: FieldValue.increment(Date.now() - t0),
+        ...(llmUsage && {
+          llmInputTokensTotal: FieldValue.increment(llmUsage.inputTokens),
+          llmOutputTokensTotal: FieldValue.increment(llmUsage.outputTokens),
+        }),
         // Set flag so the next turn knows to interpret the child's response as yes/no.
         askToContinue: shouldAskToContinue ? true : false,
         // When asking to continue, the "current question" stays as the continue prompt

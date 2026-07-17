@@ -343,6 +343,10 @@ exports.extractQuestionsFromMaterial = onDocumentWritten(
     console.log(`[${materialId}] extracted ${finalItems.length} Q&A pairs`);
     await ref.update({
       items: finalItems,
+      // Extraction telemetry: how many questions came out, and whether Gemini's
+      // response was cut off (salvaged) — powers the "materials funnel" stat.
+      itemsCount: finalItems.length,
+      extractionTruncated: Boolean(truncated),
       itemsGeneratedAt: FieldValue.serverTimestamp(),
       extractionError:  FieldValue.delete(),
     });

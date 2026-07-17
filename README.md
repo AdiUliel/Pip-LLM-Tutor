@@ -16,7 +16,7 @@ see [Documentation/USAGE.md](Documentation/USAGE.md).
 * **ESP32**: source code for the esp side (firmware) — `homework_assistant/` is the main sketch, plus the modified TFT_eSPI library.
 * **flutter_app**: Dart code for our Flutter parent app (Android / Web).
 * **firebase**: Cloud side — Cloud Functions (session engine, Gemini grading, STT/TTS proxies), Firestore/Storage rules and indexes.
-* **Documentation**: usage instructions (operating, error messages, calibration), hardware documentation + connection diagram, integration guide, cloud/LLM interface, dependencies, latency measurements, [face state machine](Documentation/FACE_STATE_MACHINE.md), [statistics catalog](Documentation/STATISTICS.md).
+* **Documentation**: usage instructions (operating, error messages, calibration), hardware documentation + connection diagram, integration guide, cloud/LLM interface, dependencies, latency measurements, [performance evaluation](Documentation/PERFORMANCE_EVALUATION.md), [face state machine](Documentation/FACE_STATE_MACHINE.md), [statistics catalog](Documentation/STATISTICS.md).
 * **Unit Tests**: tests for individual hardware components (button, display+touch, microphone, speaker, firmware upload).
 * **Parameters**: description of all hard-coded parameters and where to change them in the code.
 * **Assets**: project poster + 3D-print (STL) files of Pip's enclosure.

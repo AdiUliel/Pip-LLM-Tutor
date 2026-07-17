@@ -848,6 +848,11 @@ exports.processTurn = onRequest(
         // No speech recognised — let the device reprompt locally (SD-cached, instant)
         // instead of fabricating a turn. No exchange/Gemini/TTS is spent on silence.
         console.log(`[processTurn] STT empty for session ${sessionId} — reprompt`);
+        // Telemetry: count no-speech events so the app can show a reprompt rate
+        // (audio-robustness signal). Best-effort; never blocks the reprompt.
+        db.collection("sessions").doc(sessionId)
+          .set({ sttEmptyCount: FieldValue.increment(1) }, { merge: true })
+          .catch((e) => console.warn("[processTurn] sttEmptyCount write failed:", e.message));
         res.set("X-Stt-Empty", "1");
         res.set("Content-Type", "application/octet-stream");
         return res.status(200).send(Buffer.alloc(0));
