@@ -422,7 +422,10 @@ async function processLearningTurn({
   // answer's feedback is played and the child hears a natural farewell.
   const sessionStartMs = session.startedAt?.toMillis?.() ?? 0;
   const sessionAgeMin = sessionStartMs > 0 ? (Date.now() - sessionStartMs) / 60000 : 0;
-  const shouldAutoEnd = sessionAgeMin >= 50;
+  // End at the parent-configured session length (clamped 5–60 min). Was a
+  // hardcoded 50 that ignored the child's setting.
+  const sessionCapMin = clamp(Number(child?.settings?.sessionMinutes) || 60, 5, 60);
+  const shouldAutoEnd = sessionAgeMin >= sessionCapMin;
 
   const isCorrect = checkAnswer(expectedAnswer, childAnswer);
   const previousWrong = Number(session.consecutiveWrong || 0);
@@ -537,8 +540,8 @@ async function processLearningTurn({
     const childName = child?.name || "";
     const farewellText = feedback.spokenFeedback.trim() + " " +
       (childName
-        ? `עברו 50 דקות, וזה הזמן שקבענו לשיעור. כל הכבוד ${childName}! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`
-        : `עברו 50 דקות, וזה הזמן שקבענו לשיעור. כל הכבוד! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`);
+        ? `עברו ${sessionCapMin} דקות, וזה הזמן שקבענו לשיעור. כל הכבוד ${childName}! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`
+        : `עברו ${sessionCapMin} דקות, וזה הזמן שקבענו לשיעור. כל הכבוד! עשינו שיעור ארוך ומצוין היום. נתראה בפעם הבאה!`);
     return endSession(farewellText, "timeout");
   }
 

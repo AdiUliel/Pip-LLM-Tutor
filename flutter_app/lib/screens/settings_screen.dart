@@ -79,7 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     label: 'אורך מפגש',
                     value: _sessionMin,
                     min: 5,
-                    max: 30,
+                    max: 60,
                     step: 1,
                     unit: 'דק׳',
                     onChanged: (v) {

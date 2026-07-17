@@ -57,7 +57,7 @@ external wiring is the push-to-talk button (IO2↔IO3) and the speaker.
 ![Modules schematic](Documentation/Hardware%20Documentation/modules-shematic.png)
 
 * [Full ESP32-S3 Hardware Documentation (interactive)](Documentation/Hardware%20Documentation/index.html) ([PDF](Documentation/Hardware%20Documentation/Hardware%20Documentation.pdf))
-* [System architecture diagram (device ↔ Firebase ↔ Google APIs)](Documentation/connection%20diagram/firebase_llm_architecture.png)
+* [System architecture (device ↔ Firebase ↔ Google APIs)](Documentation/ARCHITECTURE.md) — full data-flow diagram
 
 ## Project Poster:
 
