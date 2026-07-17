@@ -18,22 +18,13 @@ STT/TTS), so no on-device STT/TTS library is required.
 
 The stock TFT_eSPI from the Library Manager **crashes at `init()`** on the LCDWIKI
 2.8" ESP32-S3 board (Guru Meditation: StoreProhibited, write to `0x10`) because of
-its ESP32-S3 SPI processor file — independent of the pin config. Use **LCDWIKI's
-pre-patched TFT_eSPI 2.5.43** instead:
+its ESP32-S3 SPI processor file — independent of the pin config. **This repo ships
+LCDWIKI's pre-patched TFT_eSPI 2.5.43** with the patched processor file, ILI9341
+init, and a `User_Setup.h` (with `USE_HSPI_PORT` and the board pins) already
+configured:
 
-1. Replace `Arduino/libraries/TFT_eSPI` with the bundled copy at
-   `Dont copy/1-示例程序_Demo/Arduino/Install libraries/TFT_eSPI`.
-2. Apply the patches from `Dont copy/1-示例程序_Demo/Arduino/Replaced files/`:
-   - `User_Setup.h` → `TFT_eSPI/User_Setup.h` (defines `USE_HSPI_PORT`, the board pins, ILI9341 driver)
-   - `TFT_eSPI_ESP32_S3.c` → `TFT_eSPI/Processors/TFT_eSPI_ESP32_S3.c` (the actual fix)
-   - `ILI9341_Init.h` → `TFT_eSPI/TFT_Drivers/ILI9341_Init.h`
-   - (skip `lv_conf.h` — that's for LVGL, not used by pip_face)
-
-LCDWIKI's `User_Setup.h` is authoritative — do **not** also apply
-`pip_face/User_Setup_LCDWIKI.h` (kept only as a pin reference). The firmware has a
-`USE_PIP_FACE` switch (top of `homework_assistant.ino`) to build/run audio-only
-without the display. Verify the display with LCDWIKI's `Example_03_display_graphics`
-demo before flashing the firmware.
+- Replace `Arduino/libraries/TFT_eSPI` with this repo's
+  `ESP32/modified libraries/TFT_eSPI/`.
 
 ## Flutter app (`flutter_app/pubspec.yaml`)
 

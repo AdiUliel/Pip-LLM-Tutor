@@ -1,15 +1,23 @@
 #pragma once
+// ─────────────────────────────────────────────────────────────────────────────
+// SECRETS TEMPLATE — copy this file to `secrets.h` (same folder) and fill in
+// your own values. The real `secrets.h` is gitignored and must NEVER be
+// committed. The firmware includes "secrets.h", so the build fails until you
+// create it.
+//
+//   cp secrets_template.h secrets.h    ← then edit secrets.h
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── WiFi ─────────────────────────────────────────────────────────────────────
-#define WIFI_SSID       "POCO F4"
-#define WIFI_PASSWORD   "11111111"
+#define WIFI_SSID       "CHANGE_ME"
+#define WIFI_PASSWORD   "CHANGE_ME"
 
 // ── Firebase ─────────────────────────────────────────────────────────────────
 // Firebase Console → Project Settings → General → Web API Key
-#define FIREBASE_WEB_API_KEY  "AIzaSyABxr5DlWydIXW7EBHk7nYh2r3qlf4df_I"
+#define FIREBASE_WEB_API_KEY  "CHANGE_ME"
 
 // Firebase project ID (from .firebaserc)
-#define FIREBASE_PROJECT_ID   "llm-tutor-d721e"
+#define FIREBASE_PROJECT_ID   "CHANGE_ME"
 
 // Cloud Function region (must match where your functions are deployed)
 // Check Firebase Console → Functions → your function URL to confirm region

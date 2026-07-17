@@ -5,25 +5,29 @@ Animated procedural face for the ESP32-S3 + ILI9341 tutor device. Twelve emotion
 ## Hardware
 
 - **MCU:** ESP32-S3 with **PSRAM enabled** (the sprite buffer is ~115 KB).
-- **Display:** 2.8" IPS ILI9341V, 240×320, RGB565, 4-wire SPI, portrait orientation (face renders on the top 240×240; bottom 240×80 is the optional status strip).
+- **Display:** 2.8" IPS ILI9341V, 240×320, RGB565, 4-wire SPI, portrait orientation (face renders on the top 240×240; bottom 240×80 is the optional status strip — long questions word-wrap to two right-aligned lines).
 
 ## Dependencies
 
 - [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) (Arduino Library Manager).
 - [`U8g2_for_TFT_eSPI`](https://github.com/Bodmer/U8g2_for_TFT_eSPI) (Arduino Library Manager) — brings u8g2's Unicode-capable fonts to TFT_eSPI. PipFace uses `u8g2_font_unifont_t_hebrew` for the bottom status strip so Hebrew prompts ("כמה זה 5 כפול 8?") render correctly. A small bidi-lite pass reorders the codepoints so the LTR-rendering engine produces a RTL-correct visual.
 
-`TFT_eSPI/User_Setup.h` must match your wiring. Example for ESP32-S3:
+`TFT_eSPI/User_Setup.h` must match your wiring. **For this project's LCDWIKI
+2.8" ESP32-S3 board, use the pre-patched TFT_eSPI shipped in this repo**
+(`ESP32/modified libraries/TFT_eSPI/` — its `User_Setup.h` is already
+configured; see `Documentation/INTEGRATION.md` for why a stock TFT_eSPI
+crashes on this board). The board's pins for reference:
 
 ```c
 #define ILI9341_DRIVER       // works for ILI9341 and ILI9341V (same init)
-#define TFT_WIDTH  240
-#define TFT_HEIGHT 320
+#define TFT_MISO 13
 #define TFT_MOSI 11
 #define TFT_SCLK 12
 #define TFT_CS   10
-#define TFT_DC    9
-#define TFT_RST   8
-#define SPI_FREQUENCY 40000000
+#define TFT_DC   46
+#define TFT_RST  -1          // tied to board reset — no dedicated GPIO
+#define TFT_BL   45
+#define USE_HSPI_PORT        // required on this board
 
 // IPS panels (this one is IPS) often need color inversion. If the demo
 // looks inverted (black appears white), uncomment the next line:

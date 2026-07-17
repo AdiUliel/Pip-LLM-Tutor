@@ -51,7 +51,7 @@ PipState state = IDLE;
 // Cached strip — redrawn only when text or stars change. Protected by
 // stripMux because the writer (Pip::setStrip, called from the main task)
 // and the reader (the face task) live on different threads.
-char           stripText[64] = "";
+char           stripText[128] = "";   // room for a full question wrapped to 2 lines
 int            stripStars   = -1;   // sentinel: forces first paint
 bool           stripDirty   = true;
 portMUX_TYPE   stripMux     = portMUX_INITIALIZER_UNLOCKED;
@@ -423,6 +423,34 @@ String bidiToVisual(const char* utf8) {
   return out;
 }
 
+// Greedy word-wrap a logical (pre-bidi) UTF-8 string into up to two lines that
+// each fit maxW pixels in the CURRENT u8f font (caller must setFont first).
+// Hebrew words are ASCII-space separated, so splitting on ' ' is safe, and the
+// pixel width is order-independent (bidi only reorders glyphs) so we can measure
+// the logical text here and bidi-reorder per line at render time.
+static void wrapStripText(const String& text, int maxW, String& line1, String& line2) {
+  line1 = "";
+  line2 = "";
+  String* cur = &line1;
+  int i = 0, n = text.length();
+  while (i < n) {
+    while (i < n && text[i] == ' ') i++;            // skip run of spaces
+    int ws = i;
+    while (i < n && text[i] != ' ') i++;             // span one word
+    if (i == ws) break;
+    String word = text.substring(ws, i);
+    String candidate = cur->length() ? (*cur + " " + word) : word;
+    if (cur->length() == 0 || u8f.getUTF8Width(candidate.c_str()) <= maxW) {
+      *cur = candidate;                              // fits, or first word on the line
+    } else if (cur == &line1) {
+      cur = &line2;                                  // line 1 full → wrap to line 2
+      *cur = word;
+    } else {
+      *cur = *cur + " " + word;                      // line 2 full too — append (clipped)
+    }
+  }
+}
+
 // Bottom status strip — Hebrew-capable text on the right (RTL aligned),
 // star icon + count on the left. Text rendered via u8g2's Hebrew unifont
 // so כמה זה 5 כפול 8? displays correctly; the star count uses the
@@ -443,17 +471,36 @@ void drawStrip(const char* textSnap, int starsSnap) {
     leftCursor = 38 + tft.textWidth(buf, 4) + 8;
   }
 
-  // ---- question text, right side, bidi-reordered ----
+  // ---- question text, right side, bidi-reordered, wrapped to <=2 lines ----
   if (textSnap[0] != '\0') {
-    String visual = bidiToVisual(textSnap);
     u8f.setFont(u8g2_font_unifont_t_hebrew);
     u8f.setForegroundColor(WHT);
     u8f.setBackgroundColor(SCREEN_BG);
-    int textW = u8f.getUTF8Width(visual.c_str());
-    int x = 240 - 16 - textW;       // right-align with 16 px right pad
-    if (x < leftCursor) x = leftCursor;
-    u8f.setCursor(x, 290);          // baseline ~16 px above strip bottom
-    u8f.print(visual);
+
+    const int rightPad = 16;
+    int maxW = (240 - rightPad) - leftCursor;    // usable width right of the stars
+    String line1, line2;
+    wrapStripText(textSnap, maxW, line1, line2);
+
+    if (line2.length() == 0) {
+      // Fits on one line — keep the original single baseline.
+      String v = bidiToVisual(line1.c_str());
+      int x = 240 - rightPad - u8f.getUTF8Width(v.c_str());
+      if (x < leftCursor) x = leftCursor;
+      u8f.setCursor(x, 290);
+      u8f.print(v);
+    } else {
+      // Two lines, each right-aligned, stacked within the 80 px strip so a long
+      // question wraps instead of running off the right edge.
+      String v1 = bidiToVisual(line1.c_str());
+      String v2 = bidiToVisual(line2.c_str());
+      int x1 = 240 - rightPad - u8f.getUTF8Width(v1.c_str());
+      int x2 = 240 - rightPad - u8f.getUTF8Width(v2.c_str());
+      if (x1 < leftCursor) x1 = leftCursor;
+      if (x2 < leftCursor) x2 = leftCursor;
+      u8f.setCursor(x1, 274); u8f.print(v1);   // top line
+      u8f.setCursor(x2, 300); u8f.print(v2);   // bottom line
+    }
   }
 }
 
@@ -466,7 +513,7 @@ void faceTask(void*) {
 
     // Strip: snapshot inside critical section, render outside.
     bool render = false;
-    char textSnap[64];
+    char textSnap[128];
     int  starsSnap = -1;
     portENTER_CRITICAL(&stripMux);
     if (stripDirty) {

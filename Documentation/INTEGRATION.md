@@ -71,9 +71,10 @@ detail.
   bottom strip.
 
 **pip_face (`pip_face/`)**
-- Documentation/User_Setup corrected for *this* board (the old example used
-  `TFT_DC 9` / `TFT_RST 8`, but GPIO8 is the I2S speaker line here). A ready
-  `User_Setup_LCDWIKI.h` is included.
+- README wiring example corrected for *this* board (the old example used
+  `TFT_DC 9` / `TFT_RST 8`, but GPIO8 is the I2S speaker line here). The
+  configured `User_Setup.h` ships with the patched TFT_eSPI in
+  `ESP32/modified libraries/TFT_eSPI/`.
 
 **Rules**
 - `storage.rules` merged: the device's `tts/` public read **and** the app's
@@ -108,22 +109,14 @@ Text-to-Speech**, **Cloud Speech-to-Text**, and **Firebase Storage**.
 1. Install Arduino libraries: **ArduinoJson** (v7).
 2. Install **pip_face** as a library: copy the `pip_face/` folder into your
    Arduino `libraries/` directory.
-3. **TFT_eSPI for this board — use LCDWIKI's patched copy, NOT a stock install.**
-   The stock TFT_eSPI ESP32-S3 SPI processor file crashes at `init()` on this
-   board (`StoreProhibited`, write to `0x10`). LCDWIKI ships a working,
-   pre-patched TFT_eSPI 2.5.43 with the demos. Steps:
-   - Replace `Arduino/libraries/TFT_eSPI` with
-     `Dont copy/1-示例程序_Demo/Arduino/Install libraries/TFT_eSPI`.
-   - Apply the patches from `Dont copy/1-示例程序_Demo/Arduino/Replaced files/`:
-     `User_Setup.h` → `TFT_eSPI/User_Setup.h`,
-     `TFT_eSPI_ESP32_S3.c` → `TFT_eSPI/Processors/TFT_eSPI_ESP32_S3.c`,
-     `ILI9341_Init.h` → `TFT_eSPI/TFT_Drivers/ILI9341_Init.h`
-     (skip `lv_conf.h` — LVGL only).
-   - LCDWIKI's `User_Setup.h` (with `USE_HSPI_PORT`) is authoritative; do NOT
-     also apply `pip_face/User_Setup_LCDWIKI.h`.
-   - Verify with their `Example_03_display_graphics` demo, then build pip_face.
-   - The firmware has a `USE_PIP_FACE` switch (top of the .ino) — set it to 0 to
-     build/run the device audio-only if you ever need to bypass the display.
+3. **TFT_eSPI for this board — use the patched copy in this repo, NOT a stock
+   install.** The stock TFT_eSPI ESP32-S3 SPI processor file crashes at
+   `init()` on this board (`StoreProhibited`, write to `0x10`). This repo ships
+   LCDWIKI's working, pre-patched TFT_eSPI 2.5.43 — processor file, ILI9341
+   init, and a `User_Setup.h` (with `USE_HSPI_PORT`) already configured for
+   this board:
+   - Replace `Arduino/libraries/TFT_eSPI` with this repo's
+     `ESP32/modified libraries/TFT_eSPI/`.
 4. Fill in `ESP32/homework_assistant/secrets.h` (WiFi, project, optional
    `CHILD_ID`, `SESSION_SUBJECT`).
 5. Board settings: ESP32S3 Dev Module, **PSRAM: OPI PSRAM**, Flash 16 MB,

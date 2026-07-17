@@ -37,10 +37,9 @@
 #include "secrets.h"
 #include "pins.h"
 #include "es8311.h"
-// pip_face animated face (TFT_eSPI). You MUST have TFT_eSPI installed AND its
-// User_Setup configured for this board (copy pip_face/User_Setup_LCDWIKI.h over
-// libraries/TFT_eSPI/User_Setup.h), or TFT_eSPI will crash at init. See
-// INTEGRATION.md.
+// pip_face animated face (TFT_eSPI). You MUST use the pre-patched TFT_eSPI from
+// "ESP32/modified libraries/TFT_eSPI" (its User_Setup.h is already configured
+// for this board), or TFT_eSPI will crash at init. See INTEGRATION.md.
 #include "PipFace.h"
 #include "firebase_client.h"
 #include "stt_client.h"

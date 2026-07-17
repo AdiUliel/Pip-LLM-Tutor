@@ -13,3 +13,10 @@ PROJECT_STATUS.md
 firebase/node_modules/
 **/build/
 **/.dart_tool/
+# secrets — commit only secrets_template.h, never the real secrets.h
+ESP32/homework_assistant/secrets.h
+.env
+.env.*
+**/serviceAccount*.json
+# local working notes
+memory/

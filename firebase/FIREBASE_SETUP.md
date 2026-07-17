@@ -1,69 +1,76 @@
 # Firebase Setup Guide
 
-This guide gets your Firebase project wired up for the ESP32 homework assistant.
+How to wire up a Firebase project for Pip from scratch. (For day-to-day deploy
+commands see `Documentation/INTEGRATION.md`; for the full Firestore schema see
+`Documentation/LLM_INTERFACE.md`.)
 
 ---
 
 ## Architecture Overview
 
 ```
-ESP32 (mic + speaker)
+ESP32 (mic + speaker + display)
   │
-  ├─► Google Speech-to-Text  →  transcribed text (question)
+  │  ONE HTTPS call per turn (raw PCM16 audio upload)
+  ▼
+Cloud Function processTurn  ──►  Google STT (transcribe)
+  │                         ──►  Gemini 2.5 Flash via Vertex AI (grade + feedback + next question)
+  │                         ──►  Google TTS (he-IL audio, returned inline as the HTTP body)
   │
-  └─► Firestore: POST /sessions/{id}/exchanges/{id}
-                  { question, status:"pending", answer:null }
-                        │
-                        ▼
-              Cloud Function (answerQuestion)
-                        │
-                        ├─► reads conversation history from Firestore
-                        ├─► calls LLM API (Gemini / Claude / GPT)
-                        └─► writes { answer, status:"done" } back
-                                    │
-                        ┌───────────┴────────────┐
-                        ▼                        ▼
-                  ESP32 polls              Flutter app
-                  → reads answer           listens in real-time
-                  → speaks it aloud        → shows chat history
+  ├─► writes the turn + session stats to Firestore
+  ▼
+Firestore  ◄── realtime streams ──►  Flutter parent app (reports, materials, pairing)
 ```
+
+Supporting functions: `onSessionCreated` (first question + TTS when a session
+doc appears), `extractQuestionsFromMaterial` (turns uploaded homework files
+into validated Q&A via Gemini), `enforceDeviceUniqueness` (one device ↔ one
+child, newest pairing wins), `notifyOnSessionStarted`/`monitorTutor` (FCM push
++ monitoring), `transcribeAudio`/`synthesizeSpeech`/`ttsBytes` (STT/TTS
+proxies), and a legacy post-and-poll path (`answerQuestion`,
+`startLearningSession`, `submitChildAnswer`) kept as an A/B fallback
+(`USE_PROCESS_TURN 0` in the firmware).
 
 ---
 
 ## Step 1: Firebase Console Setup
 
-Go to [console.firebase.google.com](https://console.firebase.google.com) and open your project.
+Go to [console.firebase.google.com](https://console.firebase.google.com) and create/open a project.
 
-### 1a. Enable Firestore -DONE
-- Left sidebar → **Build → Firestore Database**
-- Click **Create database**
-- Choose **Production mode** (we'll deploy real rules)
-- Pick a region close to you (e.g., `europe-west1` for Israel)
+### 1a. Firestore
+- **Build → Firestore Database → Create database**, Production mode.
+- Region close to you (this project: `eur3`/European region).
 
-### 1b. Enable Authentication -DONE
-- Left sidebar → **Build → Authentication**
-- Click **Get started**
-- Enable **Anonymous** sign-in (ESP32 will use this)
-- Optionally enable **Email/Password** for the Flutter parent dashboard
+### 1b. Authentication
+- **Build → Authentication → Get started**.
+- Enable **Anonymous** (the ESP32 signs in anonymously and persists its
+  refresh token in flash, so its UID is stable across reboots).
+- Enable **Email/Password** and **Google** (the Flutter parent app supports both).
 
-### 1c. Enable Cloud Functions -DONE
-- Left sidebar → **Build → Functions**
-- Click **Get started** and follow the prompt
-- ⚠️ Cloud Functions requires the **Blaze (pay-as-you-go)** plan.
-  At homework-assistant scale the cost is essentially $0, but a billing account is required.
-- **Region:** all functions in this project deploy to **`europe-west10`**
-  (set via `setGlobalOptions` in `functions/index.js`). The ESP32
-  (`CLOUD_FUNCTIONS_REGION`) and the Flutter app (`AppConstants.functionsRegion`)
-  must match. Note: `europe-west10` must support Eventarc/Firestore triggers in
-  your project — if `firebase deploy` rejects the region for the trigger,
-  set `FUNCTIONS_REGION` to a nearby supported region (e.g. `europe-west1`) and
-  update the two client constants to match.
+### 1c. Cloud Functions
+- **Build → Functions → Get started**.
+- ⚠️ Requires the **Blaze (pay-as-you-go)** plan. At this project's scale the
+  cost is essentially $0, but a billing account is required.
+- **Region:** all functions deploy to **`europe-west10`** (set via
+  `setGlobalOptions` in `functions/index.js`). The ESP32
+  (`CLOUD_FUNCTIONS_REGION` in `secrets.h`) and the Flutter app
+  (`AppConstants.functionsRegion`) must match. If `firebase deploy` rejects the
+  region for a Firestore-trigger function (Eventarc availability varies), set
+  `FUNCTIONS_REGION` to a nearby supported region and update both client
+  constants.
+
+### 1d. Enable Google Cloud APIs
+In the [Google Cloud console](https://console.cloud.google.com) for the same
+project, enable:
+- **Vertex AI API** (Gemini — no API key needed; functions use the project's
+  service account, so there is no LLM key/secret to manage)
+- **Cloud Speech-to-Text API**
+- **Cloud Text-to-Speech API**
+- **Firebase Storage** (uploaded homework files + generated TTS audio)
 
 ---
 
-## Step 2: Install Firebase CLI -done
-
-On your computer, run:
+## Step 2: Install the Firebase CLI
 
 ```bash
 npm install -g firebase-tools
@@ -72,149 +79,73 @@ firebase login
 
 ---
 
-## Step 3: Set Your Project ID -done
+## Step 3: Set Your Project ID
 
-Edit `firebase/.firebaserc` and replace `YOUR_FIREBASE_PROJECT_ID` with your actual project ID.
-You can find it in the Firebase console → Project Settings → General → Project ID.
+Edit `firebase/.firebaserc` and set your project ID (Firebase console →
+Project Settings → General):
 
 ```json
 {
-  "projects": {
-    "default": "your-actual-project-id"
-  }
+  "projects": { "default": "your-actual-project-id" }
 }
 ```
 
 ---
 
-## Step 4: Store Your LLM API Key as a Secret -mb not needded
-
-Never hardcode API keys. Firebase Secrets Manager stores them securely.
+## Step 4: Deploy
 
 ```bash
 cd firebase/
-firebase functions:secrets:set LLM_API_KEY
-# Paste your key when prompted (Gemini / OpenAI / Claude key)
-```
-
----
-
-## Step 5: Choose Your LLM Provider
-
-Open `firebase/functions/index.js` and set the provider on line 28:
-
-```js
-const LLM_PROVIDER = "gemini"; // "gemini" | "openai" | "claude"
-```
-
-| Provider | Free tier | Quality | Notes |
-|----------|-----------|---------|-------|
-| **Gemini** | Yes (Gemini Flash) | Great | Best fit — same Google Cloud account |
-| **Claude Haiku** | No (cheap ~$0.001/call) | Excellent for tutoring | Strong reasoning |
-| **GPT-4o-mini** | No (cheap) | Good | Familiar API |
-
-**Recommendation for this project:** Start with Gemini Flash — it has a generous free tier and integrates natively with Google Cloud.
-Get a Gemini API key at [aistudio.google.com](https://aistudio.google.com).
-
----
-
-## Step 6: Deploy to Firebase
-
-```bash
-cd firebase/
-
-# Install function dependencies
 npm install --prefix functions
 
-# Deploy Firestore rules + indexes + Cloud Functions
-firebase deploy
+# Functions discovery is heavy — without these flags deploy can OOM/time out:
+NODE_OPTIONS="--max-old-space-size=8192" FUNCTIONS_DISCOVERY_TIMEOUT=540 \
+  firebase deploy    # functions + firestore rules/indexes + storage rules
 ```
 
-You should see output like:
-```
-✔  functions[answerQuestion]: Successful create operation.
-✔  firestore: rules file firestore.rules compiled successfully
-✔  Deploy complete!
-```
+Optional env overrides (Functions → configuration): `GEMINI_MODEL`
+(default `gemini-2.5-flash`), `GEMINI_LOCATION` (default `global`),
+`FUNCTIONS_REGION`.
 
 ---
 
-## Step 7: Firestore Data Model
-
-Your database will have this structure:
+## Step 5: Firestore Data Model (summary)
 
 ```
-/devices/{deviceId}
-    status:          "idle" | "listening" | "processing"
-    lastSeen:        Timestamp
-    name:            "Maor's ESP32"
-
-/sessions/{sessionId}
-    deviceId:        string  ← links to a device
-    createdAt:       Timestamp
-    lastActivity:    Timestamp
-
-/sessions/{sessionId}/exchanges/{exchangeId}
-    question:        "What is 7 times 8?"     ← written by ESP32
-    answer:          "7 × 8 = 56! ..."        ← written by Cloud Function
-    status:          "pending" | "processing" | "done" | "error"
-    askedAt:         Timestamp
-    answeredAt:      Timestamp | null
-    error:           string | null
+parents/{parentId}                    ← app writes (account profile)
+children/{childId}                    ← app writes (profile, settings, deviceId pairing)
+materials/{materialId}                ← app writes; extractQuestionsFromMaterial fills items[]
+pairingCodes/{TUTOR-XXXXXX}           ← device registers its code → firebaseUid
+deviceState/{deviceUid}               ← device writes status + heartbeat; app reads
+sessions/{sessionId}                  ← device creates; functions + device write turns/stats
+  questions/ (subcollection)          ← one doc per Q&A turn
 ```
 
-### How the ESP32 uses Firestore (REST API)
-
-The ESP32 has no Firebase SDK, so it uses the **Firestore REST API** with an API key or anonymous auth token.
-
-**Write a question:**
-```
-POST https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/sessions/{SESSION_ID}/exchanges
-Authorization: Bearer {FIREBASE_AUTH_TOKEN}
-Content-Type: application/json
-
-{
-  "fields": {
-    "question":  { "stringValue": "What is the capital of France?" },
-    "answer":    { "nullValue": null },
-    "status":    { "stringValue": "pending" },
-    "askedAt":   { "timestampValue": "2026-06-05T10:00:00Z" }
-  }
-}
-```
-
-**Poll for the answer** (the response includes the auto-generated document ID):
-```
-GET https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents/sessions/{SESSION_ID}/exchanges/{EXCHANGE_ID}
-Authorization: Bearer {FIREBASE_AUTH_TOKEN}
-```
-Loop every 2 seconds until `status == "done"`, then read `answer`.
+Full field-by-field schema: `Documentation/LLM_INTERFACE.md`.
 
 ---
 
-## Step 8: Get an Auth Token for the ESP32
+## Step 6: Device Auth (already implemented in the firmware)
 
-The ESP32 needs a Firebase Auth token to write to Firestore (due to security rules).
+The ESP32 has no Firebase SDK — it uses the REST APIs:
 
-The easiest approach: use **Anonymous Authentication** via the Firebase Auth REST API.
+1. First boot: `accounts:signUp` (anonymous) with the **Web API Key** from
+   `secrets.h` → receives `idToken` + `refreshToken`.
+2. The `refreshToken` + UID are persisted in NVS flash, so the device keeps a
+   **stable UID** across reboots (this UID is what a child's `deviceId` links
+   to when pairing).
+3. Every boot: the token is refreshed via `securetoken.googleapis.com`.
 
-```
-POST https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={WEB_API_KEY}
-Content-Type: application/json
-
-{ "returnSecureToken": true }
-```
-
-This returns an `idToken` (valid 1 hour) and a `refreshToken` (permanent).
-Store the `refreshToken` in the ESP32's flash and refresh the `idToken` on each boot.
-
-Your Firebase Web API Key is in: Firebase Console → Project Settings → General → Web API Key.
+No manual token work is needed — `ESP32/homework_assistant/firebase_client.h`
+does all of this.
 
 ---
 
-## What's Next
+## Setup checklist
 
-- [check] Replace `YOUR_FIREBASE_PROJECT_ID` in `.firebaserc`
-- [check] Run `firebase deploy` from the `firebase/` folder
-- [ ] Write ESP32 code to POST questions and poll for answers via Firestore REST API
-- [ ] Wire Flutter app to listen to `/sessions/{id}/exchanges` in real-time
+- [ ] Firestore + Auth (Anonymous, Email/Password, Google) + Functions (Blaze) enabled
+- [ ] Vertex AI, STT, TTS, Storage APIs enabled in Google Cloud
+- [ ] `.firebaserc` project ID set
+- [ ] `firebase deploy` succeeded (with the NODE_OPTIONS flags)
+- [ ] `ESP32/homework_assistant/secrets.h` filled in (Web API Key, project ID, region)
+- [ ] Flutter app: `flutterfire configure` run against the same project
