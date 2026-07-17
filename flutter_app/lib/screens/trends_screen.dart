@@ -53,6 +53,8 @@ class TrendsScreen extends StatelessWidget {
                   : ListView(
                       padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
                       children: [
+                        _summaryCard(context, stats),
+                        const SizedBox(height: 14),
                         _accuracyCard(context, sessions, stats),
                         const SizedBox(height: 14),
                         _moodCard(context, sessions),
@@ -72,6 +74,28 @@ class TrendsScreen extends StatelessWidget {
   }
 
   // ── cards ──────────────────────────────────────────────────────────────
+
+  /// Headline totals computed across all loaded sessions (not just the 14
+  /// charted). Pure aggregation from StatsProvider — no extra Firestore reads.
+  Widget _summaryCard(BuildContext c, StatsProvider stats) {
+    final tiles = <Widget>[
+      _StatTile(value: '${stats.totalSessions}', label: 'מפגשים', color: AppColors.mint),
+      _StatTile(value: '${stats.totalQuestions}', label: 'שאלות', color: AppColors.grape),
+      _StatTile(value: '${stats.totalStars}', label: 'כוכבים', icon: '⭐', color: AppColors.sun),
+      _StatTile(value: '${stats.activeDayStreak}', label: 'ימים ברצף', icon: '🔥', color: AppColors.sun),
+      _StatTile(value: '${stats.sessionsThisWeek}', label: 'השבוע', color: AppColors.mint),
+      _StatTile(value: '${stats.avgSessionMinutes}', label: 'דק׳ למפגש', color: AppColors.grape),
+    ];
+    return _ChartCard(
+      title: 'סיכום כללי',
+      hint: 'לאורך כל השימוש',
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [for (final t in tiles) t],
+      ),
+    );
+  }
 
   Widget _accuracyCard(
       BuildContext c, List<Session> oldestFirst, StatsProvider stats) {
@@ -306,6 +330,44 @@ class _ChartCard extends StatelessWidget {
           ] else
             const SizedBox(height: 10),
           child,
+        ],
+      ),
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({
+    required this.value,
+    required this.label,
+    required this.color,
+    this.icon,
+  });
+  final String value;
+  final String label;
+  final Color color;
+  final String? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 88,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(AppRadii.sm),
+      ),
+      child: Column(
+        children: [
+          Text(
+            icon == null ? value : '$icon $value',
+            style: AppTextStyles.title(context)
+                .copyWith(fontSize: 20, color: color, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 2),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: AppTextStyles.hint(context).copyWith(fontSize: 11.5)),
         ],
       ),
     );

@@ -43,6 +43,7 @@ They live in four files under `ESP32/homework_assistant/`:
 | `DEEP_SLEEP_TEST_SECONDS` | `0` | >0 forces deep-sleep after this many **seconds** (bench testing); `0` = minutes policy. Keep ≥ screen-off |
 | `SHOW_PAIRING_CODE_SECONDS` | `0` | >0 holds the `TUTOR-XXXXXX` pairing code on screen this long at **every** boot; `0` = only when unpaired |
 | `DEMO_FRESH_DEVICE` | `0` | `1` = wipe saved identity each boot → device behaves factory-new (pairing demo). Turn off after demos |
+| `BOREDOM_NUDGE_SECONDS` | `40` | Seconds of no interaction (screen on, waiting for an answer) before Pip shows a brief PLAYFUL wink to re-engage the child; `0` disables. Visual only, once per idle stretch |
 | `HEARTBEAT_MS` | `10000` | Device→app heartbeat interval (ms); the app's online timeout is 30 s |
 | `MIC_TARGET_PEAK` | `22000` | Auto-gain target peak for mic capture (~−3.4 dBFS) |
 | `MIC_MAX_GAIN` | `12.0f` | Auto-gain cap (~+21.6 dB) |

@@ -42,13 +42,14 @@ const SYSTEM_PROMPT = `אתה פיפ — מורה רובוט חם ומעודד �
 
 - אם הילד נתן תשובה לא קשורה לשאלה, הפנה אותו בחזרה ("בוא נחזור לשאלה שלנו…").
 - אם הילד מתסכל (הרבה טעויות ברצף), שקול שהפסקה קצרה תעזור.
-- בחר emotion שמשקף את הרגע: celebrating לרצף הצלחות, happy לתשובה נכונה,
-  encouraging לרמז ולטעות רגילה, concerned כשהילד מתקשה הרבה זמן.
+- בחר emotion שמשקף את הרגע: happy לתשובה נכונה בודדת, proud לרצף הצלחות,
+  celebrating לרצף ארוך במיוחד או אבן דרך, encouraging לרמז ולטעות רגילה,
+  concerned כשהילד מתקשה הרבה זמן.
 
 החזר JSON תקין בלבד עם המפתחות הבאים בדיוק:
 {
   "spokenFeedback": string,
-  "emotion": "happy" | "neutral" | "encouraging" | "concerned" | "celebrating",
+  "emotion": "happy" | "neutral" | "encouraging" | "concerned" | "celebrating" | "proud",
   "shouldTakeBreak": boolean
 }`;
 
@@ -144,10 +145,19 @@ function genderSuffix(child) {
 function deterministicFeedback({ child, isCorrect, expectedAnswer, childAnswer, streakWrong, streakCorrect }) {
   const suffix = genderSuffix(child || {});
   if (isCorrect) {
+    // Rare milestone (long streak) → celebrating; a solid streak → proud;
+    // a single correct answer → happy. Keeps celebrating special.
+    if (streakCorrect >= 5) {
+      return {
+        spokenFeedback: `וואו! רצף מדהים, כל הכבוד${suffix}! ממשיכים חזק!`,
+        emotion: "celebrating",
+        shouldTakeBreak: false,
+      };
+    }
     if (streakCorrect >= 2) {
       return {
         spokenFeedback: `מעולה! זאת תשובה נכונה. צברת רצף יפה, כל הכבוד${suffix}!`,
-        emotion: "celebrating",
+        emotion: "proud",
         shouldTakeBreak: false,
       };
     }
@@ -182,6 +192,8 @@ function computeNextDifficulty(currentDifficulty, isCorrect, streakWrong, streak
 function moodFromEmotion(emotion) {
   switch (emotion) {
     case "celebrating":
+      return 5;
+    case "proud":
       return 5;
     case "happy":
       return 4;
@@ -251,13 +263,16 @@ async function llmFeedback(ai, payload, model = DEFAULT_MODEL, safetySettings = 
   return safeJsonParse(result.text);
 }
 
-function buildSessionPatch({ isCorrect, nextDifficulty, feedback, currentQuestion }) {
+function buildSessionPatch({ isCorrect, nextDifficulty, feedback, currentQuestion, streakCorrect, previousLongest }) {
   return {
     status: feedback.shouldTakeBreak ? "break" : "active",
     currentDifficulty: nextDifficulty,
     currentQuestion: currentQuestion.prompt,
     currentExpectedAnswer: currentQuestion.expectedAnswer,
     currentTopic: currentQuestion.topic,
+    // Remember whether the NEXT question came from uploaded material, so when it
+    // is answered next turn its questions-log entry can record fromMaterial.
+    currentFromMaterial: Boolean(currentQuestion.fromMaterial),
     currentAnswerVariants: currentQuestion.answerVariants || [],
     lastEmotion: feedback.emotion,
     lastFeedback: feedback.spokenFeedback,
@@ -266,6 +281,9 @@ function buildSessionPatch({ isCorrect, nextDifficulty, feedback, currentQuestio
     correctCount: FieldValue.increment(isCorrect ? 1 : 0),
     wrongCount: FieldValue.increment(isCorrect ? 0 : 1),
     starsEarned: FieldValue.increment(isCorrect ? 1 : 0),
+    // Running best correct-answer streak (max of prior best and the current run).
+    // streakCorrect is 0 on a wrong answer, so this never regresses.
+    longestStreak: Math.max(Number(previousLongest || 0), Number(streakCorrect || 0)),
     lastActivity: FieldValue.serverTimestamp(),
   };
 }
@@ -292,6 +310,7 @@ async function createInitialQuestion(db, sessionRef, sessionData, child) {
       currentQuestion: question.prompt,
       currentExpectedAnswer: question.expectedAnswer,
       currentTopic: question.topic,
+      currentFromMaterial: Boolean(question.fromMaterial),
       currentAnswerVariants: question.answerVariants || [],
       questionsAsked: sessionData.questionsAsked || 0,
       correctCount: sessionData.correctCount || 0,
@@ -324,6 +343,7 @@ async function processLearningTurn({
   if (!sessionSnap.exists) throw new Error(`Session ${sessionId} does not exist`);
 
   const session = sessionSnap.data();
+  const t0 = Date.now();   // turn-processing stopwatch (for exchange.processingMs)
   const child = await readChild(db, session.childId);
   let currentQuestion = session.currentQuestion;
   let expectedAnswer = session.currentExpectedAnswer;
@@ -482,7 +502,7 @@ async function processLearningTurn({
       if (llm && typeof llm.spokenFeedback === "string") {
         feedback = {
           spokenFeedback: llm.spokenFeedback.slice(0, 500),
-          emotion: ["happy", "neutral", "encouraging", "concerned", "celebrating"].includes(llm.emotion)
+          emotion: ["happy", "neutral", "encouraging", "concerned", "celebrating", "proud"].includes(llm.emotion)
             ? llm.emotion
             : deterministic.emotion,
           shouldTakeBreak: Boolean(llm.shouldTakeBreak) || deterministic.shouldTakeBreak,
@@ -553,6 +573,10 @@ async function processLearningTurn({
     if (childLevelChanged) {
       tx.update(db.collection("children").doc(session.childId), {
         [`level.${subject}`]: nextDifficulty,
+        // Append a snapshot so the app can chart level progression over time
+        // ("level 2 → 4 in three weeks"). Date.now() keeps each entry unique so
+        // arrayUnion always appends (serverTimestamp isn't allowed in arrays).
+        levelHistory: FieldValue.arrayUnion({ subject, level: nextDifficulty, at: Date.now() }),
       });
     }
 
@@ -565,6 +589,10 @@ async function processLearningTurn({
         correct: isCorrect,
         mood,
         difficulty: currentDifficulty,
+        // Topic + source of the question just answered — enables the parent
+        // app's "accuracy by topic" and "material vs generated" analytics.
+        topic: session.currentTopic || subject,
+        fromMaterial: Boolean(session.currentFromMaterial),
         feedback: feedback.spokenFeedback,
         emotion: feedback.emotion,
         nextQuestion: nextQuestion.prompt,
@@ -585,6 +613,10 @@ async function processLearningTurn({
       nextQuestion: nextQuestion.prompt,
       expectedAnswer: nextQuestion.expectedAnswer,
       difficultyChange: nextDifficulty > currentDifficulty ? "up" : nextDifficulty < currentDifficulty ? "down" : "same",
+      // Telemetry: whether the Gemini call ran (the needsLLM gate) and the total
+      // server-side turn time — powers LLM-skip-rate and live latency stats.
+      llmUsed: needsLLM,
+      processingMs: Date.now() - t0,
       answeredAt: now,
     });
 
@@ -597,6 +629,8 @@ async function processLearningTurn({
           nextDifficulty,
           feedback,
           currentQuestion: nextQuestion,
+          streakCorrect,
+          previousLongest: session.longestStreak,
         })
       : {
           status: feedback.shouldTakeBreak ? "break" : "active",

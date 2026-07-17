@@ -99,6 +99,16 @@
 #define DEEP_SLEEP_TEST_SECONDS 0
 #endif
 
+// ── Boredom nudge (PLAYFUL) ──────────────────────────────────────────────────
+// While waiting for an answer with the screen still on, if this many SECONDS
+// pass with no interaction, Pip shows a brief PLAYFUL wink to re-engage the
+// child, then returns to the listening face. Fires at most once per idle
+// stretch (reset on any interaction) and is purely visual — it never speaks or
+// interrupts. Keep it well under SCREEN_OFF. 0 disables.
+#ifndef BOREDOM_NUDGE_SECONDS
+#define BOREDOM_NUDGE_SECONDS 40
+#endif
+
 // ── Show the pairing code on boot (re-pairing / verification) ─────────────────
 // The device only shows its "TUTOR-XXXXXX" pairing code on screen when it's
 // UNPAIRED. Once paired it boots straight into a session, so you can't read the
@@ -150,6 +160,10 @@ const uint32_t HEARTBEAT_MS = 10000;  // app online-timeout is 30s
 // firebase_client.h). g_screenOff tracks whether the backlight is currently off.
 uint32_t g_lastInteractionMs = 0;
 bool     g_screenOff         = false;
+// Boredom nudge (PLAYFUL): whether we've already winked for the current idle
+// stretch, and when to revert the wink to the listening face.
+bool     g_boredomNudged     = false;
+uint32_t g_playfulUntilMs    = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // I2S setup for RECORDING (raw driver, full-duplex)
@@ -232,6 +246,7 @@ void syncClock() {
 // Map the backend emotion vocabulary onto a pip_face emotion label.
 const char* pipEmotionFor(const String& e) {
   if (e == "celebrating") return "celebrating";
+  if (e == "proud")       return "proud";
   if (e == "happy")       return "happy";
   if (e == "encouraging") return "encouraging";
   if (e == "concerned")   return "concerned";
@@ -974,6 +989,8 @@ void wakeScreen() {
 // "The child just did something" — reset the idle timers and wake the screen.
 void noteInteraction() {
   g_lastInteractionMs = millis();
+  g_boredomNudged  = false;   // allow a fresh boredom nudge next idle stretch
+  g_playfulUntilMs = 0;
   wakeScreen();
 }
 
@@ -1049,6 +1066,25 @@ void checkIdlePolicy() {
 
   if (state != IDLE) return;
   uint32_t idleMs = millis() - g_lastInteractionMs;
+
+  // Boredom nudge — a brief PLAYFUL wink to re-engage a child who's gone quiet
+  // while the screen is still on, shown once per idle stretch (well before
+  // screen-off). Purely visual; never speaks. Reverts to the listening face.
+#if BOREDOM_NUDGE_SECONDS
+  const uint32_t nudgeMs = (uint32_t)BOREDOM_NUDGE_SECONDS * 1000UL;
+  if (!g_screenOff) {
+    if (!g_boredomNudged && idleMs >= nudgeMs) {
+      faceEmotion("playful");
+      g_boredomNudged  = true;
+      g_playfulUntilMs = millis() + 2500;   // hold the wink ~2.5 s
+    }
+    if (g_playfulUntilMs && millis() >= g_playfulUntilMs) {
+      faceStatus("listening");               // back to the waiting face
+      g_playfulUntilMs = 0;
+    }
+  }
+#endif
+
   if (sleepMs > 0 && idleMs >= sleepMs) {
     enterDeepSleep();  // does not return
   } else if (screenOffMs > 0 && !g_screenOff && idleMs >= screenOffMs) {
