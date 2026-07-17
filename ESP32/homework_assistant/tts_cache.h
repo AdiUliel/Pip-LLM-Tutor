@@ -98,6 +98,12 @@ static void _sdWriteMp3(const String& path, const uint8_t* buf, size_t len) {
 // Returns true if something was played. Falls back to the pure cloud path when
 // the SD card isn't available, so it's always safe to use in place of
 // cloudSynthesizeSpeech()+speakAudio().
+// Telemetry counters — how many spoken phrases were served from the SD cache vs
+// synthesized in the cloud. Read by firestoreWriteDeviceState() (declared extern
+// there) to report the cache hit rate. Accumulate for the device's lifetime.
+uint32_t g_ttsCacheHits   = 0;
+uint32_t g_ttsCacheMisses = 0;
+
 bool speakTextCached(const String& text) {
   if (text.isEmpty()) return false;
 
@@ -106,6 +112,7 @@ bool speakTextCached(const String& text) {
     size_t len = 0;
     uint8_t* cached = _sdReadMp3(path, &len);
     if (cached) {
+      g_ttsCacheHits++;
       Serial.println("[SD] cache HIT: " + text);
       g_ttsFirstSampleMs = 0;
       uint32_t t0 = millis();
@@ -116,6 +123,7 @@ bool speakTextCached(const String& text) {
       free(cached);
       return true;
     }
+    g_ttsCacheMisses++;
     Serial.println("[SD] cache MISS: " + text);
   }
 

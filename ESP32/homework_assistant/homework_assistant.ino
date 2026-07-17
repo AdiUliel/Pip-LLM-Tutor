@@ -164,6 +164,9 @@ bool     g_screenOff         = false;
 // stretch, and when to revert the wink to the listening face.
 bool     g_boredomNudged     = false;
 uint32_t g_playfulUntilMs    = 0;
+// Boot/wake counter — survives deep sleep (RTC memory). Reported in device
+// telemetry so the app/report can show how many times the unit powered on.
+RTC_DATA_ATTR uint32_t g_bootCount = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // I2S setup for RECORDING (raw driver, full-duplex)
@@ -524,6 +527,8 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== Homework Assistant (Emotional Tutor) Booting ===");
+  g_bootCount++;   // RTC-persisted; counts cold boots + deep-sleep wakes
+  Serial.printf("[Boot] boot/wake #%lu\n", (unsigned long)g_bootCount);
 
   // If we woke from deep sleep (idle power policy), the button pins were held
   // through the RTC domain — release them and return them to normal GPIO so the

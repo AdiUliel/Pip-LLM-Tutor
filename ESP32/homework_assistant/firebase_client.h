@@ -960,6 +960,13 @@ uint8_t* cloudSynthesizeBytes(const String& text, size_t* outLen) {
 // Returns the HTTP status code of the PATCH (200 = the app can now see this
 // device online). Returns -1 if we never even tried (no UID yet). Most callers
 // ignore the return; setup() uses it to print an explicit app-link boot check.
+// Device telemetry counters, defined elsewhere in the sketch: bootCount survives
+// deep sleep (RTC memory, in the .ino); the TTS cache hit/miss counters live in
+// tts_cache.h. Declared extern here (this header is included before those TUs).
+extern uint32_t g_bootCount;
+extern uint32_t g_ttsCacheHits;
+extern uint32_t g_ttsCacheMisses;
+
 int firestoreWriteDeviceState(const String& status,
                               const String& currentQuestion = "",
                               const String& subject = SESSION_SUBJECT) {
@@ -973,6 +980,13 @@ int firestoreWriteDeviceState(const String& status,
   url += "&updateMask.fieldPaths=lastHeartbeat";
   url += "&updateMask.fieldPaths=currentQuestion";
   url += "&updateMask.fieldPaths=activeSubject";
+  // Device health telemetry (refreshed on every state transition).
+  url += "&updateMask.fieldPaths=wifiRssi";
+  url += "&updateMask.fieldPaths=freeHeap";
+  url += "&updateMask.fieldPaths=uptimeSec";
+  url += "&updateMask.fieldPaths=bootCount";
+  url += "&updateMask.fieldPaths=ttsCacheHits";
+  url += "&updateMask.fieldPaths=ttsCacheMisses";
 
   JsonDocument body;
   body["fields"]["status"]["stringValue"]        = status;       // idle|asking|listening|feedback|break|error
@@ -982,6 +996,14 @@ int firestoreWriteDeviceState(const String& status,
   else
     body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
   body["fields"]["activeSubject"]["stringValue"]   = subject;
+  // Firestore REST wants integerValue as a string. RSSI is dBm (negative), the
+  // rest are unsigned. Cheap to read; useful for the reliability/coverage report.
+  body["fields"]["wifiRssi"]["integerValue"]       = String((int)WiFi.RSSI());
+  body["fields"]["freeHeap"]["integerValue"]       = String((uint32_t)ESP.getFreeHeap());
+  body["fields"]["uptimeSec"]["integerValue"]      = String((uint32_t)(millis() / 1000UL));
+  body["fields"]["bootCount"]["integerValue"]      = String(g_bootCount);
+  body["fields"]["ttsCacheHits"]["integerValue"]   = String(g_ttsCacheHits);
+  body["fields"]["ttsCacheMisses"]["integerValue"] = String(g_ttsCacheMisses);
 
   String bodyStr;
   serializeJson(body, bodyStr);

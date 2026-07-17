@@ -75,6 +75,17 @@ no further backend work:
 | `session.sttEmptyCount` | **STT-empty / reprompt rate** — real-world audio-robustness signal (how often no speech was recognised) |
 | `material.itemsCount` + `material.extractionTruncated` | **Materials funnel** — questions extracted per uploaded file, and whether extraction was cut off |
 
+**Device-side telemetry** — written to `deviceState/{uid}` on every state
+transition (engineering/reliability data, not parent-facing):
+
+| Field | Shows |
+|---|---|
+| `wifiRssi` | Wi-Fi signal strength (dBm) — coverage / connectivity quality |
+| `freeHeap` | free heap bytes — memory-health watchdog |
+| `uptimeSec` | seconds since boot — session stability |
+| `bootCount` | cold boots + deep-sleep wakes (RTC-persisted) — activation count |
+| `ttsCacheHits` / `ttsCacheMisses` | **TTS cache hit rate** — how often a spoken phrase was served instantly from SD vs synthesized in the cloud |
+
 ## 4. Computable now from existing session data
 
 Available app-side from the `sessions` stream, no backend change (some already
@@ -90,17 +101,14 @@ surfaced in §1; the rest are a small `StatsProvider` addition away):
 - Materials funnel: files uploaded → questions extracted → blocked by validation
   (`materials` docs: `items.length`, `status`).
 
-## 5. Future work (needs device firmware / instrumentation)
+## 5. Future work
 
-Lower priority — these are device-side (need a reflash) or need a monitoring hook:
+Lower priority — each needs a new hook or is a nice-to-have:
 
-- **TTS cache hit rate** — the device logs SD cache HIT/MISS to serial only; would
-  need a counter sent up via `deviceState`.
-- **Device telemetry: Wi-Fi RSSI, free heap, wake count, recording duration** —
-  all measurable on-device (`WiFi.RSSI()`, `ESP.getFreeHeap()`, RTC-memory wake
-  counter) but only serial-logged today; would ship in a `deviceState.telemetry`
-  field.
-- **Device uptime % / heartbeat gaps** — needs a log or Cloud Monitoring, since
-  `deviceState.lastHeartbeat` is overwritten each beat.
+- **Recording duration / silence-rejection count per turn** — measured on-device
+  (serial-logged) but not yet sent up; would need a per-turn device write.
+- **Device uptime % / heartbeat-gap history** — `bootCount`/`uptimeSec` are now
+  captured, but a historical uptime chart needs a log or Cloud Monitoring (the
+  `deviceState` fields are overwritten each transition).
 - **Answers-per-hour cloud cost** — the token, STT-seconds and TTS-character
-  counters (now captured) can be combined into a per-device economics figure.
+  counters (all captured) can be combined into a per-device economics figure.
