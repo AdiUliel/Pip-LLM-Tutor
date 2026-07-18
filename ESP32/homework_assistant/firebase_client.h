@@ -664,6 +664,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
     { String ts = http.header("X-Turn-Seq"); if (ts.length()) g_turnSeq = ts.toInt(); }
+    Serial.println("[Firestore] exchangeId: " + http.header("X-Exchange-Id"));
 
     // ── MP3 body → PSRAM (caller frees out.audioBuf) ──────────────────────────
     _readMp3BodyToPSRAM(http, out);
@@ -741,6 +742,7 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
     { String ts = http.header("X-Turn-Seq"); if (ts.length()) g_turnSeq = ts.toInt(); }
+    Serial.println("[Firestore] exchangeId: " + http.header("X-Exchange-Id"));
     String transcript   = _b64ToString(http.header("X-Transcript-B64"));
     if (transcript.length()) Serial.println("[STT] (server) heard: " + transcript);
 
