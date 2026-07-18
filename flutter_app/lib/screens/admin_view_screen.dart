@@ -1,5 +1,5 @@
-// AdminViewScreen — technician view: raw deviceState document, recent logs,
-// reset-to-defaults. Layout from ~/Downloads/ioT/screen-device.jsx (AdminView).
+// AdminViewScreen — technician view: raw deviceState document + reset-to-defaults.
+// Layout from ~/Downloads/ioT/screen-device.jsx (AdminView).
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
@@ -41,7 +41,7 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
           children: [
             ScreenHeader(
               title: 'מצב טכנאי',
-              subtitle: 'deviceState גולמי + לוגים',
+              subtitle: 'deviceState גולמי',
               onBack: () => Navigator.of(context).maybePop(),
             ),
             Expanded(
@@ -79,31 +79,6 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
                           last: true,
                         ),
                       ],
-                    ),
-                  ),
-                  const SizedBox(height: 22),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 2, bottom: 10),
-                    child: Text(
-                      'לוגים אחרונים',
-                      style:
-                          AppTextStyles.title(context).copyWith(fontSize: 16),
-                    ),
-                  ),
-                  PCard(
-                    padding: const EdgeInsets.all(14),
-                    child: Directionality(
-                      textDirection: TextDirection.ltr,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (var i = 0; i < _logs(online, status).length; i++)
-                            _LogRow(
-                              entry: _logs(online, status)[i],
-                              isLast: i == _logs(online, status).length - 1,
-                            ),
-                        ],
-                      ),
                     ),
                   ),
                   const SizedBox(height: 22),
@@ -182,72 +157,4 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
     );
   }
 
-  List<_LogEntry> _logs(bool online, DeviceStatus status) {
-    final now = DateTime.now();
-    String t(int sAgo) =>
-        DateFormat('HH:mm:ss', 'he').format(now.subtract(Duration(seconds: sAgo)));
-    return [
-      _LogEntry(t(2), 'heartbeat ok · rssi -52dBm', ok: online),
-      _LogEntry(t(5), 'status → ${deviceStatusId[status]}', ok: true),
-      _LogEntry(t(22), 'session.write s6 · acc=83', ok: true),
-      _LogEntry(t(40), 'mood.detect → happy (0.91)', ok: true),
-      _LogEntry(
-        t(120),
-        online
-            ? 'fetch materials/m1 · 18 items'
-            : 'WARN: heartbeat timeout',
-        ok: online,
-      ),
-    ];
-  }
-}
-
-class _LogEntry {
-  final String time;
-  final String message;
-  final bool ok;
-  _LogEntry(this.time, this.message, {required this.ok});
-}
-
-class _LogRow extends StatelessWidget {
-  const _LogRow({required this.entry, required this.isLast});
-  final _LogEntry entry;
-  final bool isLast;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        border: isLast
-            ? null
-            : const Border(
-                bottom: BorderSide(color: Color(0xFFF2F5FA), width: 1)),
-      ),
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(
-        children: [
-          Text(
-            entry.time,
-            style: const TextStyle(
-              color: Color(0xFFA9B4CC),
-              fontSize: 12,
-              fontFamily: 'monospace',
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              entry.message,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-                color: entry.ok ? AppColors.inkSoft : AppColors.coral,
-                fontWeight: entry.ok ? FontWeight.w400 : FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
