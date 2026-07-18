@@ -134,6 +134,10 @@
 // ── State machine ─────────────────────────────────────────────────────────────
 enum State { IDLE, RECORDING, PROCESSING, SPEAKING };
 State state = IDLE;
+// After a recording ends while the button is STILL held (e.g. it hit the time
+// limit), require a release before the next press can start a new recording —
+// otherwise a long hold chains straight into back-to-back recordings.
+bool g_requireBtnRelease = false;
 
 // ── Audio record buffer (PSRAM) ───────────────────────────────────────────────
 uint8_t* recordBuf  = nullptr;
@@ -1142,8 +1146,9 @@ void loop() {
   // record. This stops a "tap to wake" from being swallowed as a (usually empty)
   // answer. If the screen is already on, the press starts recording as before.
   bool btnDown = (digitalRead(PIN_BTN) == LOW);
+  if (!btnDown) g_requireBtnRelease = false;   // released → re-arm for the next press
 
-  if (state == IDLE && btnDown) {
+  if (state == IDLE && btnDown && !g_requireBtnRelease) {
     if (g_screenOff) {
       Serial.println("[Main] Wake press — screen on; press again to answer.");
       noteInteraction();              // backlight on + reset the idle timers
@@ -1174,8 +1179,11 @@ void loop() {
       }
     }
 
-    if (!btnDown) {  // button released → process this answer
+    if (!btnDown) {  // button released (or hit the time limit) → process this answer
       i2s_stop_recording();
+      // If we stopped on the time limit the button may still be held down; require
+      // a release before the next recording so one long hold can't chain them.
+      g_requireBtnRelease = true;
       state = PROCESSING;
       Serial.printf("[Main] Recorded %u bytes (%.1f sec)\n",
                     recordBytes, recordBytes / (float)(SAMPLE_RATE * 2));
