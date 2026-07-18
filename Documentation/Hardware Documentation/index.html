@@ -184,6 +184,82 @@
                 top: 0;
             }
         }
+
+        /* ── Print / PDF export ─────────────────────────────────────────────
+           Collapses the two-column layout to a single flow, turns the sticky
+           sidebar into a front-page table of contents, and keeps figures,
+           tables and notes from splitting across pages.                      */
+        @media print {
+            @page {
+                size: A4;
+                margin: 18mm 15mm 16mm 15mm;
+                @bottom-center {
+                    content: counter(page) " / " counter(pages);
+                    font-family: Helvetica, Arial, sans-serif;
+                    font-size: 9pt;
+                    color: #64748b;
+                }
+            }
+
+            body {
+                background-color: #ffffff;
+                font-size: 10.5pt;
+                line-height: 1.5;
+            }
+
+            header {
+                background-color: #ffffff;
+                color: var(--text-main);
+                text-align: left;
+                padding: 0 0 1rem;
+                border-bottom: 3px solid var(--primary);
+            }
+            header h1 { font-size: 24pt; }
+            header p  { color: var(--text-muted); }
+
+            .container {
+                display: block;
+                max-width: none;
+                padding: 0;
+            }
+
+            nav {
+                position: static;
+                width: auto;
+                box-shadow: none;
+                border: 1px solid var(--border);
+                padding: 1.25rem 1.5rem;
+                margin-top: 1.5rem;
+                page-break-after: always;
+            }
+            nav a { color: var(--text-main); }
+
+            section {
+                box-shadow: none;
+                border: none;
+                padding: 0;
+                margin-bottom: 0;
+                page-break-before: always;
+            }
+            section#overview { page-break-before: avoid; }
+
+            h2 { page-break-after: avoid; }
+            h3 { page-break-after: avoid; page-break-inside: avoid; }
+            p  { orphans: 3; widows: 3; }
+
+            .diagram-img {
+                max-width: 100%;
+                max-height: 105mm;
+                box-shadow: none;
+                border: 1px solid var(--border);
+                page-break-inside: avoid;
+                margin: 1rem 0;
+            }
+
+            table, .note, .image-placeholder { page-break-inside: avoid; }
+
+            a { text-decoration: none; }
+        }
     </style>
 </head>
 <body>
@@ -204,6 +280,7 @@
                 <li><a href="#audio">5. Audio Subsystem</a></li>
                 <li><a href="#interfaces">6. Expansion & Interfaces</a></li>
                 <li><a href="#controls">7. Controls & Indicators</a></li>
+                <li><a href="#ptt-button">8. Push-to-Talk Button</a></li>
             </ul>
         </nav>
 
@@ -326,6 +403,77 @@
                 <h3>RGB LED (WS2812B)</h3>
                 <p>A built-in tri-color RGB LED utilizing an internal IC. Powered by 5V, it requires only a single IO pin to generate different color output based on timing waveforms.</p>
                 <img src="canvas14.png" alt="RGB three-color light control circuit" class="diagram-img">
+            </section>
+
+            <!-- 8. Push-to-Talk Button (project wiring) -->
+            <section id="ptt-button">
+                <h2>8. Push-to-Talk Button</h2>
+                <p>Sections 1&ndash;7 above describe the stock module. This section documents wiring
+                   added for the Pip LLM Tutor project: an external momentary button the child holds
+                   while answering. It uses two pins of the <strong>P3 expanded IO header</strong>
+                   described in section 6, and needs no external components.</p>
+
+                <img src="button_wiring_IO2_IO3.png" alt="Push-to-talk button wiring: momentary switch between IO2 and IO3 on the P3 expansion header" class="diagram-img">
+
+                <h3>Connections</h3>
+                <p>The switch is wired directly between header pins 1 and 2. It is unpolarised, so
+                   either terminal may go to either pin.</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>P3 pin</th>
+                            <th>Signal</th>
+                            <th>Firmware constant</th>
+                            <th>Mode</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td>IO2</td>
+                            <td><code>PIN_BTN_GND</code></td>
+                            <td><code>OUTPUT</code>, driven LOW &mdash; serves as the button's local ground</td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>IO3</td>
+                            <td><code>PIN_BTN</code></td>
+                            <td><code>INPUT_PULLUP</code> &mdash; reads HIGH when released, LOW when pressed</td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td>IO14</td>
+                            <td>&mdash;</td>
+                            <td>Unused</td>
+                        </tr>
+                        <tr>
+                            <td>4</td>
+                            <td>IO21</td>
+                            <td>&mdash;</td>
+                            <td>Unused</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>No pull-up resistor is fitted: IO3's internal pull-up (approximately 45 k&#8486;)
+                   is enabled in firmware, and IO2 is an ordinary GPIO held LOW so the button can
+                   occupy just two header pins instead of borrowing a ground.</p>
+
+                <h3>Deep-sleep wake</h3>
+                <p>The same button wakes the device. <code>EXT1</code> is armed to wake on IO3 going
+                   LOW, with IO2 held LOW through the RTC domain so it still acts as ground while the
+                   main GPIO drivers are off.</p>
+                <div class="note">
+                    <strong>IO3 is a strapping pin with no default pull.</strong> The RTC peripheral
+                    domain must be kept powered during deep sleep, otherwise the internal pull-up is
+                    switched off, IO3 floats LOW and the module wakes the instant it sleeps. The cost
+                    is a few microamps of additional sleep current.
+                </div>
+
+                <h3>Fallback</h3>
+                <p>If a unit's IO3 expansion line proves unreliable, set <code>PIN_BTN</code> to
+                   <code>0</code> in <code>pins.h</code> to fall back to the onboard BOOT key
+                   (section 7), which already grounds IO0. Note that IO43/IO44 (UART) cannot be used
+                   for this: TX idles HIGH and RX is held by the UART peripheral.</p>
             </section>
         </main>
     </div>
