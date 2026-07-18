@@ -284,8 +284,8 @@ exports.monitorTutor = onSchedule(
       await sendToParent(
         db,
         child.parentId,
-        `ההתקן של ${child.name || "הילד"} מנותק`,
-        "לא התקבל heartbeat לאחרונה",
+        `המכשיר של ${child.name || "הילד"} לא פעיל`,
+        "לא הייתה פעילות מהמכשיר זמן ממושך",
         { type: "device.offline", deviceId: ddoc.id, childId: child.id }
       );
     }

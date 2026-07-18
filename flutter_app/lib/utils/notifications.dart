@@ -60,8 +60,8 @@ List<AppAlert> buildAlerts({
       !device.isOnline) {
     list.add(const AppAlert(
       id: 'device.offline',
-      title: 'ההתקן מנותק',
-      sub: 'לא התקבל heartbeat לאחרונה',
+      title: 'המכשיר לא פעיל',
+      sub: 'לא הייתה פעילות מהמכשיר זמן ממושך',
       icon: Icons.wifi_off_rounded,
       severity: AlertSeverity.error,
     ));
