@@ -94,20 +94,35 @@ async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
       const prompt = it && it.question ? String(it.question).trim() : "";
       const answer = it && it.answer ? String(it.answer).trim() : "";
       if (prompt && answer && !usedPrompts.has(prompt)) {
-        candidates.push({ prompt, answer });
+        // difficulty is absent on older materials / typed Q&A → keep null so the
+        // item is usable at any level (never excluded by the window below).
+        const d = Number(it.difficulty);
+        const difficulty = Number.isFinite(d) ? clamp(d, 1, 10) : null;
+        candidates.push({ prompt, answer, topic: it.topic || subject, difficulty });
       }
     });
   });
 
   if (!candidates.length) return null;
 
-  const q = candidates[Math.floor(Math.random() * candidates.length)];
+  // Prefer uploaded questions near the child's current level, but NEVER starve the
+  // material: try ±1, then ±2, then any uploaded question — so a small homework set
+  // is still used rather than dropping through to generated questions. Items with
+  // no difficulty (null) are eligible at every level.
+  const level = clamp(session.currentDifficulty || 1, 1, 10);
+  const near = (w) =>
+    candidates.filter((c) => c.difficulty == null || Math.abs(c.difficulty - level) <= w);
+  const pool = near(1).length ? near(1) : near(2).length ? near(2) : candidates;
+
+  const q = pool[Math.floor(Math.random() * pool.length)];
   return {
     subject,
     prompt: q.prompt,
     expectedAnswer: q.answer,
-    topic: subject,
-    difficulty: session.currentDifficulty || 1,
+    // Use the question's real topic/difficulty (feeds accuracy-by-topic analytics);
+    // fall back to the session values for older, untagged material.
+    topic: q.topic || subject,
+    difficulty: q.difficulty ?? (session.currentDifficulty || 1),
     // Same smart grading as generated questions: normalization + Hebrew
     // number-words, so a child answering "תשע" to a material "9" still counts.
     answerVariants: answerVariants(q.answer),

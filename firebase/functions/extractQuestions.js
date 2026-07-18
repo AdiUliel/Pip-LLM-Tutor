@@ -45,10 +45,12 @@ const RESPONSE_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          question: { type: "string" },
-          answer:   { type: "string" },
+          question:   { type: "string" },
+          answer:     { type: "string" },
+          topic:      { type: "string" },
+          difficulty: { type: "integer" },
         },
-        required: ["question", "answer"],
+        required: ["question", "answer", "topic", "difficulty"],
       },
     },
   },
@@ -82,6 +84,7 @@ function buildPrompt({ subject, age }) {
 - הילד לא רואה את הדף — השאלה נשמעת בקול בלבד. לכן אסור להתייחס לתמונות, למיקום בדף, לצבעים, לקווים או ל"התמונה של...". אם החומר מבוסס תמונות (כמו התאמת מילה לתמונה), המר כל פריט לשאלה מילולית עצמאית שמובנת רק מהשמע.
 - נסח כל שאלה כמשפט שאלה טבעי, ברור וידידותי שאפשר להקריא בקול לילד — לא ביטוי גולמי. השאלה תוקרא בקול על ידי רובוט, אז היא חייבת להישמע כמו שאלה מדוברת. לדוגמה: "7+2" → "כמה זה 7 ועוד 2?"; "8×4" → "כמה זה 8 כפול 4?"; "12-5" → "כמה זה 12 פחות 5?".
 - שאלה קצרה וברורה, ברמה מתאימה לגיל.
+- לכל שאלה הוסף topic (נושא קצר בעברית, למשל "חיבור", "חיסור", "כפל", "אוצר מילים", "דקדוק") ו-difficulty (מספר שלם 1-10 שמשקף את הקושי היחסי ביחס לגיל ${age}: 1 = קל מאוד, 10 = קשה מאוד).
 - התשובה מדויקת ותמציתית (מילה, מספר, או משפט קצר). למספרים — כתוב את התשובה כספרה (למשל 9), לא כמילה.
 - אל תיצור שאלות עם תוכן לא מתאים לילדים.
 - אם החומר ריק או לא ברור, החזר appropriate: true עם items: [] — אל תמציא תוכן.
@@ -94,15 +97,21 @@ function buildPrompt({ subject, age }) {
 החזר JSON בלבד.`;
 }
 
-// Filter raw {question, answer} objects down to clean, non-empty, trimmed pairs.
+// Filter raw items down to clean, non-empty, trimmed pairs, preserving the
+// per-question topic + difficulty (clamped 1-10; defaulted when Gemini omits them).
 function normalizeItems(arr) {
   if (!Array.isArray(arr)) return [];
   return arr
     .filter((i) => i && i.question && i.answer)
-    .map((i) => ({
-      question: String(i.question).trim(),
-      answer:   String(i.answer).trim(),
-    }))
+    .map((i) => {
+      const d = parseInt(i.difficulty, 10);
+      return {
+        question:   String(i.question).trim(),
+        answer:     String(i.answer).trim(),
+        topic:      i.topic ? String(i.topic).trim() : "",
+        difficulty: Number.isFinite(d) ? Math.min(10, Math.max(1, d)) : 5,
+      };
+    })
     .filter((i) => i.question.length > 0 && i.answer.length > 0);
 }
 

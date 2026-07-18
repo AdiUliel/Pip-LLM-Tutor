@@ -7,14 +7,30 @@ import '../constants.dart';
 class QAPair {
   final String question;
   final String answer;
-  const QAPair({required this.question, required this.answer});
+  // Per-question topic + difficulty (1-10) added by server-side extraction.
+  // Carried through so the app never strips them on a load→save round-trip.
+  final String? topic;
+  final int? difficulty;
+  const QAPair({
+    required this.question,
+    required this.answer,
+    this.topic,
+    this.difficulty,
+  });
 
   factory QAPair.fromMap(Map<String, dynamic> m) => QAPair(
         question: (m['question'] ?? '') as String,
         answer: (m['answer'] ?? '') as String,
+        topic: m['topic'] as String?,
+        difficulty: (m['difficulty'] as num?)?.toInt(),
       );
 
-  Map<String, dynamic> toMap() => {'question': question, 'answer': answer};
+  Map<String, dynamic> toMap() => {
+        'question': question,
+        'answer': answer,
+        if (topic != null) 'topic': topic,
+        if (difficulty != null) 'difficulty': difficulty,
+      };
 }
 
 class MaterialDoc {
