@@ -8,6 +8,10 @@ class Session {
   final String childId;
   final Subject subject;
   final DateTime startedAt;
+  /// When the child actually started answering questions (first learning turn) —
+  /// excludes boot / WiFi / identify overhead. Falls back to [startedAt] for
+  /// older sessions written before this field existed.
+  final DateTime? learningStartedAt;
   final DateTime? endedAt;
   final int questionsAsked;
   final int correctCount;
@@ -26,6 +30,7 @@ class Session {
     required this.childId,
     required this.subject,
     required this.startedAt,
+    this.learningStartedAt,
     this.endedAt,
     required this.questionsAsked,
     required this.correctCount,
@@ -41,7 +46,9 @@ class Session {
   int get accuracyPct =>
       questionsAsked == 0 ? 0 : ((correctCount / questionsAsked) * 100).round();
 
-  Duration? get duration => endedAt?.difference(startedAt);
+  /// Learning-time window — measured from when questions actually started
+  /// (`learningStartedAt`), not from device boot / session creation.
+  Duration? get duration => endedAt?.difference(learningStartedAt ?? startedAt);
 
   int get durationMinutes => (duration?.inSeconds ?? 0) ~/ 60;
 
@@ -66,6 +73,9 @@ class Session {
         subject: subjectFromId((m['subject'] ?? 'math') as String) ?? Subject.math,
         startedAt:
             m['startedAt'] is DateTime ? m['startedAt'] as DateTime : DateTime.now(),
+        learningStartedAt: m['learningStartedAt'] is DateTime
+            ? m['learningStartedAt'] as DateTime
+            : null,
         endedAt: m['endedAt'] is DateTime ? m['endedAt'] as DateTime : null,
         questionsAsked: (m['questionsAsked'] as num?)?.toInt() ?? 0,
         correctCount: (m['correctCount'] as num?)?.toInt() ?? 0,

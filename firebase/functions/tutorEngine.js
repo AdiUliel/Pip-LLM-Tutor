@@ -725,6 +725,10 @@ async function processLearningTurn({
         // Advance turnSeq only when we move to a new question (a hint keeps the
         // same question and the same seq). Matches the returned turnSeq below.
         ...(advancesToNextQuestion && { turnSeq: newTurnSeq }),
+        // Stamp the start of actual learning on the FIRST turn — the app measures
+        // session duration from here (excludes boot / WiFi / identify overhead),
+        // not from session creation. Set once; never overwritten.
+        ...(session.learningStartedAt == null && { learningStartedAt: now }),
         consecutiveCorrect: streakCorrect,
         consecutiveWrong: streakWrong,
         wrongAttemptsOnCurrent: nextWrongOnCurrent,
