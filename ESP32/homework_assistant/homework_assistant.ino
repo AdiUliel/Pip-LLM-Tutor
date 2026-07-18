@@ -109,6 +109,14 @@
 #define BOREDOM_NUDGE_SECONDS 40
 #endif
 
+// ── WiFi connect budget ───────────────────────────────────────────────────────
+// Total time to keep trying WiFi at boot before giving up and powering down
+// (deep sleep — a button press wakes it to try again). Prevents the device from
+// sitting forever with a dead screen when the network is unavailable.
+#ifndef WIFI_CONNECT_BUDGET_SECONDS
+#define WIFI_CONNECT_BUDGET_SECONDS 300   // 5 minutes
+#endif
+
 // ── Show the pairing code on boot (re-pairing / verification) ─────────────────
 // The device only shows its "TUTOR-XXXXXX" pairing code on screen when it's
 // UNPAIRED. Once paired it boots straight into a session, so you can't read the
@@ -228,14 +236,25 @@ void connectWiFi() {
   Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   uint32_t attemptStart = millis();
+  uint32_t bootStart    = millis();
   bool warned = false;
   while (WiFi.status() != WL_CONNECTED) {
     faceTick();                 // keep the face animating instead of a silent hang
     delay(250);
     Serial.print(".");
-    // Never hang forever & silently: after ~20 s with no link, tell the user on
-    // screen and kick a fresh association attempt, then keep trying. It recovers
-    // on its own once the router / credentials are back.
+    // Total budget: don't retry forever. After WIFI_CONNECT_BUDGET_SECONDS with no
+    // link, show OOPS and power down (deep sleep) — a button press wakes it to try
+    // again — so the device never sits indefinitely with a dead screen.
+    if (millis() - bootStart > (uint32_t)WIFI_CONNECT_BUDGET_SECONDS * 1000UL) {
+      Serial.println("\n[WiFi] No connection within the boot budget — powering down.");
+      faceStatus("error");
+      faceStrip("אין חיבור לרשת. כבים — לחצו על הכפתור לנסות שוב.");
+      faceTick();
+      delay(3000);
+      enterDeepSleep();         // does not return; wakes on the button
+    }
+    // Never hang silently: after ~20 s with no link, tell the user on screen and
+    // kick a fresh association attempt, then keep trying (within the budget above).
     if (millis() - attemptStart > 20000) {
       if (!warned) {
         faceStatus("error");
