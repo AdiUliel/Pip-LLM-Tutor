@@ -169,6 +169,22 @@ uint32_t g_playfulUntilMs    = 0;
 RTC_DATA_ATTR uint32_t g_bootCount = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Forward declarations — functions with DEFAULT ARGUMENTS
+// ─────────────────────────────────────────────────────────────────────────────
+// The Arduino builder auto-generates prototypes for functions defined in a .ino
+// and inserts them at the top of the sketch, which is why most helpers can be
+// called before they are defined. It deliberately SKIPS any function whose
+// signature carries a default argument (emitting the default twice — once in the
+// generated prototype, once in the definition — is illegal C++). Such functions
+// therefore have to be declared by hand, or calls that appear earlier in the file
+// fail with "was not declared in this scope".
+//
+// The default value must appear on the DECLARATION only; the definitions below
+// repeat the parameter without "= ...".
+void faceStatus(const char* status, int mood = -1);
+bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // I2S setup for RECORDING (raw driver, full-duplex)
 // ─────────────────────────────────────────────────────────────────────────────
 void i2s_start_recording() {
@@ -262,7 +278,7 @@ const char* pipEmotionFor(const String& e) {
 void faceEmotion(const char* label) {
   if (g_haveFace) Pip::setEmotion(label);
 }
-void faceStatus(const char* status, int mood = -1) {
+void faceStatus(const char* status, int mood) {   // default (-1) is on the prototype above
   if (g_haveFace) Pip::setDeviceStatus(status, mood);
 }
 void faceStrip(const String& text) {
@@ -371,7 +387,7 @@ static float micAutoGainMono() {
 // Blocking record: face listens, waits for the push-to-talk button, captures the
 // answer while it's held. Used by the boot-time identify flow before the main
 // state-machine loop takes over.
-bool recordOneAnswerBlocking(uint32_t maxWaitMs = 20000) {
+bool recordOneAnswerBlocking(uint32_t maxWaitMs) {   // default (20000) is on the prototype above
   faceEmotion("listening");
   Serial.println("[Identify] Press the button and answer...");
   uint32_t waitStart = millis();
