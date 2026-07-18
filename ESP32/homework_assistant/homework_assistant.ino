@@ -268,12 +268,13 @@ void connectWiFi() {
   }
   Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
   if (warned) {
-    // We showed the "no network" banner while down — now that we're back, clear
-    // the stuck error face/strip so the screen reflects the recovered connection.
+    // We showed the "no network" banner while down — now that we're back, clear the
+    // stuck error face and confirm "מחובר!" for ~4 s, then wipe it so it doesn't linger.
     faceStatus("idle");
     faceStrip("מחובר!");
-    faceTick();
-    delay(800);
+    uint32_t shownAt = millis();
+    while (millis() - shownAt < 4000) { faceTick(); delay(50); }
+    faceStrip("");   // clear the confirmation after 4 s
   }
   delay(500);
 }
