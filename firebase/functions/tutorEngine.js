@@ -337,6 +337,10 @@ async function createInitialQuestion(db, sessionRef, sessionData, child) {
       currentTopic: question.topic,
       currentFromMaterial: Boolean(question.fromMaterial),
       currentAnswerVariants: question.answerVariants || [],
+      // turnSeq identifies the CURRENT question. The device echoes it when
+      // answering so a stale answer (lost response → device still on the old
+      // question) is detected and resynced instead of graded against the new one.
+      turnSeq: 1,
       questionsAsked: sessionData.questionsAsked || 0,
       correctCount: sessionData.correctCount || 0,
       wrongCount: sessionData.wrongCount || 0,
@@ -361,6 +365,7 @@ async function processLearningTurn({
   sessionId,
   exchangeId,
   exchangeData,
+  deviceSeq,
 }) {
   const sessionRef = db.collection("sessions").doc(sessionId);
   const exchangeRef = sessionRef.collection("exchanges").doc(exchangeId);
@@ -368,6 +373,40 @@ async function processLearningTurn({
   if (!sessionSnap.exists) throw new Error(`Session ${sessionId} does not exist`);
 
   const session = sessionSnap.data();
+
+  // ── Stale-answer guard ────────────────────────────────────────────────────
+  // If the device echoes a turnSeq that no longer matches the session's, its last
+  // response was lost and it's still on the OLD question. Don't grade this answer
+  // against the (already advanced) current question — re-send the current question
+  // so the device resyncs. Skipped when either side has no seq (older firmware).
+  {
+    const sessionSeq = Number(session.turnSeq);
+    const clientSeq = Number(deviceSeq);
+    if (Number.isFinite(clientSeq) && clientSeq > 0 &&
+        Number.isFinite(sessionSeq) && sessionSeq > 0 &&
+        clientSeq !== sessionSeq) {
+      console.log(`[turn] stale seq ${clientSeq} != ${sessionSeq} — resyncing device`);
+      const q = session.currentQuestion || "";
+      const audioUrl = synthesize ? await synthesize(q, `${exchangeId}_resync`) : "";
+      await exchangeRef.set(
+        { status: "resynced", staleSeq: clientSeq, answeredAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      return {
+        isCorrect: false,
+        spokenFeedback: "",
+        nextQuestion: q,
+        expectedAnswer: session.currentExpectedAnswer || "",
+        emotion: "encouraging",
+        shouldTakeBreak: false,
+        difficulty: session.currentDifficulty || 1,
+        turnSeq: sessionSeq,
+        resynced: true,
+        audioData: audioUrl,
+      };
+    }
+  }
+
   const t0 = Date.now();   // turn-processing stopwatch (for exchange.processingMs)
   const child = await readChild(db, session.childId);
   let currentQuestion = session.currentQuestion;
@@ -549,6 +588,9 @@ async function processLearningTurn({
 
   const mood = moodFromEmotion(feedback.emotion);
   const now = FieldValue.serverTimestamp();
+  // New sequence for the question the device will hold after this turn: +1 when we
+  // advance to a new question, unchanged on a hint (same question).
+  const newTurnSeq = (Number(session.turnSeq) || 1) + (advancesToNextQuestion ? 1 : 0);
 
   // ── 50-min auto-end: replace next question with farewell ─────────────────────
   if (shouldAutoEnd && advancesToNextQuestion) {
@@ -680,6 +722,9 @@ async function processLearningTurn({
       sessionRef,
       {
         ...sessionPatch,
+        // Advance turnSeq only when we move to a new question (a hint keeps the
+        // same question and the same seq). Matches the returned turnSeq below.
+        ...(advancesToNextQuestion && { turnSeq: newTurnSeq }),
         consecutiveCorrect: streakCorrect,
         consecutiveWrong: streakWrong,
         wrongAttemptsOnCurrent: nextWrongOnCurrent,
@@ -714,6 +759,7 @@ async function processLearningTurn({
     emotion: feedback.emotion,
     shouldTakeBreak: feedback.shouldTakeBreak,
     difficulty: nextDifficulty,
+    turnSeq: newTurnSeq,
   };
 }
 

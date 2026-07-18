@@ -46,6 +46,11 @@ static String g_refreshToken = "";
 static String g_sessionId    = "";
 static String g_childId      = "";   // resolved child profile (may be empty)
 static String g_firebaseUid  = "";   // Firebase anonymous UID == deviceId
+// Sequence of the CURRENT question. Read from the session at start, then updated
+// from each processTurn response (X-Turn-Seq). Echoed on every answer so the
+// server can detect a stale answer (lost response) and resync instead of
+// mis-grading it against the next question.
+static long   g_turnSeq      = 0;
 
 // Idle power policy, read from children/{id}.settings at boot (see
 // firestoreResolveChildId). After g_screenOffMinutes of no interaction the
@@ -408,6 +413,8 @@ bool firestoreWaitForCurrentQuestion(const String& sessionId,
     }
     if ((status == "active" || status == "break") && q.length() > 0) {
       questionOut = q;
+      // Sequence of this first question (integerValue arrives as a string).
+      g_turnSeq = String(resp["fields"]["turnSeq"]["integerValue"].as<const char*>()).toInt();
       // Inline base64 WAV (preferred, no Storage round-trip). Falls back to
       // legacy URL if the doc was written by an older Cloud Function build.
       String b64 = resp["fields"]["currentQuestionAudioData"]["stringValue"].as<String>();
@@ -618,7 +625,7 @@ static void _readMp3BodyToPSRAM(HTTPClient& http, TurnResult& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, TurnResult& out) {
   String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
-               ".cloudfunctions.net/processTurn";
+               ".cloudfunctions.net/processTurn?seq=" + String(g_turnSeq);
 
   JsonDocument body;
   body["sessionId"]   = sessionId;
@@ -627,7 +634,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
 
   const char* hdrKeys[] = {
     "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended", "X-End-Reason",
-    "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id"
+    "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id", "X-Turn-Seq"
   };
 
   // Up to 2 attempts so an expired token (401) can be refreshed and retried once.
@@ -656,6 +663,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     out.endReason       = http.header("X-End-Reason");
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
+    { String ts = http.header("X-Turn-Seq"); if (ts.length()) g_turnSeq = ts.toInt(); }
 
     // ── MP3 body → PSRAM (caller frees out.audioBuf) ──────────────────────────
     _readMp3BodyToPSRAM(http, out);
@@ -684,12 +692,12 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
                                const char* langCode, TurnResult& out) {
   String url = "https://" CLOUD_FUNCTIONS_REGION "-" FIREBASE_PROJECT_ID
                ".cloudfunctions.net/processTurn?fmt=pcm16&sessionId=" + sessionId +
-               "&lang=" + String(langCode);
+               "&lang=" + String(langCode) + "&seq=" + String(g_turnSeq);
 
   const char* hdrKeys[] = {
     "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended", "X-End-Reason",
     "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id",
-    "X-Stt-Empty", "X-Transcript-B64"
+    "X-Stt-Empty", "X-Transcript-B64", "X-Turn-Seq"
   };
   const size_t hdrCount = sizeof(hdrKeys) / sizeof(hdrKeys[0]);
 
@@ -732,6 +740,7 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
     out.endReason       = http.header("X-End-Reason");
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
+    { String ts = http.header("X-Turn-Seq"); if (ts.length()) g_turnSeq = ts.toInt(); }
     String transcript   = _b64ToString(http.header("X-Transcript-B64"));
     if (transcript.length()) Serial.println("[STT] (server) heard: " + transcript);
 

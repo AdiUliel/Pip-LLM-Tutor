@@ -896,6 +896,8 @@ exports.processTurn = onRequest(
         sessionId,
         exchangeId,
         exchangeData,
+        // Which question the device thinks it's answering (stale-answer guard).
+        deviceSeq: req.query.seq ?? (req.body && req.body.seq),
       });
 
       // Notify the parent immediately on explicit session end (same as the trigger).
@@ -907,6 +909,7 @@ exports.processTurn = onRequest(
       // Metadata → headers. Hebrew is base64(utf8) since header values are ASCII.
       const b64 = (s) => Buffer.from(String(s || ""), "utf8").toString("base64");
       res.set("X-Exchange-Id",       exchangeId);
+      res.set("X-Turn-Seq",          String(result.turnSeq ?? ""));
       res.set("X-Is-Correct",        result.isCorrect ? "1" : "0");
       res.set("X-Emotion",           result.emotion || "neutral");
       res.set("X-Should-Break",      result.shouldTakeBreak ? "1" : "0");

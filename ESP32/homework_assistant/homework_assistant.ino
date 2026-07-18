@@ -244,6 +244,14 @@ void connectWiFi() {
     }
   }
   Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
+  if (warned) {
+    // We showed the "no network" banner while down — now that we're back, clear
+    // the stuck error face/strip so the screen reflects the recovered connection.
+    faceStatus("idle");
+    faceStrip("מחובר!");
+    faceTick();
+    delay(800);
+  }
   delay(500);
 }
 
