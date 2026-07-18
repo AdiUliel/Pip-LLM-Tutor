@@ -52,7 +52,16 @@ One turn advances in one direction: **ask → listen → think → react**, repe
 
 ---
 
-## 3. State reference (as implemented)
+## 3. State reference — every face and what triggers it
+
+This is the **complete list**: all 12 faces and exactly what makes each one
+appear. **All 12 are reachable — there are no dead states.** The **Set via**
+column says *how* the firmware picks the face (see §1):
+
+- **deviceState** — chosen through the device status via `faceStatus(...)` (also
+  mirrored to `deviceState.status` so the parent app shows the same thing).
+- **emotion** — chosen directly via `faceEmotion(...)`.
+- **both** — happens through either path depending on the moment.
 
 | State (pip) | Trigger in firmware | Set via |
 |---|---|---|
@@ -67,7 +76,7 @@ One turn advances in one direction: **ask → listen → think → react**, repe
 | **CONCERNED** | Child is struggling — `streakWrong ≥ 2` (backend `emotion:"concerned"`) | emotion |
 | **PLAYFUL** | Boredom nudge — no interaction for `BOREDOM_NUDGE_SECONDS` (40 s) while waiting for an answer with the screen on; a brief wink, then back to LISTENING | emotion |
 | **SLEEPY** | Break time (`faceStatus("break")`); also the calm "waiting to be set up" face on an **unpaired** device | both |
-| **OOPS** | Technical error — WiFi lost, Firebase auth failed, or a cloud/turn error (`faceStatus("error")`) | deviceState |
+| **OOPS** | Technical error — WiFi lost, Firebase auth failed, or a network hiccup mid-answer (`faceStatus("error")` at boot; `faceEmotion("oops")` on a failed turn upload) | both |
 
 Animation/duration details (blink cadence, cross-fades, per-state motion) are as
 in the original design doc; the firmware keeps the ~30 fps partial-update render
@@ -77,7 +86,10 @@ and slow, non-strobing motion for child safety.
 
 ## 4. Emotion mapping (backend → face)
 
-`pipEmotionFor()` in the firmware:
+This table is **narrower than §3**: it only covers the **single feedback face
+shown after each answer**. The cloud returns an `emotion` word for the turn, and
+`pipEmotionFor()` in the firmware translates it to one of the five feedback
+faces:
 
 | Backend `emotion` | Face shown |
 |---|---|
@@ -89,9 +101,11 @@ and slow, non-strobing motion for child safety.
 | `concerned` | CONCERNED |
 | *(anything else)* | ENCOURAGING (safe default) |
 
-The backend emits `happy`, `proud`, `celebrating`, `encouraging`, or `concerned`
-for a turn (`deterministicFeedback` + the LLM emotion whitelist), so those five
-are the reachable feedback faces.
+So §3 is the full picture (all 12 faces, all triggers); §4 zooms in on just the
+after-answer feedback face and how the cloud's word maps to it. The other
+faces — IDLE, SPEAKING, LISTENING, THINKING, SLEEPY, OOPS — are set directly by
+the firmware (the `faceStatus`/`faceEmotion` calls in §3), **not** through this
+mapping.
 
 ---
 

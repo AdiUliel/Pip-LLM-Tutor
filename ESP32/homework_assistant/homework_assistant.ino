@@ -779,7 +779,7 @@ void repromptAfterMiss() {
 // Speak a short fixed phrase (SD-cached, so it's instant) so at least the
 // child knows something went wrong and to try again.
 void repromptAfterNetworkError() {
-  faceEmotion("encouraging");
+  faceEmotion("oops");   // network hiccup → the OOPS error face (matches the spoken "אופס")
   speakTextCached("אופס, הייתה בעיית תקשורת. בוא ננסה שוב.");
   backToListening();
 }
