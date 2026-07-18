@@ -120,3 +120,6 @@ A few states do double duty by design:
 ---
 
 _For a print-ready copy, open this file in any Markdown viewer and export to PDF._
+
+_See also [`pip_face_states.html`](pip_face_states.html) — a standalone interactive
+page showing all 12 face states animated as vectors._

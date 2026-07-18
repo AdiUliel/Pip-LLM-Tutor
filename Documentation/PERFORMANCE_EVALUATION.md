@@ -55,6 +55,25 @@ Phase 0 → Phase 1 → Phase 2) so the effect of each change is isolated.
 turn). Network round-trips per turn dropped **5 → 1**; inline-audio decode dropped
 from a **2.6–3.8 s** URL download to **2–4 ms**.
 
+### Where the baseline 14.8 s went (measured, per stage)
+
+The original MP3-URL baseline, broken down by stage on three real turns (device
+`[lat]` timers) — this is what the optimisation had to remove:
+
+| Stage | Turn 1 "milk" (correct, no LLM) | Turn 2 "SCH" (wrong, LLM) | Turn 3 "Joshua" (wrong, LLM) | Doc estimate |
+|---|---|---|---|---|
+| B — STT | 4.02 s | 2.83 s | 3.29 s | 1.5–3.0 s |
+| C — post write | 2.27 s | 2.25 s | 2.08 s | 0.4–0.8 s |
+| D+E+F — trigger + compute + poll | 2.27 s | 4.64 s | 4.40 s | 1.8–4.8 s |
+| G — audio download + decode | 2.60 s | 3.04 s | 3.75 s | 0.7–1.2 s |
+| Gap (2 unmeasured device-state writes) | ~3.65 s | ~4.20 s | ~5.50 s | not in doc |
+| **RECORD → FIRST SOUND** | **14.8 s** | **17.0 s** | **19.0 s** | 5.4–9.8 s |
+
+Gap = total − the four measured stages; it's the two `firestoreWriteDeviceState`
+writes (local preprocessing is sub-100 ms). Phase 1 collapsed C+D+E+F+the writes
+into a single `processTurn` call, and Phase 2 folded STT (B) in too — which is why
+the after-figures below land near 4 s.
+
 ## 4. Results — Phase 2 measured live on hardware
 
 Three consecutive real turns (the raw `[lat]` output):
