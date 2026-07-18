@@ -23,7 +23,7 @@ have to do to deploy and run it.
         │   awaitingFirstQuestion}     │   currentQuestionAudioUrl)            │  questions, deviceState
         │                              │                                       │
         │ 3. speak question, listen    │                                       │
-        │ 4. POST learning_turn ───────┼─ sessions/{id}/exchanges/{id}         │
+        │ 4. submit learning turn ─────┼─ sessions/{id}/exchanges/{id}         │
         │      {childAnswer,pending}   │   (childAnswer)                        │
         │                              │ 5. answerQuestion grades, calls       │
         │                              │    Gemini, generates next question,   │
@@ -44,9 +44,11 @@ detail.
 **Cloud Functions (`firebase/functions/`)**
 - `setGlobalOptions({ region: "europe-west10" })` so *all* functions run in one
   region (previously only `transcribeAudio` was pinned; the rest defaulted to
-  `us-central1`).
+  `us-central1`). The functions must use the Firebase Functions v2 API for this
+  global option to apply.
 - Gemini moved to the Vertex **`global`** endpoint and the model bumped to
-  `gemini-2.5-flash` (the old `gemini-2.0-flash-001` returns 404 — discontinued).
+  `gemini-2.5-flash` (the previous `gemini-2.0-flash-001` configuration returned
+  404 in this project).
 - **TTS audio is now actually produced.** `synthesizeAndStore` is wired into both
   the learning-turn path (feedback + next question) and the free-text path, and
   the audio is uploaded *before* `status:"done"` so the polling device never sees
@@ -60,8 +62,9 @@ detail.
 - Session creation is now **rules-compliant** (`childId, deviceId, subject,
   startedAt`) — the old version sent only `deviceId` and was rejected by the
   security rules.
-- **Child auto-detect:** queries `children` where `deviceId == ` this device's
-  Firebase UID; falls back to `CHILD_ID` in `secrets.h`; else runs generic.
+- **Child auto-detect:** queries `children` where `deviceId ==` this device's
+  Firebase UID; falls back to `CHILD_ID` in `secrets.h` (the Firestore child
+  document ID, not the device UID); else runs generic.
 - **NTP clock** + ISO-8601 timestamps so Firestore timestamps and the app's
   online/heartbeat check work.
 - Writes `deviceState/{deviceId}` on every state change and every 10 s so the
@@ -87,6 +90,8 @@ detail.
 # 1. Backend (functions + Firestore + Storage rules), from firebase/
 cd firebase
 npm install --prefix functions
+firebase login
+firebase use <project-id>
 firebase deploy --only functions,firestore:rules,storage
 
 # 2. Flutter app
@@ -96,13 +101,18 @@ flutter run            # or: flutter build apk / flutter build web
 ```
 
 > If `firebase deploy` rejects `europe-west10` for the Firestore-trigger
-> functions (Eventarc availability varies by project), set `FUNCTIONS_REGION`
-> to a nearby supported region, then update `CLOUD_FUNCTIONS_REGION` in
-> `ESP32/homework_assistant/secrets.h` and `AppConstants.functionsRegion` to
-> match.
+> functions, verify that the functions use the v2 API and that the selected
+> region supports the required triggers and matches the Firestore location. If
+> another supported region is used, update the backend region configuration,
+> `CLOUD_FUNCTIONS_REGION` in `ESP32/homework_assistant/secrets.h`, and
+> `AppConstants.functionsRegion` to match. `FUNCTIONS_REGION` only has an effect
+> if the backend code reads that environment variable.
 
 Also enable in the Google Cloud console: **Vertex AI**, **Cloud
-Text-to-Speech**, **Cloud Speech-to-Text**, and **Firebase Storage**.
+Text-to-Speech**, **Cloud Speech-to-Text**, and **Firebase Storage**. Enable
+**Anonymous Authentication** in Firebase Authentication, and make sure billing
+and the runtime service-account permissions required by these services are in
+place.
 
 ## Flash the device
 
@@ -126,8 +136,10 @@ Text-to-Speech**, **Cloud Speech-to-Text**, and **Firebase Storage**.
 ## Test checklist (edge-to-edge)
 
 1. In the app, create a child and set its **deviceId** to the value the device
-   prints at boot (`Signed in anonymously. UID: …`). (Or paste that UID into
-   `CHILD_ID`/leave blank for generic.)
+   prints at boot (`Signed in anonymously. UID: …`). If auto-detection is not
+   used, set `CHILD_ID` to the Firestore child document ID — **not** to the
+   device UID. Leave `CHILD_ID` blank only when intentionally running in generic
+   mode.
 2. Power the device → it should print "first question ready", speak it, and show
    the listening face.
 3. App → Device monitor shows the device **online** with the current question.
