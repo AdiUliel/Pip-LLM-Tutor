@@ -77,10 +77,19 @@ async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
   const childId = session.childId;
   if (!childId) return null;
 
+  // Questions already asked in THIS session (+ the one being answered right now,
+  // so we never immediately re-pick it as the next question).
   const usedSnap = await db
     .collection("sessions").doc(sessionId)
     .collection("questions").get();
-  const usedPrompts = new Set(usedSnap.docs.map((d) => d.data().prompt));
+  const usedInSession = new Set(usedSnap.docs.map((d) => d.data().prompt));
+  if (session.currentQuestion) usedInSession.add(session.currentQuestion);
+
+  // Questions asked in PAST sessions too — the per-child material history, so the
+  // same uploaded question isn't repeated across sessions until the file is done.
+  const usedHistory = new Set(
+    (child && child.usedMaterialPrompts && child.usedMaterialPrompts[subject]) || []
+  );
 
   const materialsSnap = await db.collection("materials")
     .where("childId", "==", childId)
@@ -88,33 +97,45 @@ async function fetchMaterialQuestion(db, sessionId, session, child, subject) {
     .where("enabled", "==", true)
     .get();
 
-  const candidates = [];
+  // Every usable material item (difficulty null ⇒ usable at any level).
+  const all = [];
   materialsSnap.forEach((doc) => {
     (doc.data().items || []).forEach((it) => {
       const prompt = it && it.question ? String(it.question).trim() : "";
       const answer = it && it.answer ? String(it.answer).trim() : "";
-      if (prompt && answer && !usedPrompts.has(prompt)) {
-        // difficulty is absent on older materials / typed Q&A → keep null so the
-        // item is usable at any level (never excluded by the window below).
+      if (prompt && answer) {
         const d = Number(it.difficulty);
         const difficulty = Number.isFinite(d) ? clamp(d, 1, 10) : null;
-        candidates.push({ prompt, answer, topic: it.topic || subject, difficulty });
+        all.push({ prompt, answer, topic: it.topic || subject, difficulty });
       }
     });
   });
+  if (!all.length) return null;
 
+  // Exclude anything already asked (this session AND past sessions). Once every
+  // uploaded question has been asked there are no candidates → return null, so the
+  // caller falls back to GENERATED questions. We do NOT recycle the file; if the
+  // parent later uploads MORE material, those new questions aren't in the history
+  // yet and get asked before we fall back to generated again.
+  const candidates = all.filter((c) => !usedInSession.has(c.prompt) && !usedHistory.has(c.prompt));
   if (!candidates.length) return null;
 
   // Prefer uploaded questions near the child's current level, but NEVER starve the
-  // material: try ±1, then ±2, then any uploaded question — so a small homework set
-  // is still used rather than dropping through to generated questions. Items with
-  // no difficulty (null) are eligible at every level.
+  // material: try ±1, then ±2, then any candidate.
   const level = clamp(session.currentDifficulty || 1, 1, 10);
   const near = (w) =>
     candidates.filter((c) => c.difficulty == null || Math.abs(c.difficulty - level) <= w);
   const pool = near(1).length ? near(1) : near(2).length ? near(2) : candidates;
 
   const q = pool[Math.floor(Math.random() * pool.length)];
+
+  // Record this question in the per-child history so it's never asked again;
+  // once the whole file is exhausted the child moves to generated questions.
+  // Best-effort — a failed history write must not break the turn.
+  await db.collection("children").doc(childId).update({
+    [`usedMaterialPrompts.${subject}`]: FieldValue.arrayUnion(q.prompt),
+  }).catch((e) => console.warn("[material] history write failed:", e.message));
+
   return {
     subject,
     prompt: q.prompt,
