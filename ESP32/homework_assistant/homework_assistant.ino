@@ -71,34 +71,6 @@
 #define USE_PROCESS_TURN_AUDIO 1
 #endif
 
-// ── Low speaker volume (bench-testing) ────────────────────────────────────────
-// 1 = quiet the TTS at boot so you're not blasted while testing at your desk.
-//     Purely a digital-gain change on the ES8311 DAC (reg 0x32) — the audio path
-//     is otherwise identical, just softer. 0 = normal shipping loudness.
-// Tune ES8311_DAC_VOL_LOW to taste: higher hex = louder (0xBF = 0 dB unity;
-// 0xC5 ≈ +3 dB is the normal level in es8311.h).
-#ifndef SPEAKER_LOW_VOLUME
-#define SPEAKER_LOW_VOLUME 0
-#endif
-#define ES8311_DAC_VOL_LOW 0x8F   // ~-24 dB vs unity — clearly quiet but audible
-
-// ── Idle-policy bench testing ─────────────────────────────────────────────────
-// Each >0 forces that threshold to this many SECONDS, ignoring the child's minutes
-// setting AND the Firestore/app override, and enables a live idle countdown every
-// ~2 s (state, idle seconds, both thresholds) so you can watch screen-off and
-// deep-sleep fire on the bench in seconds instead of minutes. Keep deep-sleep ≥
-// screen-off, or the device sleeps before the screen ever turns off. Set both back
-// to 0 for the normal minute-based policy.
-//   SCREEN_OFF_TEST_SECONDS : seconds of no interaction → backlight off
-//   DEEP_SLEEP_TEST_SECONDS : seconds of no interaction → deep sleep ("off");
-//                             screen dark + CPU halted, wakes on the button
-#ifndef SCREEN_OFF_TEST_SECONDS
-#define SCREEN_OFF_TEST_SECONDS 0
-#endif
-#ifndef DEEP_SLEEP_TEST_SECONDS
-#define DEEP_SLEEP_TEST_SECONDS 0
-#endif
-
 // ── Boredom nudge (PLAYFUL) ──────────────────────────────────────────────────
 // While waiting for an answer with the screen still on, if this many SECONDS
 // pass with no interaction, Pip shows a brief PLAYFUL wink to re-engage the
@@ -115,28 +87,6 @@
 // sitting forever with a dead screen when the network is unavailable.
 #ifndef WIFI_CONNECT_BUDGET_SECONDS
 #define WIFI_CONNECT_BUDGET_SECONDS 300   // 5 minutes
-#endif
-
-// ── Show the pairing code on boot (re-pairing / verification) ─────────────────
-// The device only shows its "TUTOR-XXXXXX" pairing code on screen when it's
-// UNPAIRED. Once paired it boots straight into a session, so you can't read the
-// code to pair a NEW app/device. Set this to how many SECONDS to hold the code on
-// screen at EVERY boot (regardless of pairing); 0 = only show it when unpaired
-// (normal). The code is ALSO always printed to Serial at boot either way.
-#ifndef SHOW_PAIRING_CODE_SECONDS
-#define SHOW_PAIRING_CODE_SECONDS 0
-#endif
-
-// ── Demo: boot as a BRAND-NEW (unpaired) device ───────────────────────────────
-// 1 = wipe the saved Firebase identity (NVS) at boot, so the device signs up
-// fresh, gets a UID no child is linked to, and therefore runs the UNPAIRED flow:
-// it shows its "TUTOR-XXXXXX" pairing code and waits for the app to pair it —
-// exactly what a factory-new unit does. Use this to SHOWCASE app↔device pairing on
-// an already-paired device (each reboot = a fresh pairing demo). 0 = normal (keep
-// the saved identity across reboots). Turn OFF after the demo, or the device needs
-// re-pairing on every boot.
-#ifndef DEMO_FRESH_DEVICE
-#define DEMO_FRESH_DEVICE 0
 #endif
 
 // ── State machine ─────────────────────────────────────────────────────────────
@@ -629,14 +579,6 @@ void setup() {
   // ES8311 codec via I2C.
   if (!initES8311()) Serial.println("⚠️  ES8311 init failed. Audio may not work.");
 
-  // Low-volume bench-testing mode: quiet the TTS so you're not blasted at your
-  // desk. Compile-time toggle (SPEAKER_LOW_VOLUME) — see the top of this file.
-#if SPEAKER_LOW_VOLUME
-  es8311SetDacVolume(ES8311_DAC_VOL_LOW);
-  Serial.printf("[Audio] LOW-VOLUME test mode: DAC vol = 0x%02X (normal 0x%02X)\n",
-                ES8311_DAC_VOL_LOW, ES8311_DAC_VOL_DEFAULT);
-#endif
-
   // Network + time + auth.
   connectWiFi();
   syncClock();
@@ -645,12 +587,6 @@ void setup() {
   // a `children.deviceId` paired via the Flutter app keeps matching across
   // device reboots. Falls back to a fresh signUp on the very first boot or if
   // the saved refresh token has been invalidated.
-#if DEMO_FRESH_DEVICE
-  // Showcase mode: forget the saved identity so this boots as a brand-new,
-  // UNPAIRED device (fresh UID → shows its pairing code → waits for the app).
-  firebaseClearCreds();
-  Serial.println("[Demo] DEMO_FRESH_DEVICE=1 — cleared saved identity; booting as a NEW unpaired device.");
-#endif
   g_idToken = firebaseBootAuth();
   if (g_idToken.isEmpty()) {
     Serial.println("❌ Firebase auth failed. Check FIREBASE_WEB_API_KEY in secrets.h");
@@ -661,15 +597,6 @@ void setup() {
   // Publish the user-visible pairing code → this device's UID so the parent app
   // can pair against the right Firebase identity. Cheap (one PATCH) and idempotent.
   firestoreWritePairingCode();
-
-  // Always surface this device's pairing code on boot so you can read it even when
-  // the device is already paired (it otherwise only appears on screen when
-  // unpaired). Enter this in the app to pair a new device/app.
-  Serial.println("[Pairing] Device code: " + devicePairingDocId() + "  — enter this in the app to pair.");
-#if SHOW_PAIRING_CODE_SECONDS
-  showPairingCode();   // put TUTOR-XXXXXX on the screen…
-  delay((uint32_t)SHOW_PAIRING_CODE_SECONDS * 1000UL);   // …long enough to read + pair
-#endif
 
   // Prefetch the FIXED phrases (boot + reprompts) into the SD cache so their first
   // use is an instant hit, not a ~2–3 s synth. Strings here MUST match the ones
@@ -1091,31 +1018,10 @@ void enterDeepSleep() {
 
 // Called each idle loop: enforce the screen-off, then the deep-sleep, threshold.
 void checkIdlePolicy() {
-  // Screen-off / deep-sleep thresholds in ms. Normally from the child's settings
+  // Screen-off / deep-sleep thresholds in ms, from the child's settings
   // (g_screenOffMinutes / g_deviceSleepMinutes, read from Firestore at boot).
-  // SCREEN_OFF_TEST_SECONDS / DEEP_SLEEP_TEST_SECONDS force short, override-proof
-  // values for bench testing (see the top of this file).
-#if SCREEN_OFF_TEST_SECONDS
-  uint32_t screenOffMs = (uint32_t)SCREEN_OFF_TEST_SECONDS * 1000UL;
-#else
   uint32_t screenOffMs = (uint32_t)g_screenOffMinutes * 60000UL;
-#endif
-#if DEEP_SLEEP_TEST_SECONDS
-  uint32_t sleepMs = (uint32_t)DEEP_SLEEP_TEST_SECONDS * 1000UL;
-#else
   uint32_t sleepMs = (uint32_t)g_deviceSleepMinutes * 60000UL;
-#endif
-
-#if SCREEN_OFF_TEST_SECONDS || DEEP_SLEEP_TEST_SECONDS
-  static uint32_t _idleDbgMs = 0;
-  if (millis() - _idleDbgMs > 2000) {
-    _idleDbgMs = millis();
-    Serial.printf("[Idle] state=%d  idle=%lus  off=%lus  sleep=%lus  screenOff=%d\n",
-                  (int)state, (unsigned long)((millis() - g_lastInteractionMs) / 1000UL),
-                  (unsigned long)(screenOffMs / 1000UL),
-                  (unsigned long)(sleepMs / 1000UL), g_screenOff ? 1 : 0);
-  }
-#endif
 
   if (state != IDLE) return;
   uint32_t idleMs = millis() - g_lastInteractionMs;

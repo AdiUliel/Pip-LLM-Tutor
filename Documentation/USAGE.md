@@ -74,6 +74,5 @@ All app errors are shown in Hebrew, in-context:
   ~−3.4 dBFS; see `MIC_TARGET_PEAK` / `MIC_MAX_GAIN` in
   [Parameters](../Parameters/README.md)).
 - **Speaker volume** — fixed at compile time (`es8311.h` DAC volume register,
-  default ~+3 dB). For quiet bench testing set `SPEAKER_LOW_VOLUME 1` and
-  re-flash.
+  default ~+3 dB).
 - **Touch screen** — the FT6336G is capacitive and needs no calibration.

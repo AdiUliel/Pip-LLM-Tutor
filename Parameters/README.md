@@ -31,18 +31,12 @@ They live in four files under `ESP32/homework_assistant/`:
 | `CHILD_ID` | `""` | Fallback child profile id if no child has this device's UID; `""` = generic session |
 | `NTP_SERVER` | `"pool.ntp.org"` | Time server (needed for Firestore timestamps + heartbeat freshness) |
 
-## 2. Feature flags & testing switches — `homework_assistant.ino`
+## 2. Feature flags — `homework_assistant.ino`
 
 | Parameter | Default | Description |
 |---|---|---|
 | `USE_PROCESS_TURN` | `1` | `1` = one synchronous `processTurn` cloud call per turn (grade+LLM+TTS inline). `0` = legacy post-and-poll path (A/B fallback) |
 | `USE_PROCESS_TURN_AUDIO` | `1` | `1` = upload raw PCM to `processTurn`; server runs STT (one round-trip, −33% bytes). `0` = transcribe on-device first. Requires `USE_PROCESS_TURN` |
-| `SPEAKER_LOW_VOLUME` | `0` | `1` = quiet bench-testing volume (digital DAC gain only). `0` = normal loudness |
-| `ES8311_DAC_VOL_LOW` | `0x8F` | DAC volume register used when `SPEAKER_LOW_VOLUME=1` (~−24 dB vs unity) |
-| `SCREEN_OFF_TEST_SECONDS` | `0` | >0 forces backlight-off after this many **seconds** (bench testing); `0` = use the child's minutes policy from the app |
-| `DEEP_SLEEP_TEST_SECONDS` | `0` | >0 forces deep-sleep after this many **seconds** (bench testing); `0` = minutes policy. Keep ≥ screen-off |
-| `SHOW_PAIRING_CODE_SECONDS` | `0` | >0 holds the `TUTOR-XXXXXX` pairing code on screen this long at **every** boot; `0` = only when unpaired |
-| `DEMO_FRESH_DEVICE` | `0` | `1` = wipe saved identity each boot → device behaves factory-new (pairing demo). Turn off after demos |
 | `BOREDOM_NUDGE_SECONDS` | `40` | Seconds of no interaction (screen on, waiting for an answer) before Pip shows a brief PLAYFUL wink to re-engage the child; `0` disables. Visual only, once per idle stretch |
 | `HEARTBEAT_MS` | `10000` | Device→app heartbeat interval (ms); the app's online timeout is 30 s |
 | `MIC_TARGET_PEAK` | `22000` | Auto-gain target peak for mic capture (~−3.4 dBFS) |
