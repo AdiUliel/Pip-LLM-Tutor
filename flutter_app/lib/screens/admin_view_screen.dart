@@ -6,6 +6,7 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
+import '../providers/auth_provider.dart';
 import '../providers/child_provider.dart';
 import '../providers/config_provider.dart';
 import '../providers/device_provider.dart';
@@ -119,18 +120,15 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
   Future<void> _resetAll() async {
     final config = context.read<ConfigProvider>();
     final fb = context.read<FirebaseService>();
-    final child = context.read<ChildProvider>().child;
-    final deviceId = child?.deviceId ?? '';
+    final parentId = context.read<AuthProvider>().user?.uid;
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('איפוס לברירות מחדל?'),
-        content: Text(
-          deviceId.isEmpty
-              ? 'ההגדרות יחזרו לברירת המחדל.'
-              : 'ההגדרות יחזרו לברירת המחדל, וההתקן ינותק מכל הילדים ויחזור '
-                  'למצב חיבור (pairing). תצטרכו לשייך אותו מחדש דרך האפליקציה.',
+        content: const Text(
+          'ההגדרות יחזרו לברירת המחדל, וההתקן ינותק מכל הילדים ויחזור '
+          'למצב חיבור (pairing). תצטרכו לשייך אותו מחדש דרך האפליקציה.',
           textAlign: TextAlign.right,
         ),
         actions: [
@@ -149,13 +147,14 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
     if (ok != true || !mounted) return;
 
     await config.resetToDefaults();
-    // Unlink the device from every sibling that shares it → the device resolves
-    // no linked child next boot and shows its pairing code again.
-    if (deviceId.isNotEmpty && child != null) {
-      final kids = await fb.watchChildrenOfParent(child.parentId).first;
+    // Unpair the device from EVERY child of this parent (not just the active
+    // one) → the device resolves no linked child next boot and returns to
+    // pairing, whichever child was selected in the app.
+    if (parentId != null) {
+      final kids = await fb.watchChildrenOfParent(parentId).first;
       await Future.wait([
         for (final c in kids)
-          if (c.deviceId == deviceId) fb.saveChild(c.copyWith(deviceId: '')),
+          if (c.deviceId.isNotEmpty) fb.saveChild(c.copyWith(deviceId: '')),
       ]);
     }
     if (!mounted) return;
