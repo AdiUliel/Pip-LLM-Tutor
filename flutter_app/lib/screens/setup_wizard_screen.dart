@@ -9,6 +9,7 @@ import '../constants.dart';
 import '../models/child.dart';
 import '../providers/auth_provider.dart';
 import '../providers/child_provider.dart';
+import '../services/firebase_service.dart';
 import '../theme.dart';
 import '../widgets/dev_chip.dart';
 import '../widgets/gender_picker.dart';
@@ -40,7 +41,33 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   };
 
   String? _deviceId;
+  List<Child> _pairedSiblings = const [];
   bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadPairedSiblings());
+  }
+
+  // Load the parent's already-paired children so the connect step can offer
+  // "use [sibling]'s device" instead of pairing a fresh one — siblings may share
+  // one device (see enforceDeviceUniqueness). Deduped by deviceId.
+  Future<void> _loadPairedSiblings() async {
+    final parentId = context.read<AuthProvider>().user?.uid;
+    if (parentId == null) return;
+    final kids = await context
+        .read<FirebaseService>()
+        .watchChildrenOfParent(parentId)
+        .first;
+    if (!mounted) return;
+    final seen = <String>{};
+    final withDevice = <Child>[
+      for (final c in kids)
+        if (c.deviceId.isNotEmpty && seen.add(c.deviceId)) c,
+    ];
+    setState(() => _pairedSiblings = withDevice);
+  }
 
   @override
   void dispose() {
@@ -247,6 +274,28 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
               ],
             ),
           ),
+          if (_pairedSiblings.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text('או השתמשו במכשיר שכבר חיברתם',
+                style: AppTextStyles.label(context)),
+            const SizedBox(height: 8),
+            for (final s in _pairedSiblings)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.sky,
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                  icon: const Icon(Icons.devices_other, size: 18),
+                  label: Text('המכשיר של ${s.name}'),
+                  onPressed: () => setState(() {
+                    _deviceId = s.deviceId;
+                    _connected = true;
+                  }),
+                ),
+              ),
+          ],
         ],
       ),
     );

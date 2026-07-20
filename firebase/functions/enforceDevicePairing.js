@@ -1,5 +1,5 @@
 /**
- * enforceDeviceUniqueness — one device ↔ one child.
+ * enforceDeviceUniqueness — one device ↔ one PARENT (siblings may share it).
  *
  * A physical ESP32 has a STABLE anonymous UID and a MAC-derived pairing code,
  * and resolves "its" child on the device with:
@@ -13,10 +13,11 @@
  * also has no parentId filter, so a device re-paired across accounts matches
  * children from both.
  *
- * This trigger makes the newest pairing win: whenever a child's deviceId becomes
- * a (new) non-empty value, it clears that same deviceId from every OTHER child —
- * across all parents — so exactly one child owns the device. The device picks up
- * the correct child on its next resolve (session end → ESP.restart → re-resolve).
+ * This trigger keeps a device within ONE parent account: whenever a child's
+ * deviceId becomes a (new) non-empty value, it clears that deviceId from every
+ * OTHER-PARENT child (cross-account safety). Siblings under the SAME parent may
+ * share the device — they're told apart per session by the voice identify flow
+ * (matchChildByName → session.childId), so they're intentionally NOT unlinked.
  */
 
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
@@ -44,7 +45,13 @@ exports.enforceDeviceUniqueness = onDocumentWritten(
       .where("deviceId", "==", deviceId)
       .get();
 
-    const stale = dupes.docs.filter((d) => d.id !== thisId);
+    // Siblings (same parent) may SHARE one device — the device tells them apart
+    // per session via the voice identify flow (matchChildByName → session.childId).
+    // So unlink only children of OTHER parents (keeps cross-account safety).
+    const thisParentId = after.parentId;
+    const stale = dupes.docs.filter(
+      (d) => d.id !== thisId && d.data().parentId !== thisParentId
+    );
     if (stale.length === 0) return;
 
     // Clear the link on every other child that still claims this device.
