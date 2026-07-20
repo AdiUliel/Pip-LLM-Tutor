@@ -58,6 +58,11 @@ static long   g_turnSeq      = 0;
 // wakes on the push-to-talk button. Defaults match AppConstants in the app.
 static int g_screenOffMinutes   = 15;
 static int g_deviceSleepMinutes = 50;
+// Child's per-subject starting level (difficulty), cached in
+// firestoreResolveChildId for the session-start log. 0 = not set yet (the
+// backend applies an age/settings default until the child has done ≥1 turn).
+static int g_childLevelMath    = 0;
+static int g_childLevelEnglish = 0;
 
 // Shared SSL client — setInsecure() skips cert verification (fine for IoT prototypes)
 static WiFiClientSecure _sslClient;
@@ -300,6 +305,17 @@ String firestoreResolveChildId() {
       }
       Serial.printf("[Firestore] idle policy: screen-off %d min, sleep %d min\n",
                     g_screenOffMinutes, g_deviceSleepMinutes);
+
+      // Cache the child's per-subject level (starting difficulty) for the
+      // session-start log. The whole child doc is already in this response, so
+      // no extra request. Absent until the child has done ≥1 turn.
+      JsonVariant lv = resp[0]["document"]["fields"]["level"]["mapValue"]["fields"];
+      if (!lv.isNull()) {
+        String lm = lv["math"]["integerValue"].as<String>();
+        String le = lv["english"]["integerValue"].as<String>();
+        if (lm.length()) g_childLevelMath    = lm.toInt();
+        if (le.length()) g_childLevelEnglish = le.toInt();
+      }
       return childId;
     }
   } else {
@@ -317,6 +333,51 @@ String firestoreResolveChildId() {
   // 3. none
   Serial.println("[Firestore] No child profile — generic session.");
   return "";
+}
+
+// ── Re-read a specific child's profile (idle policy + level) by document id ───
+// Used AFTER the voice identify picks the child, so the cached settings/level
+// reflect the child actually in front of the device — not the arbitrary sibling
+// that firestoreResolveChildId's limit-1 query may return when two siblings
+// share one device. Cheap single GET; best-effort (leaves globals as-is on error).
+void firestoreReadChildProfile(const String& childId) {
+  if (childId.isEmpty()) return;
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/children/";
+  url += childId;
+
+  _initSSL();
+  HTTPClient http;
+  http.begin(_sslClient, url);
+  http.addHeader("Authorization", "Bearer " + g_idToken);
+  int code = http.GET();
+  if (code != 200) {
+    Serial.printf("[Firestore] readChildProfile HTTP %d\n", code);
+    http.end();
+    return;
+  }
+  JsonDocument resp;
+  deserializeJson(resp, http.getString());
+  http.end();
+
+  JsonVariant sf = resp["fields"]["settings"]["mapValue"]["fields"];
+  if (!sf.isNull()) {
+    String so = sf["screenOffMinutes"]["integerValue"].as<String>();
+    String ds = sf["deviceSleepMinutes"]["integerValue"].as<String>();
+    if (so.length() && so.toInt() > 0) g_screenOffMinutes   = so.toInt();
+    if (ds.length() && ds.toInt() > 0) g_deviceSleepMinutes = ds.toInt();
+  }
+  JsonVariant lv = resp["fields"]["level"]["mapValue"]["fields"];
+  if (!lv.isNull()) {
+    String lm = lv["math"]["integerValue"].as<String>();
+    String le = lv["english"]["integerValue"].as<String>();
+    if (lm.length()) g_childLevelMath    = lm.toInt();
+    if (le.length()) g_childLevelEnglish = le.toInt();
+  }
+  Serial.printf("[Firestore] refreshed profile for %s: idle %d/%d min, level math %d / english %d\n",
+                childId.c_str(), g_screenOffMinutes, g_deviceSleepMinutes,
+                g_childLevelMath, g_childLevelEnglish);
 }
 
 // ── Create a rules-compliant session document ────────────────────────────────

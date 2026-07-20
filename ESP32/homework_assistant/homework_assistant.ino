@@ -743,6 +743,21 @@ void setup() {
     }
   }
 
+  // Now that identify has picked the actual child (g_childId), refresh THAT
+  // child's idle policy + level — the limit-1 resolve above may have cached a
+  // sibling's values when two siblings share this device.
+  if (useIdentifyFlow) firestoreReadChildProfile(g_childId);
+
+  // Log the child's starting level for the chosen subject (per-subject; cached
+  // from the child doc in firestoreResolveChildId). Confirms on the wire that the
+  // session resumes from the saved level and not a reset.
+  {
+    int startLevel = (g_currentSubject == "math") ? g_childLevelMath : g_childLevelEnglish;
+    if (startLevel > 0)
+      Serial.printf("[Session] child starting level (%s): %d\n", g_currentSubject.c_str(), startLevel);
+    else
+      Serial.printf("[Session] child starting level (%s): not set — backend default\n", g_currentSubject.c_str());
+  }
   askCurrentQuestion(firstAudio);
   noteInteraction();  // start the idle timers from the first question
 }
