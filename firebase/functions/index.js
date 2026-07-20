@@ -380,19 +380,29 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
   const transcript = String(data.childNameTranscript || data.childAnswer || "").trim();
   let matched = matchChildByName(children, transcript);
 
-  // Renamed / mis-heard name recovery: this device is paired to one child
-  // (child.deviceId == the device UID). If the spoken name matches nobody, use
-  // that linked child (or the parent's only child) instead of looping "מי אתה?"
-  // forever — a common trap when a parent renames the child after pairing, or
-  // when STT mishears an unusual name.
-  if (!matched) {
+  // Count consecutive unmatched name attempts on THIS session.
+  const attempts = (Number(session.identifyNameAttempts) || 0) + (matched ? 0 : 1);
+
+  // Renamed / mis-heard name recovery — but ONLY after a few failed tries, so an
+  // unrecognised name first RE-ASKS (the expected behaviour) instead of silently
+  // adopting a child. Never auto-picks when >1 child is linked to the device:
+  // guessing between siblings would attribute the whole session to the wrong kid.
+  // (Previously it fell back on the FIRST miss → a wrong name jumped straight to
+  // "math or english?" without ever re-asking.)
+  const FALLBACK_AFTER = 3;
+  if (!matched && attempts >= FALLBACK_AFTER) {
     const linked = session.deviceId ? children.filter((c) => c.deviceId === session.deviceId) : [];
     if (linked.length === 1) matched = linked[0];
     else if (children.length === 1) matched = children[0];
     if (matched) {
-      console.log(`[identify] name "${transcript}" unmatched — fell back to linked child ${matched.id}`);
+      console.log(`[identify] name "${transcript}" unmatched after ${attempts} tries — fell back to child ${matched.id}`);
     }
   }
+  // Persist the running count (reset to 0 once we have a match).
+  await sessionRef.set(
+    { identifyNameAttempts: matched ? 0 : attempts },
+    { merge: true }
+  );
 
   let promptText;
   if (matched) {
