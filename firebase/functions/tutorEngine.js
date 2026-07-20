@@ -57,7 +57,9 @@ const SYSTEM_PROMPT = `אתה פיפ — מורה רובוט חם ומעודד �
 
 // ── Exit-intent detection ─────────────────────────────────────────────────────
 const EXIT_PHRASES = [
-  "לסיים", "רוצה לסיים", "נגמרנו", "נגמר", "סיום", "להפסיק",
+  // "סיים" (final ם) covers לסיים / נסיים / "בוא נסיים"; "סיימ" (regular מ)
+  // covers the mid-word forms סיימתי / מסיימים. "עצור" covers עצור / לעצור.
+  "סיים", "סיימ", "רוצה לסיים", "נגמרנו", "נגמר", "סיום", "להפסיק", "עצור",
   "עייף", "עייפה", "לא רוצה", "stop", "finish", "bye", "done", "quit",
 ];
 
@@ -467,19 +469,48 @@ async function processLearningTurn({
 
   // ── Continue-prompt response ──────────────────────────────────────────────────
   // When the previous turn injected "רוצה להמשיך?" as the next question and set
-  // askToContinue:true, the child's response arrives here. "לא" / exit phrases →
-  // end session; anything else (including "כן") → clear flag and continue normally.
+  // askToContinue:true, the child's response arrives here. Three-way:
+  //   explicit NO / exit intent → end the session;
+  //   explicit YES             → clear the flag, continue normally;
+  //   anything else            → RE-ASK and KEEP the flag.
+  // The old code treated any non-"לא" as yes and CLEARED the flag — so a
+  // mis-heard reply ("בוא נסיים") silently armed normal grading, and the
+  // child's follow-up "לא" was graded as a (wrong) answer instead of ending.
   if (session.askToContinue === true) {
-    const wantsToStop = detectExitIntent(childAnswer) ||
-      /(^|\s)לא(\s|$)/.test(childAnswer) || /\bno\b/i.test(childAnswer);
-    if (wantsToStop) {
+    const t = String(childAnswer || "").toLowerCase().replace(/[.,!?;:]/g, " ").trim();
+    const saidNo = detectExitIntent(t) ||
+      /(^|\s)לא(\s|$)/.test(t) || /(^|\s)no(\s|$)/.test(t);
+    const saidYes =
+      /(^|\s)(כן|בטח|כמובן|יאללה|אוקיי|אוקי|טוב|בסדר|עוד|ממשיכים|להמשיך|נמשיך|yes|ok|okay|sure)(\s|$)/.test(t);
+    if (saidNo) {
       const childName = child?.name || "";
       const farewellText = childName
         ? `בסדר, מסיימים כאן. כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
         : `בסדר, מסיימים כאן. כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
       return endSession(farewellText, "declined_continue");
     }
-    // Child said "כן" — clear the flag and fall through to normal processing
+    if (!saidYes) {
+      // Unclear reply — repeat the yes/no question, flag stays armed so the
+      // next "לא" actually ends the session. turnSeq unchanged (no advance).
+      const q = "לא הבנתי. רוצה להמשיך לתרגל עוד קצת? תגיד כן או לא.";
+      const audioUrl = synthesize ? await synthesize(q, `${exchangeId}_reask`) : "";
+      await exchangeRef.set(
+        { status: "done", spokenFeedback: q, audioData: audioUrl, emotion: "encouraging", answeredAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      return {
+        isCorrect: false,
+        spokenFeedback: q,
+        nextQuestion: session.currentQuestion || q,
+        expectedAnswer: session.currentExpectedAnswer || "",
+        emotion: "encouraging",
+        shouldTakeBreak: false,
+        difficulty: session.currentDifficulty || 1,
+        turnSeq: Number(session.turnSeq) || 1,
+        audioData: audioUrl,
+      };
+    }
+    // Explicit yes — clear the flag and fall through to normal processing
     // (we'll re-generate the next question as if it were a normal correct turn).
     await sessionRef.set({ askToContinue: false }, { merge: true });
   }
