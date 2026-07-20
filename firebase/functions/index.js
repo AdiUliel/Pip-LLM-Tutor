@@ -382,7 +382,7 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
       { merge: true }
     );
   } else {
-    promptText = `לא הבנתי את השם. חזור שוב על השם שלך.`;
+    promptText = `לא הבנתי את השם. חזור שוב על שמך.`;
   }
 
   const audioUrl = await safeSynthesize(promptText, `${exchangeId}_identify`);
