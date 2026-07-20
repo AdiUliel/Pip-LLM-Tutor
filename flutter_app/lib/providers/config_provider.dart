@@ -1,5 +1,7 @@
 // ConfigProvider — app-wide settings persisted to shared_preferences.
 
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -58,6 +60,33 @@ class ConfigProvider extends ChangeNotifier {
     await _prefs.remove(_kBreakMin);
     await _prefs.remove(_kDailyLimitMin);
     await _prefs.remove(_kNotifEnabled);
+    notifyListeners();
+  }
+
+  // ── Alert dismissal ────────────────────────────────────────────────────────
+  // Alerts are DERIVED live (utils/notifications.dart), so without this they
+  // could never be cleared. Persist dismissed (alertId → occurrence
+  // fingerprint): the alert stays hidden while the same occurrence persists,
+  // and a NEW occurrence (different fingerprint) alerts again.
+  static const _kDismissedAlerts = 'config.dismissedAlerts';
+
+  Map<String, String> get _dismissedAlerts {
+    final raw = _prefs.getString(_kDismissedAlerts);
+    if (raw == null || raw.isEmpty) return const {};
+    try {
+      return Map<String, String>.from(json.decode(raw) as Map);
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  bool isAlertDismissed(String id, String fingerprint) =>
+      _dismissedAlerts[id] == fingerprint;
+
+  Future<void> dismissAlert(String id, String fingerprint) async {
+    final map = Map<String, String>.from(_dismissedAlerts);
+    map[id] = fingerprint;
+    await _prefs.setString(_kDismissedAlerts, json.encode(map));
     notifyListeners();
   }
 }

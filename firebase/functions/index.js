@@ -178,13 +178,16 @@ async function getAccessToken() {
 // nothing was recognised). Shared by the transcribeAudio Cloud Function (device
 // sends base64 JSON) and processTurn's Phase-2 audio path (device sends raw PCM in
 // the body, which we base64 here for Google). Throws on a non-OK STT response.
-async function recognizeSpeech(audioBase64, languageCode = "he-IL", phraseHints = []) {
+async function recognizeSpeech(audioBase64, languageCode = "he-IL", phraseHints = [], model = "command_and_search") {
   const accessToken = await getAccessToken();
   const config = {
     encoding:        "LINEAR16",
     sampleRateHertz: 16000,
     languageCode,
-    model:           "default",
+    // command_and_search is tuned for SHORT utterances (one-word answers,
+    // names, כן/לא) — measurably faster and more accurate for our clips than
+    // "default". Falls back to "default" below if the API rejects it.
+    model,
   };
   // English lessons ask the question in Hebrew ("איך אומרים כלב באנגלית?"), so
   // children often answer in Hebrew ("כלב", "לא יודע") instead of the English word.
@@ -217,6 +220,12 @@ async function recognizeSpeech(audioBase64, languageCode = "he-IL", phraseHints 
   );
   if (!sttRes.ok) {
     const errText = await sttRes.text();
+    // If the fast short-utterance model is rejected (language/model combo),
+    // retry once with the universally-supported default model.
+    if (model !== "default") {
+      console.warn(`[STT] model=${model} failed (${sttRes.status}) — retrying with default: ${errText.slice(0, 200)}`);
+      return recognizeSpeech(audioBase64, languageCode, phraseHints, "default");
+    }
     throw new Error(`STT HTTP ${sttRes.status}: ${errText}`);
   }
   const sttData = await sttRes.json();
@@ -835,6 +844,7 @@ exports.processTurn = onRequest(
 
     // ── Resolve the child's answer: text (JSON body) or audio (raw PCM body) ──
     let sessionId, childAnswer;
+    let sttMs = 0, pcmBytes = 0;   // per-stage latency breakdown (logged below)
     if (req.query.fmt === "pcm16") {
       // Phase 2: raw PCM in the body; transcribe here.
       sessionId = String(req.query.sessionId || "");
@@ -854,20 +864,28 @@ exports.processTurn = onRequest(
         if (sSnap.exists) {
           const s = sSnap.data();
           if (s.subject === "english") sttLang = "en-US";
-          const exp = String(s.currentExpectedAnswer || "").trim();
-          if (exp && !/^\d+$/.test(exp)) sttHints.push(exp);   // words, not digits
-          if (s.askToContinue === true) sttHints.push("כן", "לא");
+          if (s.askToContinue === true) {
+            // A yes/no is expected — hinting the pending question's answer
+            // here would bias STT toward a word the child isn't saying.
+            sttHints.push("כן", "לא");
+          } else {
+            const exp = String(s.currentExpectedAnswer || "").trim();
+            if (exp && !/^\d+$/.test(exp)) sttHints.push(exp); // words, not digits
+          }
         }
       } catch (e) {
         console.warn("[processTurn] pre-STT session read failed:", e.message);
       }
       let transcript;
+      const tStt = Date.now();
+      pcmBytes = pcm.length;
       try {
         transcript = await recognizeSpeech(pcm.toString("base64"), sttLang, sttHints);
       } catch (err) {
         console.error("[processTurn] STT failed:", err);
         return res.status(502).json({ error: "STT failed" });
       }
+      sttMs = Date.now() - tStt;
       transcript = String(transcript || "").trim();
       if (!transcript) {
         // No speech recognised — let the device reprompt locally (SD-cached, instant)
@@ -912,6 +930,7 @@ exports.processTurn = onRequest(
         return r.url;   // "" — audioData isn't used on the processTurn path
       };
 
+      const tTurn = Date.now();
       const result = await processLearningTurn({
         db,
         ai,
@@ -924,6 +943,12 @@ exports.processTurn = onRequest(
         // Which question the device thinks it's answering (stale-answer guard).
         deviceSeq: req.query.seq ?? (req.body && req.body.seq),
       });
+      // Per-stage breakdown → Cloud logs, so we can see WHERE a slow turn went
+      // (upload+STT vs grade+Gemini+TTS) without touching the firmware.
+      console.log(
+        `[lat] session=${sessionId} stt=${sttMs}ms turn=${Date.now() - tTurn}ms ` +
+        `pcm=${pcmBytes}B llm=${result?.llmUsed ? 1 : 0} correct=${result?.isCorrect ? 1 : 0}`
+      );
 
       // Notify the parent immediately on explicit session end (same as the trigger).
       if (result?.sessionEnded) {

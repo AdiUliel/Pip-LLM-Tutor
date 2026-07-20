@@ -1,5 +1,9 @@
 // Derives a list of user-visible alerts from the live providers. Pure
-// computation — no I/O, no state.
+// computation — no I/O, no state. Dismissal: alerts carry a `fingerprint`
+// identifying the specific OCCURRENCE; ConfigProvider persists dismissed
+// (id → fingerprint) pairs, and buildAlerts filters those out — so a dismissed
+// alert stays hidden while the same occurrence persists, but a NEW occurrence
+// (a new bad session, the device going offline again) re-alerts.
 
 import 'package:flutter/material.dart';
 
@@ -16,12 +20,18 @@ class AppAlert {
   final String sub;
   final IconData icon;
   final AlertSeverity severity;
+
+  /// Identifies THIS occurrence of the alert (offline episode's last-heartbeat
+  /// stamp, the session id) — the unit of dismissal.
+  final String fingerprint;
+
   const AppAlert({
     required this.id,
     required this.title,
     required this.sub,
     required this.icon,
     required this.severity,
+    this.fingerprint = '',
   });
 
   Color get color {
@@ -55,15 +65,19 @@ List<AppAlert> buildAlerts({
   final list = <AppAlert>[];
 
   // Device went offline — only flag once we've heard from it at least once.
+  // Fingerprint = the heartbeat the episode "died" on, so waking the device
+  // and losing it again produces a fresh, dismissable-anew alert.
   if (device.state != null &&
       device.state!.lastHeartbeat != null &&
       !device.isOnline) {
-    list.add(const AppAlert(
+    list.add(AppAlert(
       id: 'device.offline',
       title: 'המכשיר לא פעיל',
       sub: 'לא הייתה פעילות מהמכשיר זמן ממושך',
       icon: Icons.wifi_off_rounded,
       severity: AlertSeverity.error,
+      fingerprint:
+          device.state!.lastHeartbeat!.millisecondsSinceEpoch.toString(),
     ));
   }
 
@@ -76,6 +90,7 @@ List<AppAlert> buildAlerts({
         sub: '${last.moodSummary}/5 — תגובות הילד הראו תסכול',
         icon: Icons.mood_bad_rounded,
         severity: AlertSeverity.warn,
+        fingerprint: last.id,
       ));
     }
     if (last.questionsAsked > 0 && last.accuracyPct < 60) {
@@ -85,9 +100,13 @@ List<AppAlert> buildAlerts({
         sub: 'במפגש האחרון: ${last.accuracyPct}%',
         icon: Icons.trending_down_rounded,
         severity: AlertSeverity.warn,
+        fingerprint: last.id,
       ));
     }
   }
 
-  return list;
+  // Hide occurrences the parent already dismissed.
+  return list
+      .where((a) => !config.isAlertDismissed(a.id, a.fingerprint))
+      .toList();
 }

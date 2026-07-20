@@ -510,9 +510,39 @@ async function processLearningTurn({
         audioData: audioUrl,
       };
     }
-    // Explicit yes — clear the flag and fall through to normal processing
-    // (we'll re-generate the next question as if it were a normal correct turn).
-    await sessionRef.set({ askToContinue: false }, { merge: true });
+    // Explicit yes — serve the PARKED next question. Never fall through to
+    // grading: the old fall-through graded "כן" against the pending question's
+    // answer ("purple") → "wrong, want to try again?" nonsense.
+    const pendingPrompt = String(session.pendingQuestionPrompt || "").trim() ||
+      String(session.currentQuestion || "").trim();
+    const resume = `יופי, ממשיכים! ${pendingPrompt}`;
+    const resumeAudio = synthesize ? await synthesize(resume, `${exchangeId}_resume`) : "";
+    await Promise.all([
+      sessionRef.set(
+        {
+          askToContinue: false,
+          currentQuestion: pendingPrompt,           // restore the real question
+          pendingQuestionPrompt: FieldValue.delete(),
+          lastActivity: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      ),
+      exchangeRef.set(
+        { status: "done", spokenFeedback: resume, audioData: resumeAudio, emotion: "happy", answeredAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      ),
+    ]);
+    return {
+      isCorrect: true,
+      spokenFeedback: resume,
+      nextQuestion: pendingPrompt,
+      expectedAnswer: session.currentExpectedAnswer || "",
+      emotion: "happy",
+      shouldTakeBreak: false,
+      difficulty: session.currentDifficulty || 1,
+      turnSeq: Number(session.turnSeq) || 1,        // unchanged — same pending question
+      audioData: resumeAudio,
+    };
   }
 
   // ── Exit intent ─────────────────────────────────────────────────────────────
@@ -828,6 +858,11 @@ async function processLearningTurn({
         // next time-based break is measured from here.
         ...(shouldAskToContinue && {
           currentQuestion: continuePromptText,
+          // Park the NEXT question's prompt so the yes-handler can serve it —
+          // currentQuestion was just overwritten with the continue prompt, and
+          // without this the pending question's text was simply LOST (the
+          // yes-path then graded "כן" against its answer → nonsense wrongs).
+          pendingQuestionPrompt: nextQuestion.prompt,
           lastBreakAskedAtMs: Date.now(),
         }),
       },
@@ -838,12 +873,16 @@ async function processLearningTurn({
   return {
     isCorrect,
     spokenFeedback: feedback.spokenFeedback,
-    nextQuestion: nextQuestion.prompt,
+    // On a continue-prompt turn the device must DISPLAY the same thing the
+    // audio asks ("רוצה להמשיך?") — not the pending next question, which made
+    // the strip show a color question while the voice asked yes/no.
+    nextQuestion: shouldAskToContinue ? continuePromptText : nextQuestion.prompt,
     expectedAnswer: nextQuestion.expectedAnswer,
     emotion: feedback.emotion,
     shouldTakeBreak: feedback.shouldTakeBreak,
     difficulty: nextDifficulty,
     turnSeq: newTurnSeq,
+    llmUsed: needsLLM,   // for processTurn's [lat] breakdown log
   };
 }
 

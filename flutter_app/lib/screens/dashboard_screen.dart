@@ -68,7 +68,7 @@ class DashboardScreen extends StatelessWidget {
                   );
                   return _NotificationsBell(
                     count: alerts.length,
-                    onTap: () => _showAlerts(innerCtx, alerts),
+                    onTap: () => _showAlerts(innerCtx),
                   );
                 }),
               ),
@@ -187,11 +187,18 @@ class _NotificationsBell extends StatelessWidget {
   }
 }
 
-Future<void> _showAlerts(BuildContext context, List<AppAlert> alerts) async {
+Future<void> _showAlerts(BuildContext context) async {
   await showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
     builder: (sheetCtx) {
+      // Recompute INSIDE the sheet (watch) so dismissing a row removes it
+      // immediately — the sheet rebuilds when ConfigProvider notifies.
+      final alerts = buildAlerts(
+        device: sheetCtx.watch<DeviceProvider>(),
+        stats: sheetCtx.watch<StatsProvider>(),
+        config: sheetCtx.watch<ConfigProvider>(),
+      );
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
@@ -227,7 +234,12 @@ Future<void> _showAlerts(BuildContext context, List<AppAlert> alerts) async {
                 )
               else
                 for (final a in alerts) ...[
-                  _AlertRow(alert: a),
+                  _AlertRow(
+                    alert: a,
+                    onDismiss: () => sheetCtx
+                        .read<ConfigProvider>()
+                        .dismissAlert(a.id, a.fingerprint),
+                  ),
                   const SizedBox(height: 10),
                 ],
             ],
@@ -239,8 +251,9 @@ Future<void> _showAlerts(BuildContext context, List<AppAlert> alerts) async {
 }
 
 class _AlertRow extends StatelessWidget {
-  const _AlertRow({required this.alert});
+  const _AlertRow({required this.alert, this.onDismiss});
   final AppAlert alert;
+  final VoidCallback? onDismiss;
 
   @override
   Widget build(BuildContext context) {
@@ -278,6 +291,15 @@ class _AlertRow extends StatelessWidget {
               ],
             ),
           ),
+          if (onDismiss != null)
+            IconButton(
+              onPressed: onDismiss,
+              icon: const Icon(Icons.close_rounded,
+                  size: 18, color: AppColors.inkSoft),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              tooltip: 'סגירת ההתראה',
+            ),
         ],
       ),
     );
