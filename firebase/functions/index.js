@@ -418,8 +418,12 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
   const audioUrl = await safeSynthesize(promptText, `${exchangeId}_identify`);
   await exchangeRef.update({
     status: "done",
-    matchedChildId: matched?.id || null,
-    matchedChildName: matched?.name || null,
+    // "" (not null!) on no-match: the firmware parses these with ArduinoJson
+    // .as<String>(), which turns a Firestore nullValue into the LITERAL string
+    // "null" — length 4 → the name loop treated a failed match as success and
+    // jumped to the subject step. The needsPairing path above already uses "".
+    matchedChildId: matched?.id || "",
+    matchedChildName: matched?.name || "",
     promptText,
     audioData: audioUrl,
     answeredAt: FieldValue.serverTimestamp(),

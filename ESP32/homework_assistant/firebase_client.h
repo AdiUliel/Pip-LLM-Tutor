@@ -933,6 +933,11 @@ bool firestorePollForIdentifyResult(const String& sessionId,
       out.promptText        = resp["fields"]["promptText"]["stringValue"].as<String>();
       out.matchedChildName  = resp["fields"]["matchedChildName"]["stringValue"].as<String>();
       out.matchedChildId    = resp["fields"]["matchedChildId"]["stringValue"].as<String>();
+      // ArduinoJson turns a missing/null field into the LITERAL "null" string —
+      // which is length>0 and once made the name loop treat a failed match as
+      // success. The server now writes "" instead, but guard here too.
+      if (out.matchedChildId == "null")   out.matchedChildId = "";
+      if (out.matchedChildName == "null") out.matchedChildName = "";
       out.subject           = resp["fields"]["subject"]["stringValue"].as<String>();
       out.nextQuestion      = resp["fields"]["nextQuestion"]["stringValue"].as<String>();
       out.needsPairing      = resp["fields"]["needsPairing"]["booleanValue"].as<bool>();
