@@ -51,7 +51,7 @@ PipState state = IDLE;
 // Cached strip — redrawn only when text or stars change. Protected by
 // stripMux because the writer (Pip::setStrip, called from the main task)
 // and the reader (the face task) live on different threads.
-char           stripText[128] = "";   // room for a full question wrapped to 2 lines
+char           stripText[192] = "";   // room for a full question wrapped to 3 lines (Hebrew ≈ 2 B/char)
 int            stripStars   = -1;   // sentinel: forces first paint
 bool           stripDirty   = true;
 portMUX_TYPE   stripMux     = portMUX_INITIALIZER_UNLOCKED;
@@ -423,14 +423,16 @@ String bidiToVisual(const char* utf8) {
   return out;
 }
 
-// Greedy word-wrap a logical (pre-bidi) UTF-8 string into up to two lines that
-// each fit maxW pixels in the CURRENT u8f font (caller must setFont first).
+// Greedy word-wrap a logical (pre-bidi) UTF-8 string into up to THREE lines
+// that each fit maxW pixels in the CURRENT u8f font (caller must setFont first).
 // Hebrew words are ASCII-space separated, so splitting on ' ' is safe, and the
 // pixel width is order-independent (bidi only reorders glyphs) so we can measure
 // the logical text here and bidi-reorder per line at render time.
-static void wrapStripText(const String& text, int maxW, String& line1, String& line2) {
+static void wrapStripText(const String& text, int maxW,
+                          String& line1, String& line2, String& line3) {
   line1 = "";
   line2 = "";
+  line3 = "";
   String* cur = &line1;
   int i = 0, n = text.length();
   while (i < n) {
@@ -445,8 +447,11 @@ static void wrapStripText(const String& text, int maxW, String& line1, String& l
     } else if (cur == &line1) {
       cur = &line2;                                  // line 1 full → wrap to line 2
       *cur = word;
+    } else if (cur == &line2) {
+      cur = &line3;                                  // line 2 full → wrap to line 3
+      *cur = word;
     } else {
-      *cur = *cur + " " + word;                      // line 2 full too — append (clipped)
+      *cur = *cur + " " + word;                      // line 3 full too — append (clipped)
     }
   }
 }
@@ -479,27 +484,30 @@ void drawStrip(const char* textSnap, int starsSnap) {
 
     const int rightPad = 16;
     int maxW = (240 - rightPad) - leftCursor;    // usable width right of the stars
-    String line1, line2;
-    wrapStripText(textSnap, maxW, line1, line2);
+    String line1, line2, line3;
+    wrapStripText(textSnap, maxW, line1, line2, line3);
 
-    if (line2.length() == 0) {
-      // Fits on one line — keep the original single baseline.
-      String v = bidiToVisual(line1.c_str());
+    // Right-align one logical line at baseline y (bidi-reordered for RTL).
+    // Standard C++11 lambda — fine for the portable-C++ rule.
+    auto drawLine = [&](const String& logical, int y) {
+      String v = bidiToVisual(logical.c_str());
       int x = 240 - rightPad - u8f.getUTF8Width(v.c_str());
       if (x < leftCursor) x = leftCursor;
-      u8f.setCursor(x, 290);
+      u8f.setCursor(x, y);
       u8f.print(v);
+    };
+
+    if (line2.length() == 0) {
+      drawLine(line1, 290);                    // fits on one line — original baseline
+    } else if (line3.length() == 0) {
+      drawLine(line1, 274);                    // two lines, stacked in the 80 px strip
+      drawLine(line2, 300);
     } else {
-      // Two lines, each right-aligned, stacked within the 80 px strip so a long
-      // question wraps instead of running off the right edge.
-      String v1 = bidiToVisual(line1.c_str());
-      String v2 = bidiToVisual(line2.c_str());
-      int x1 = 240 - rightPad - u8f.getUTF8Width(v1.c_str());
-      int x2 = 240 - rightPad - u8f.getUTF8Width(v2.c_str());
-      if (x1 < leftCursor) x1 = leftCursor;
-      if (x2 < leftCursor) x2 = leftCursor;
-      u8f.setCursor(x1, 274); u8f.print(v1);   // top line
-      u8f.setCursor(x2, 300); u8f.print(v2);   // bottom line
+      // Three lines (really long question) — tighter 22 px pitch; the 16 px
+      // unifont still clears the divider at y=242 and the 320 px bottom edge.
+      drawLine(line1, 258);
+      drawLine(line2, 280);
+      drawLine(line3, 302);
     }
   }
 }
