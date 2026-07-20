@@ -517,7 +517,7 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
     }
     // Name not recognised — re-ask and keep looping (cached static phrase).
     faceEmotion("encouraging");
-    speakTextCached("לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.");
+    speakTextCached("לא הכרתי את השם הזה. אפשר להגיד אותו שוב, בבקשה?");
   }
   g_childId = child.matchedChildId;
 
@@ -543,7 +543,7 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
     if (subj.subject.length() > 0) break;                    // success
     // Subject not understood — re-ask and keep looping (cached static phrase).
     faceEmotion("encouraging");
-    speakTextCached("לא הבנתי. תגיד חשבון או אנגלית?");
+    speakTextCached("לא הבנתי. חשבון או אנגלית?");
   }
   Serial.printf("[Identify] subject: %s\n", subj.subject.c_str());
   g_currentSubject  = subj.subject;
@@ -679,10 +679,10 @@ void setup() {
     "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.",
     "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.",
     "לא שמעתי אותך. נסה לענות שוב.",
-    "לא הכרתי את השם הזה. תגיד אותו שוב, בבקשה.",
+    "לא הכרתי את השם הזה. אפשר להגיד אותו שוב, בבקשה?",
     "לא שמעתי. חשבון או אנגלית?",
-    "לא הבנתי. תגיד חשבון או אנגלית?",
-    "אופס, הייתה בעיית תקשורת. בוא ננסה שוב.",
+    "לא הבנתי. חשבון או אנגלית?",
+    "אופס, הייתה בעיית תקשורת. נסה שוב.",
     "אין משתמש משויך למכשיר הזה, ולא הוגדר תלמיד. יש להגדיר אותי דרך האפליקציה.",
   };
   sdCacheWarm(STATIC_TTS_PHRASES,
@@ -812,7 +812,7 @@ void repromptAfterMiss() {
 // child knows something went wrong and to try again.
 void repromptAfterNetworkError() {
   faceEmotion("oops");   // network hiccup → the OOPS error face (matches the spoken "אופס")
-  speakTextCached("אופס, הייתה בעיית תקשורת. בוא ננסה שוב.");
+  speakTextCached("אופס, הייתה בעיית תקשורת. נסה שוב.");
   backToListening();
 }
 

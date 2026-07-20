@@ -382,7 +382,7 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
       { merge: true }
     );
   } else {
-    promptText = `לא הבנתי את השם. תגיד לי שוב — מי אתה?`;
+    promptText = `לא הבנתי את השם. חזור שוב על השם שלך.`;
   }
 
   const audioUrl = await safeSynthesize(promptText, `${exchangeId}_identify`);
@@ -549,7 +549,7 @@ exports.onSessionCreated = onDocumentCreated(
 
     // New identification flow: greet the child and ask for their name.
     if (data.status === "identifying") {
-      const greetingText = "שלום! אני פיפ, המורה הרובוט שלך. מי אתה? תגיד לי את שמך!";
+      const greetingText = "שלום! אני פיפ, המורה שלך. איך קוראים לך?";
       const audioUrl = await safeSynthesize(greetingText, `${sessionId}_greeting`);
       await sessionRef.set(
         { greetingAudioData: audioUrl, lastActivity: FieldValue.serverTimestamp() },
