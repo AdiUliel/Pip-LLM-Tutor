@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
+import '../models/child.dart';
 import '../providers/child_provider.dart';
 import '../providers/device_provider.dart';
+import '../services/firebase_service.dart';
 import '../theme.dart';
 import '../widgets/dev_chip.dart';
 import '../widgets/p_card.dart';
@@ -23,6 +25,34 @@ class DeviceMonitorScreen extends StatefulWidget {
 
 class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
   bool _repairing = false;
+  List<Child> _siblingDevices = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadSiblingDevices());
+  }
+
+  // The parent's OTHER paired children — so this child can join an existing
+  // device (siblings may share one) without typing the code.
+  Future<void> _loadSiblingDevices() async {
+    final me = context.read<ChildProvider>().child;
+    if (me == null) return;
+    final kids = await context
+        .read<FirebaseService>()
+        .watchChildrenOfParent(me.parentId)
+        .first;
+    if (!mounted) return;
+    final seen = <String>{};
+    final out = <Child>[
+      for (final c in kids)
+        if (c.deviceId.isNotEmpty &&
+            c.deviceId != me.deviceId &&
+            seen.add(c.deviceId))
+          c,
+    ];
+    setState(() => _siblingDevices = out);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,6 +63,10 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
     final online = device.isOnline;
     final status = state?.status ?? DeviceStatus.idle;
     final running = online && status != DeviceStatus.idle;
+    // Per-child separation: this screen shows live activity ONLY when the device
+    // is actually working with THIS child (deviceState.activeChildId).
+    final activeForThisChild = child != null && device.isActiveFor(child.id);
+    final busyWithOther = child != null && device.isBusyWithOther(child.id);
 
     final emo = !online
         ? RobotEmotion.neutral
@@ -63,12 +97,20 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                         RobotFace(emotion: emo, size: 150),
                         const SizedBox(height: 14),
                         DevChip(
-                          label: online
-                              ? 'מחובר · ${deviceStatusHe[status] ?? ''}'
-                              : 'לא מחובר',
-                          state: online
+                          label: !online
+                              ? 'לא מחובר'
+                              : activeForThisChild
+                                  ? 'מחובר · ${deviceStatusHe[status] ?? ''}'
+                                  : busyWithOther
+                                      ? 'ההתקן פעיל עם ${device.activeChildName ?? 'ילד אחר'}'
+                                      : 'מחובר · במנוחה',
+                          state: activeForThisChild
                               ? DevChipState.online
-                              : DevChipState.offline,
+                              : busyWithOther
+                                  ? DevChipState.searching
+                                  : online
+                                      ? DevChipState.online
+                                      : DevChipState.offline,
                         ),
                       ],
                     ),
@@ -95,20 +137,13 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                       ),
                     ],
                   ),
-                  if (running && (state?.currentQuestion?.isNotEmpty ?? false)) ...[
+                  if (activeForThisChild &&
+                      (state?.currentQuestion?.isNotEmpty ?? false)) ...[
                     const SizedBox(height: 12),
                     PCard(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if ((state?.activeChildName ?? '').isNotEmpty) ...[
-                            Text(
-                              'פעיל כעת: ${state!.activeChildName}',
-                              style: AppTextStyles.label(context)
-                                  .copyWith(color: AppColors.sky),
-                            ),
-                            const SizedBox(height: 8),
-                          ],
                           Text(
                             'שאלה נוכחית',
                             style: AppTextStyles.hint(context)
@@ -158,6 +193,25 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                               ? 'שומר…'
                               : (hasDevice ? 'החלפת התקן' : 'חיבור התקן')),
                         ),
+                        if (_siblingDevices.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          Text('או השתמשו במכשיר של אח/אחות',
+                              style: AppTextStyles.hint(context)),
+                          const SizedBox(height: 8),
+                          for (final s in _siblingDevices)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                    foregroundColor: AppColors.sky),
+                                icon: const Icon(Icons.devices_other, size: 18),
+                                label: Text('המכשיר של ${s.name}'),
+                                onPressed: _repairing
+                                    ? null
+                                    : () => _useSiblingDevice(s.deviceId),
+                              ),
+                            ),
+                        ],
                       ],
                     ),
                   ),
@@ -194,6 +248,24 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
       messenger.showSnackBar(
         SnackBar(content: Text('שמירת ההתקן נכשלה: $e')),
       );
+    } finally {
+      if (mounted) setState(() => _repairing = false);
+    }
+  }
+
+  Future<void> _useSiblingDevice(String deviceId) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final childProv = context.read<ChildProvider>();
+    final cur = childProv.child;
+    if (cur == null) return;
+    setState(() => _repairing = true);
+    try {
+      await childProv.save(cur.copyWith(deviceId: deviceId));
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('חובר לאותו התקן')));
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('החיבור נכשל: $e')));
     } finally {
       if (mounted) setState(() => _repairing = false);
     }

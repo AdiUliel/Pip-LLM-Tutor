@@ -80,6 +80,9 @@ class DashboardScreen extends StatelessWidget {
                     _DeviceHeroCard(
                       childName: child.name,
                       online: device.isOnline,
+                      activeForThisChild: device.isActiveFor(child.id),
+                      busyWithOther: device.isBusyWithOther(child.id),
+                      activeChildName: device.activeChildName,
                       status: device.state?.status,
                       onTap: () => onNavigateToTab(NavTabIndex.device.index),
                     ),
@@ -285,25 +288,41 @@ class _DeviceHeroCard extends StatelessWidget {
   const _DeviceHeroCard({
     required this.childName,
     required this.online,
+    required this.activeForThisChild,
+    required this.busyWithOther,
+    required this.activeChildName,
     required this.status,
     required this.onTap,
   });
 
   final String childName;
   final bool online;
+  final bool activeForThisChild;
+  final bool busyWithOther;
+  final String? activeChildName;
   final DeviceStatus? status;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final emo = online
-        ? (status == DeviceStatus.listening
-            ? RobotEmotion.listening
-            : RobotEmotion.happy)
-        : RobotEmotion.neutral;
+    final emo = !online
+        ? RobotEmotion.neutral
+        : activeForThisChild
+            ? (status == DeviceStatus.listening
+                ? RobotEmotion.listening
+                : RobotEmotion.happy)
+            : busyWithOther
+                ? RobotEmotion.neutral
+                : RobotEmotion.happy;
+    // Per-child separation: "connected + activity" ONLY when the device is
+    // actually running THIS child's session; if a sibling is active, say so.
     final chipLabel = !online
         ? 'לא מחובר'
-        : 'מחובר · ${deviceStatusHe[status ?? DeviceStatus.idle] ?? 'במנוחה'}';
+        : activeForThisChild
+            ? 'מחובר · ${deviceStatusHe[status ?? DeviceStatus.idle] ?? 'במנוחה'}'
+            : busyWithOther
+                ? 'ההתקן פעיל עם ${activeChildName ?? 'ילד אחר'}'
+                : 'מחובר · במנוחה';
     return PCard(
       onTap: onTap,
       borderColor: online ? AppColors.skySoft : AppColors.coralSoft,
@@ -330,7 +349,13 @@ class _DeviceHeroCard extends StatelessWidget {
                 const SizedBox(height: 7),
                 DevChip(
                   label: chipLabel,
-                  state: online ? DevChipState.online : DevChipState.offline,
+                  state: activeForThisChild
+                      ? DevChipState.online
+                      : busyWithOther
+                          ? DevChipState.searching
+                          : online
+                              ? DevChipState.online
+                              : DevChipState.offline,
                 ),
               ],
             ),

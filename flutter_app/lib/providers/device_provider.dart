@@ -21,6 +21,23 @@ class DeviceProvider extends ChangeNotifier {
   String? get deviceId => _deviceId;
   bool get isOnline => _state?.online ?? false;
 
+  /// Doc id / name of the child the device is CURRENTLY working with (from
+  /// deviceState.activeChild*). Null/empty when the device is idle.
+  String? get activeChildId => _state?.activeChildId;
+  String? get activeChildName => _state?.activeChildName;
+
+  /// True only when the device is online AND currently working with [childId].
+  /// Drives per-child separation: a child sees "connected + activity" only while
+  /// the device is actually running their session, not a sibling's.
+  bool isActiveFor(String childId) =>
+      isOnline && (_state?.activeChildId ?? '') == childId;
+
+  /// Online but running a DIFFERENT child's session (device is "busy").
+  bool isBusyWithOther(String childId) {
+    final a = _state?.activeChildId ?? '';
+    return isOnline && a.isNotEmpty && a != childId;
+  }
+
   /// Switch to (or start watching) a different device.
   void watch(String deviceId) {
     if (_deviceId == deviceId) return;
