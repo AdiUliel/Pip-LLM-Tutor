@@ -78,7 +78,7 @@ class DashboardScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _DeviceHeroCard(
-                      deviceId: child.deviceId,
+                      childName: child.name,
                       online: device.isOnline,
                       status: device.state?.status,
                       onTap: () => onNavigateToTab(NavTabIndex.device.index),
@@ -283,13 +283,13 @@ class _AlertRow extends StatelessWidget {
 
 class _DeviceHeroCard extends StatelessWidget {
   const _DeviceHeroCard({
-    required this.deviceId,
+    required this.childName,
     required this.online,
     required this.status,
     required this.onTap,
   });
 
-  final String deviceId;
+  final String childName;
   final bool online;
   final DeviceStatus? status;
   final VoidCallback onTap;
@@ -322,7 +322,7 @@ class _DeviceHeroCard extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  deviceId,
+                  childName,
                   style: AppTextStyles.title(context),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
