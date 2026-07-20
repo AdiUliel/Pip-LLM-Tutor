@@ -213,6 +213,65 @@ function answerVariants(answer) {
   return Array.from(variants).filter(Boolean);
 }
 
+// ── Hebrew number-phrase parser ──────────────────────────────────────────────
+// STT often writes a spoken number as WORDS ("עשרים וארבע"), not digits. The
+// old grading only knew a 0–20 feminine lookup, so "3 כפול 8" answered
+// "עשרים וארבע" was marked wrong. Parse the whole phrase to an integer instead:
+// 0–999, both genders (ארבע/ארבעה), teens (ארבע עשרה), tens+units with
+// ו' החיבור (עשרים וארבע), hundreds (מאה/מאתיים/שלוש מאות). Returns null when
+// any word isn't a number word — so ordinary text answers are unaffected.
+const HEB_NUM_TOKEN = {
+  "אפס": 0,
+  "אחת": 1, "אחד": 1,
+  "שתיים": 2, "שניים": 2, "שתים": 2, "שנים": 2,
+  "שלוש": 3, "שלושה": 3,
+  "ארבע": 4, "ארבעה": 4,
+  "חמש": 5, "חמישה": 5,
+  "שש": 6, "שישה": 6,
+  "שבע": 7, "שבעה": 7,
+  "שמונה": 8,
+  "תשע": 9, "תשעה": 9,
+  "עשר": 10, "עשרה": 10,
+  "עשרים": 20, "שלושים": 30, "ארבעים": 40, "חמישים": 50,
+  "שישים": 60, "שבעים": 70, "שמונים": 80, "תשעים": 90,
+  "מאה": 100, "מאתיים": 200,
+};
+
+function hebrewWordsToNumber(text) {
+  const words = String(text || "").replace(/-/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return null;
+  let hundreds = 0, tens = 0, unit = null, teen = false, sawAny = false;
+  for (let raw of words) {
+    // ו' החיבור: "וארבע" → "ארבע" (only when the rest is a number word).
+    if (raw.length > 1 && raw[0] === "ו" && (HEB_NUM_TOKEN[raw.slice(1)] != null || raw.slice(1) === "מאות")) {
+      raw = raw.slice(1);
+    }
+    if (raw === "מאות") {                       // "שלוש מאות" — unit becomes hundreds
+      if (unit == null || teen || hundreds) return null;
+      hundreds = unit * 100; unit = null; sawAny = true; continue;
+    }
+    const val = HEB_NUM_TOKEN[raw];
+    if (val == null) return null;                // not a number phrase after all
+    sawAny = true;
+    if (val === 100 || val === 200) {
+      if (hundreds || tens || unit != null) return null;
+      hundreds = val;
+    } else if (val >= 20) {                      // עשרים..תשעים
+      if (tens || teen || unit != null) return null;
+      tens = val;
+    } else if (val === 10) {                     // teen marker or standalone 10
+      if (unit != null && !tens && !teen) { unit += 10; teen = true; } // ארבע עשרה = 14
+      else if (unit == null && !tens && !teen) tens = 10;             // עשר = 10
+      else return null;
+    } else {                                     // 0–9
+      if (unit != null || teen) return null;
+      unit = val;
+    }
+  }
+  if (!sawAny) return null;
+  return hundreds + tens + (unit == null ? 0 : unit);
+}
+
 // Common lead-in / filler words a child may say around the real answer
 // ("התשובה היא תשע", "it is dog"). Stripping these before an exact match keeps a
 // number embedded in a phrase counting as correct — WITHOUT the loose substring
@@ -307,6 +366,15 @@ function checkAnswer(expectedAnswer, childAnswer) {
   if (expected.includes(actual)) return true;                  // exact / variant match
   const stripped = stripAnswerFiller(actual);                  // "זה תשע" → "תשע"
   if (stripped && expected.includes(stripped)) return true;
+  // Numeric expected + spoken-words answer: parse the WHOLE phrase as a Hebrew
+  // number ("עשרים וארבע" → 24) and compare values. Covers 0–999 in both
+  // genders — the old 0–20 lookup missed e.g. every multiplication result >20.
+  // Whole-phrase parsing keeps 9 from matching inside "תשע עשרה" (19).
+  const expNum = Number(String(expectedAnswer).trim());
+  if (!Number.isNaN(expNum)) {
+    const spoken = hebrewWordsToNumber(stripped || actual);
+    if (spoken != null && spoken === expNum) return true;
+  }
   // Cross-script phonetic pass: Hebrew-lettered STT of an English answer
   // ("רד" for red). Checked word-by-word (child may pad with filler) and as a
   // spaces-stripped whole for multi-word answers ("ice cream" ↔ "אייס קרים").
