@@ -26,8 +26,8 @@ class TrendsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final child = context.watch<ChildProvider>().child;
     final stats = context.watch<StatsProvider>();
-    // Most recent 14 sessions, oldest→newest — keeps the time-series charts
-    // readable instead of cramming the entire history into one frame.
+    // Most recent 14 sessions, oldest→newest, so the time-series charts stay
+    // readable.
     final sessions = stats.sessions.take(14).toList().reversed.toList();
     final content = Column(
           children: [

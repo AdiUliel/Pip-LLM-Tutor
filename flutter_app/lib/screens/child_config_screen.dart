@@ -1,6 +1,6 @@
 // ChildConfigScreen — edit the active child's profile: age, enabled subjects,
 // per-subject topic focus + starting level. Writes back to Firestore via
-// ChildProvider on save. Layout from ~/Downloads/ioT/screen-config.jsx.
+// ChildProvider on save.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';

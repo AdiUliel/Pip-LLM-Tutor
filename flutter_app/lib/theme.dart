@@ -1,5 +1,4 @@
-// Design system for the Emotional Tutor parent app.
-// Translated from the Claude Design output (~/Downloads/ioT/theme.css).
+// Design system for the Pip parent app.
 // Kid-friendly palette: soft sky-blue primary with warm yellow/coral/mint accents.
 
 import 'package:flutter/material.dart';

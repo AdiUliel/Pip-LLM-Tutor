@@ -89,7 +89,7 @@ Future<void> main() async {
   // DeviceProvider reactively follows the active child's linked device. So when
   // the parent pairs, swaps, or switches child, `child.deviceId` changes → the
   // ChildProvider stream notifies → DeviceProvider re-watches the new device
-  // and "connected" updates immediately (fixes the "must log out to see it" bug).
+  // and "connected" updates immediately.
   final childProvider =
       ChildProvider(firebaseService, prefs, offlineQueue: offlineQueue);
   final deviceProvider = DeviceProvider(deviceSync);

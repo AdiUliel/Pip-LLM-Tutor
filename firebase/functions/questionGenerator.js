@@ -214,12 +214,10 @@ function answerVariants(answer) {
 }
 
 // ── Hebrew number-phrase parser ──────────────────────────────────────────────
-// STT often writes a spoken number as WORDS ("עשרים וארבע"), not digits. The
-// old grading only knew a 0–20 feminine lookup, so "3 כפול 8" answered
-// "עשרים וארבע" was marked wrong. Parse the whole phrase to an integer instead:
-// 0–999, both genders (ארבע/ארבעה), teens (ארבע עשרה), tens+units with
-// ו' החיבור (עשרים וארבע), hundreds (מאה/מאתיים/שלוש מאות). Returns null when
-// any word isn't a number word — so ordinary text answers are unaffected.
+// STT often writes a spoken number as words ("עשרים וארבע"), not digits.
+// Parse the whole phrase to an integer: 0–999, both genders (ארבע/ארבעה),
+// teens (ארבע עשרה), tens+units with ו' החיבור, hundreds (מאה/שלוש מאות).
+// Returns null when any word isn't a number word, so text answers are unaffected.
 const HEB_NUM_TOKEN = {
   "אפס": 0,
   "אחת": 1, "אחד": 1,
@@ -286,15 +284,12 @@ function stripAnswerFiller(text) {
 }
 
 // ── Cross-script phonetic matching (Hebrew STT ↔ English answer) ─────────────
-// In English practice the child answers by VOICE, and the Hebrew-primary STT
-// often writes the English word in Hebrew letters — "רד" for red, "בלו" for
-// blue. The exact/variant compare above can never match those, so correct
-// answers were graded wrong. Fix: reduce both sides to a shared consonant
-// "skeleton" — vowels dropped, letters Hebrew spelling can't distinguish merged
-// (b/v/w→b, p/f→p, s/sh/z/צ→s, d/t/th→t, k/c/q/ck→k, ch/ג'→j, silent gh) —
-// and accept when the skeletons are equal. Only ever applied CROSS-script
-// (Hebrew transcript vs Latin expected), so Hebrew↔Hebrew and math grading are
-// untouched.
+// In English practice the child answers by voice, and Hebrew-primary STT often
+// writes the English word in Hebrew letters ("רד" for red, "בלו" for blue).
+// Both sides are reduced to a shared consonant "skeleton" — vowels dropped,
+// letters Hebrew spelling can't distinguish merged (b/v/w→b, p/f→p, s/sh/z/צ→s,
+// d/t/th→t, k/c/q/ck→k, ch/ג'→j, silent gh) — and accepted when equal. Applied
+// only cross-script, so Hebrew↔Hebrew and math grading are unaffected.
 const HEBREW_RE = /[֐-׿]/;
 
 // Hebrew letter → skeleton token. Vowel-ish letters (אהעיו) drop — Hebrew
@@ -366,10 +361,9 @@ function checkAnswer(expectedAnswer, childAnswer) {
   if (expected.includes(actual)) return true;                  // exact / variant match
   const stripped = stripAnswerFiller(actual);                  // "זה תשע" → "תשע"
   if (stripped && expected.includes(stripped)) return true;
-  // Numeric expected + spoken-words answer: parse the WHOLE phrase as a Hebrew
-  // number ("עשרים וארבע" → 24) and compare values. Covers 0–999 in both
-  // genders — the old 0–20 lookup missed e.g. every multiplication result >20.
-  // Whole-phrase parsing keeps 9 from matching inside "תשע עשרה" (19).
+  // Numeric expected + spoken-words answer: parse the whole phrase as a Hebrew
+  // number ("עשרים וארבע" → 24) and compare values. Whole-phrase parsing keeps
+  // 9 from matching inside "תשע עשרה" (19).
   const expNum = Number(String(expectedAnswer).trim());
   if (!Number.isNaN(expNum)) {
     const spoken = hebrewWordsToNumber(stripped || actual);

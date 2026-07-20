@@ -22,7 +22,7 @@ class AppConstants {
   // --- Idle power policy (per child; enforced locally on the ESP32). After
   // `defaultScreenOffMinutes` of no interaction the device turns its screen
   // off; after `defaultDeviceSleepMinutes` it enters deep sleep and wakes on
-  // the push-to-talk button. Replaces the old fixed 5-min inactivity cut.
+  // the push-to-talk button.
   // 0 disables that step.
   static const int defaultScreenOffMinutes = 15;
   static const int defaultDeviceSleepMinutes = 50;

@@ -1,5 +1,4 @@
 // LoginScreen — Hebrew RTL, kid-friendly. Segmented login/signup tabs.
-// Translates the design from ~/Downloads/ioT/screen-login.jsx.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';

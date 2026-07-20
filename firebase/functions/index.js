@@ -62,8 +62,8 @@ exports.monitorTutor = monitorTutor;
 const { extractQuestionsFromMaterial } = require("./extractQuestions");
 exports.extractQuestionsFromMaterial = extractQuestionsFromMaterial;
 
-// Enforce one-device-↔-one-child: clears a device's link from any previously
-// paired child when it's paired to a new one (europe-west10 via setGlobalOptions).
+// Device pairing rules: a device belongs to one parent account (siblings share
+// it); pairing to a new account unlinks the previous one.
 const { enforceDeviceUniqueness } = require("./enforceDevicePairing");
 exports.enforceDeviceUniqueness = enforceDeviceUniqueness;
 
@@ -84,10 +84,8 @@ const ai = new GoogleGenAI({
   location: process.env.GEMINI_LOCATION || "global",
 });
 
-// flash-lite: lower-latency variant, ample for our tiny fixed-JSON feedback
-// (maxOutputTokens 180). The [lat] logs showed LLM turns at 2–2.8 s vs 0.4–1 s
-// without — this is the biggest remaining server-side win. Revert by setting
-// GEMINI_MODEL=gemini-2.5-flash if feedback quality regresses.
+// flash-lite: low-latency variant, sufficient for the short fixed-JSON feedback
+// (maxOutputTokens 180). Override with the GEMINI_MODEL env var if needed.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 // Child-safe safety settings applied to every Gemini call in this file.
@@ -150,10 +148,9 @@ function parseSubject(transcript) {
 //
 // Calls Google Text-to-Speech (via ADC — no API key needed), uploads the WAV
 // to Storage under `tts/<fileId>.wav`, and returns a public HTTPS URL the
-// ESP32 streams chunk-by-chunk through speakFromUrl(). Inline base64 was
-// tried (commit 5c1a252) but 200–550 KB stringValues overflow Arduino-String
-// heap on the device and silently land as a too-short field, so the device
-// would skip the audio entirely. URL playback is the proven path.
+// ESP32 streams chunk-by-chunk through speakFromUrl(). A URL is used rather
+// than an inline base64 Firestore field: 200–550 KB string values overflow the
+// Arduino-String heap on the device.
 //
 // ⚠️  Before this works you must:
 //   1. Enable the TTS API: console.cloud.google.com/apis/library/texttospeech.googleapis.com
@@ -294,8 +291,8 @@ async function synthesizeAudio(text, fileId) {
   return url;
 }
 
-// MP3 bytes for processTurn to send inline in the HTTP response. We deliberately
-// SKIP the Storage upload + makePublic that the old URL path needed: the device
+// MP3 bytes for processTurn to send inline in the HTTP response. Deliberately
+// skips the Storage upload + makePublic that the URL path needs: the device
 // gets these bytes in the response body, and the Flutter app reads no audio field
 // (verified — no audioData/audioUrl reads, no audio player). Dropping the upload
 // shaves ~100–300 ms off every turn's synchronous critical path. The exchange
@@ -383,12 +380,10 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
   // Count consecutive unmatched name attempts on THIS session.
   const attempts = (Number(session.identifyNameAttempts) || 0) + (matched ? 0 : 1);
 
-  // Renamed / mis-heard name recovery — but ONLY after a few failed tries, so an
-  // unrecognised name first RE-ASKS (the expected behaviour) instead of silently
-  // adopting a child. Never auto-picks when >1 child is linked to the device:
-  // guessing between siblings would attribute the whole session to the wrong kid.
-  // (Previously it fell back on the FIRST miss → a wrong name jumped straight to
-  // "math or english?" without ever re-asking.)
+  // Mis-heard/renamed-child recovery: an unrecognised name is re-asked first;
+  // only after several failed tries fall back to the single linked child. Never
+  // auto-pick when more than one child is linked — guessing between siblings
+  // would attribute the session to the wrong child.
   const FALLBACK_AFTER = 3;
   if (!matched && attempts >= FALLBACK_AFTER) {
     const linked = session.deviceId ? children.filter((c) => c.deviceId === session.deviceId) : [];
@@ -418,10 +413,8 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
   const audioUrl = await safeSynthesize(promptText, `${exchangeId}_identify`);
   await exchangeRef.update({
     status: "done",
-    // "" (not null!) on no-match: the firmware parses these with ArduinoJson
-    // .as<String>(), which turns a Firestore nullValue into the LITERAL string
-    // "null" — length 4 → the name loop treated a failed match as success and
-    // jumped to the subject step. The needsPairing path above already uses "".
+    // Empty string (not null) on no-match: the firmware string-parses these
+    // fields, and ArduinoJson renders a Firestore null as the literal "null".
     matchedChildId: matched?.id || "",
     matchedChildName: matched?.name || "",
     promptText,
@@ -838,8 +831,8 @@ exports.submitChildAnswer = onCall(async (request) => {
 // off) → Google TTS → writes the same session/questions/exchanges docs → returns
 // the result INLINE: feedback/emotion/next-question/flags in headers (Hebrew
 // base64-encoded since header values must be ASCII); the MP3 bytes as the response
-// BODY. This removes, in one shot, the device's Firestore write, the Eventarc
-// trigger, the poll loop, and the separate Storage download the old path paid.
+// BODY. Compared to the post+poll path this saves the device's Firestore write,
+// the Eventarc trigger, the poll loop, and the separate Storage download.
 //
 // The exchange doc is created with status "processing" (NOT "pending"), so the
 // answerQuestion trigger — which only acts on "pending" — skips it. answerQuestion

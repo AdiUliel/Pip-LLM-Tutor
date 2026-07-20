@@ -1,34 +1,15 @@
 /**
- * Homework Assistant — ESP32-S3 Firmware (Emotional Tutor, edge-to-edge)
- * Board: LCDWIKI 2.8" ESP32-S3 Display (ES3C28P / ES3N28P)
+ * Homework Assistant — ESP32-S3 firmware for the Pip tutor.
+ * Board: LCDWIKI 2.8" ESP32-S3 Display (ES3C28P / ES3N28P).
  *
- * This firmware drives the team's adaptive tutor loop end-to-end and shows the
- * pip_face animated emotions on the ILI9341 display. It also publishes
- * deviceState so the Flutter parent app sees the device live.
+ * Runs the voice tutor loop end-to-end: identify the child by voice, speak each
+ * question (Google TTS), record the answer over push-to-talk (I2S), send it to
+ * the backend for grading, and show the returned emotion on the pip_face
+ * display. Publishes deviceState so the parent app sees the device live.
  *
- * Flow:
- *   1. Boot → ES8311 codec → pip_face → WiFi → NTP → Firebase anon auth
- *   2. Create a session (auto-detects the child profile by deviceId)
- *   3. Backend (onSessionCreated) generates the first question + its TTS audio
- *   4. Device SPEAKS the question (face: speaking) then LISTENS (face: listening)
- *   5. Child holds the push-to-talk button and answers → I2S capture (ended on
- *      button release) → STT proxy.
- *   6. Device posts a learning_turn → backend grades + Gemini feedback +
- *      next question + combined TTS audio
- *   7. Device shows the returned EMOTION on pip_face, SPEAKS feedback+next
- *      question, then loops back to step 4 with the next question
- *
- * Required libraries (Arduino IDE → Manage Libraries):
- *   - ArduinoJson      by Benoit Blanchon (v7.x)
- *   - TFT_eSPI         by Bodmer            (for pip_face; configure User_Setup)
- *   See INTEGRATION.md for the TFT_eSPI User_Setup for this exact board.
- *
- * Board settings (Arduino IDE):
- *   - Board: "ESP32S3 Dev Module"
- *   - Flash Size: 16MB (128Mb)
- *   - PSRAM: "OPI PSRAM"   ← IMPORTANT (audio buffer + pip_face sprite)
- *   - Partition Scheme: "Huge APP"
- *   - Upload Speed: 921600
+ * Libraries: ArduinoJson v7, TFT_eSPI (User_Setup per INTEGRATION.md).
+ * Board settings: ESP32S3 Dev Module, 16MB flash, PSRAM "OPI PSRAM" (required),
+ * Partition "Huge APP".
  */
 
 #include <WiFi.h>
@@ -314,8 +295,8 @@ bool processRecordedAudio() {
     recordBytes = frames * 2;
   }
   // Boost quiet / far-field speech to a healthy STT level, then reject only true
-  // silence (see micAutoGainMono). Floor lowered 250→130 because the auto-gain now
-  // rescues quiet-but-real speech that used to be discarded.
+  // silence (see micAutoGainMono). The low floor (130) accepts soft-spoken
+  // children — the auto-gain lifts quiet-but-real speech above it.
   {
     float rms = micAutoGainMono();
     Serial.printf("[Audio] mono RMS: %.0f\n", rms);
@@ -329,8 +310,7 @@ bool processRecordedAudio() {
 
 // ── Software mic auto-gain (far-field boost) ─────────────────────────────────
 // The ES8311 analog PGA is already maxed (es8311.h reg14=0x1A), so a child who
-// isn't right on top of the mic records quietly and the near-silence rejects
-// below used to discard the turn ("speak closer"). This scales the captured mono
+// isn't right on top of the mic records quietly. This scales the captured mono
 // utterance up toward a healthy full-scale peak, so quiet/distant
 // speech reaches STT at a usable level. It's adaptive and peak-based: a loud close
 // answer gets ~1x (never amplified into clipping), a quiet distant one up to
@@ -401,8 +381,8 @@ bool recordOneAnswerBlocking(uint32_t maxWaitMs) {   // default (20000) is on th
 // Capture one spoken answer during the boot identify flow, RE-ASKING until the
 // child actually says something the STT can transcribe. Never returns empty: it
 // keeps re-prompting (with `retryPrompt`) and listening until it has a
-// transcript, so the caller never has to fall back to the generic session just
-// because the child was slow, silent, or didn't trigger the wake word.
+// transcript, so the caller never has to fall back to a generic session just
+// because the child was slow or silent.
 String identifyCaptureAnswer(const char* retryPrompt) {
   while (true) {
     if (recordOneAnswerBlocking() && processRecordedAudio()) {
@@ -639,11 +619,10 @@ void setup() {
 
   g_sessionId = firestoreCreateSession(SESSION_SUBJECT, !useIdentifyFlow);
   if (g_sessionId.isEmpty()) {
-    // createSession can transiently fail with HTTP -1/-11 (a WiFi/TLS/heap
-    // hiccup). Rather than halt forever on the first failure (the old
-    // while(true)), retry with exponential backoff (2s→…→30s cap) so a passing
-    // glitch self-heals instead of bricking the boot until a manual reset. The
-    // face keeps ticking during each wait so the screen/button stay responsive.
+    // createSession can transiently fail (WiFi/TLS hiccup, HTTP -1/-11).
+    // Retry with exponential backoff (2s→…→30s cap) so a passing glitch
+    // self-heals instead of blocking the boot until a manual reset. The face
+    // keeps ticking during each wait so the screen/button stay responsive.
     Serial.println("❌ createSession failed — will retry with backoff.");
     faceStatus("error");
     faceStrip("בעיית תקשורת עם השרת — מנסה שוב...");
@@ -664,10 +643,9 @@ void setup() {
   if (!useIdentifyFlow && !g_childId.isEmpty()) g_childIdentified = true;
 
   // App-link boot check: the app shows this device "online" only while its
-  // deviceState/{uid} doc keeps getting fresh writes. Print the result of the FIRST
-  // one so you can confirm at boot whether the app can see this device (200 = yes).
-  // The loop() heartbeat then keeps it fresh; if THAT starts failing (e.g. the
-  // HTTP -11/-1 you saw), the app drops it back offline ~30 s later.
+  // deviceState/{uid} doc keeps getting fresh writes. Print the result of the
+  // first write so the serial log confirms the app can see this device
+  // (HTTP 200 = yes); the loop() heartbeat then keeps it fresh.
   int appLink = firestoreWriteDeviceState("idle");
   if (appLink == 200) Serial.println("[AppLink] deviceState OK (HTTP 200) — the app can see this device now.");
   else Serial.printf("[AppLink] deviceState write FAILED (HTTP %d) — the app will NOT see this device until this succeeds (check Wi-Fi/Firestore).\n", appLink);
@@ -676,8 +654,8 @@ void setup() {
   // firestoreCreateSession() just resolved this device's child by deviceId into
   // g_childId. Empty ⇒ no child is linked ⇒ the device is unpaired. Show the
   // pairing code ON SCREEN from boot and wait here — a brand-new device has no
-  // child to name, so running the spoken "מי כאן?" flow first would keep the code
-  // hidden behind a prompt nobody can answer (the old behaviour). Re-check every
+  // child to name, so the spoken "מי כאן?" flow would hide the code behind a
+  // prompt nobody can answer. Re-check every
   // ~8 s until the parent enters the code in the app and assigns a child (which
   // sets that child's deviceId to this device's UID).
   if (useIdentifyFlow && g_childId.isEmpty()) {
@@ -690,11 +668,9 @@ void setup() {
       delay(200);
       if (++tick >= 40) {                          // ~8 s between cloud checks
         tick = 0;
-        // Keep the app's heartbeat fresh WHILE waiting to be paired. Without this
-        // the only deviceState write was the one boot write (line ~639), so ~60 s
-        // later the app's pairing freshness check (pairingMaxHeartbeatAgeSec=60)
-        // sees a stale/absent heartbeat and refuses with "ההתקן נמצא, אבל לא דיווח
-        // עדכני" — making a device that's been on >1 min impossible to pair.
+        // Keep the heartbeat fresh while waiting to be paired: the app's
+        // pairing flow only accepts a device whose last heartbeat is recent
+        // (pairingMaxHeartbeatAgeSec).
         firestoreWriteDeviceState("idle");
         g_childId = firestoreResolveChildId();      // also refreshes idle-policy settings
       }
@@ -797,9 +773,7 @@ void repromptAfterMiss() {
 }
 
 // The upload to processTurn/processTurnAudio failed (WiFi hiccup, backend
-// down, etc). Previously this was a silent backToListening() — the child got
-// no feedback at all and could easily think the device just didn't hear them.
-// Speak a short fixed phrase (SD-cached, so it's instant) so at least the
+// down, etc). Speak a short fixed phrase (SD-cached, so it's instant) so the
 // child knows something went wrong and to try again.
 void repromptAfterNetworkError() {
   faceEmotion("oops");   // network hiccup → the OOPS error face (matches the spoken "אופס")
@@ -809,8 +783,7 @@ void repromptAfterNetworkError() {
 
 // Process whatever is in recordBuf (stereo PCM, recordBytes long): strip to the
 // mic channel, reject silence, run STT, post the learning turn, speak feedback +
-// next question, then go back to listening. Shared by the wake-word path and the
-// legacy button path so the heavy logic lives in exactly one place.
+// next question, then go back to listening.
 void processCapturedAnswer() {
   if (recordBytes < 1000) {
     Serial.println("[Main] Recording too short, ignoring.");
@@ -981,11 +954,10 @@ void processCapturedAnswer() {
     (unsigned long)(_latFirstSound - _latT0));
 #endif
 
-  // Session ended explicitly (exit intent / continue declined / 50-min limit).
+  // Session ended explicitly (exit intent / continue declined / session cap).
   // Power down rather than reboot: on this board there is no power-latch, so deep
-  // sleep IS "off" (screen dark, CPU halted). A button press wakes it, and setup()
-  // re-runs the identify flow into a fresh session — same end state as the old
-  // ESP.restart(), minus the device springing back to life fully powered.
+  // sleep IS "off" (screen dark, CPU halted). A button press wakes it, and
+  // setup() re-runs the identify flow into a fresh session.
   if (turn.sessionEnded) {
     Serial.println("[Main] Session ended, reason=" + turn.endReason + ". Powering down — press the button to start again.");
     delay(1500);         // brief beat after the spoken goodbye before the screen goes dark
@@ -1013,8 +985,8 @@ void processCapturedAnswer() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Idle power policy — screen off, then deep sleep, after periods of no
-// interaction. Both thresholds come from the child's settings (g_screenOffMinutes
-// / g_deviceSleepMinutes) and replace the old fixed 5-min cloud inactivity cut.
+// interaction. Both thresholds come from the child's settings
+// (g_screenOffMinutes / g_deviceSleepMinutes).
 // ─────────────────────────────────────────────────────────────────────────────
 void screenOff() {
   if (g_screenOff) return;

@@ -64,8 +64,8 @@ class ConfigProvider extends ChangeNotifier {
   }
 
   // ── Alert dismissal ────────────────────────────────────────────────────────
-  // Alerts are DERIVED live (utils/notifications.dart), so without this they
-  // could never be cleared. Persist dismissed (alertId → occurrence
+  // Alerts are derived live (utils/notifications.dart), so a dismissal has to
+  // be stored separately. Persist dismissed (alertId → occurrence
   // fingerprint): the alert stays hidden while the same occurrence persists,
   // and a NEW occurrence (different fingerprint) alerts again.
   static const _kDismissedAlerts = 'config.dismissedAlerts';

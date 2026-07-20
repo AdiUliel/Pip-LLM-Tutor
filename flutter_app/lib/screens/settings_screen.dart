@@ -1,6 +1,5 @@
 // SettingsScreen — sliders for session length / break / daily limit, plus a
 // rows-stack for profile / admin / logout.
-// Layout from ~/Downloads/ioT/screen-device.jsx (Settings).
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';

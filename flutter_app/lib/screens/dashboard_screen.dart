@@ -1,5 +1,5 @@
 // DashboardScreen — the "Home" tab. Device hero card, today-ring, last
-// session, 2×2 quick-actions grid. Translates ~/Downloads/ioT/screen-dashboard.jsx.
+// session, 2×2 quick-actions grid.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';

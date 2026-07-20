@@ -9,8 +9,8 @@ class Session {
   final Subject subject;
   final DateTime startedAt;
   /// When the child actually started answering questions (first learning turn) —
-  /// excludes boot / WiFi / identify overhead. Falls back to [startedAt] for
-  /// older sessions written before this field existed.
+  /// excludes boot / WiFi / identify overhead. Falls back to [startedAt] when
+  /// the field is absent.
   final DateTime? learningStartedAt;
   final DateTime? endedAt;
   final int questionsAsked;
@@ -21,8 +21,7 @@ class Session {
   /// 1..5 mood summary (see [MoodScale]).
   final int moodSummary;
   /// Why the session ended: "child_request" | "declined_continue" | "timeout"
-  /// | "inactivity" | null (still active, or an older session written before
-  /// this field existed).
+  /// | "inactivity" | null (still active, or the field is absent).
   final String? endReason;
 
   const Session({

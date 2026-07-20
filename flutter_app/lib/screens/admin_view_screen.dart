@@ -1,5 +1,4 @@
 // AdminViewScreen — technician view: raw deviceState document + reset-to-defaults.
-// Layout from ~/Downloads/ioT/screen-device.jsx (AdminView).
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;

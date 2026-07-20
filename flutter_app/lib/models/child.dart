@@ -3,8 +3,8 @@
 
 import '../constants.dart';
 
-// Legacy docs stored topicFocus[subject] as a single String. Accept both
-// shapes so old children continue to load after the multi-select rollout.
+// topicFocus[subject] may be stored as a single String or a List — accept
+// both shapes for backward compatibility.
 List<String> _topicsFromValue(dynamic v) {
   if (v is List) return v.whereType<String>().toList();
   if (v is String && v.isNotEmpty) return [v];

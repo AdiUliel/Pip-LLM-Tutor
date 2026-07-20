@@ -1,5 +1,4 @@
 // SessionDetailScreen — stats card + mood card + per-question breakdown.
-// Layout from ~/Downloads/ioT/screen-reports.jsx (SessionDetail).
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;

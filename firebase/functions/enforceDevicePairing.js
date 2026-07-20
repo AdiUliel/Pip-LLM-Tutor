@@ -1,30 +1,12 @@
 /**
- * enforceDeviceUniqueness — the device belongs to the PARENT ACCOUNT (family
- * device): every child under the same parent shares it automatically.
- *
- * A physical ESP32 has a STABLE anonymous UID and a MAC-derived pairing code,
- * and resolves "its" child on the device with:
- *     children where deviceId == <device UID>  limit 1
- * (see ESP32/homework_assistant/firebase_client.h: firestoreResolveChildId).
- * That limit-1 pick is arbitrary among siblings — which is fine: a session is
- * attributed to a specific child ONLY by the voice identify flow (the child
- * says their name → matchChildByName over the parent's children →
- * session.childId), and the firmware reports activeChildId only after that.
- *
- * What this trigger does on every children/{childId} write:
- *   1. deviceId SET/CHANGED on a child →
- *      a. clear that deviceId from every OTHER-PARENT child (cross-account
- *         safety: a re-paired device must not match two accounts), and
- *      b. COPY it to every same-parent sibling — pairing through ANY child
- *         links the whole family, so each child's app view shows the device.
- *   2. child CREATED without a deviceId → inherit the family device from any
- *      sibling that has one (adding a child auto-connects it).
- *
- * Loop safety: propagation re-fires the trigger, but siblings already holding
- * the same deviceId are filtered out and unchanged-deviceId writes return
- * early, so the cascade converges. Clearing (deviceId:"") on an EXISTING doc
- * returns early too — the technician reset (which blanks the whole family)
- * does not resurrect the link.
+ * enforceDeviceUniqueness — the device belongs to the parent account: all the
+ * parent's children share it. On every children/{childId} write:
+ *   1. deviceId set/changed → clear it from other parents' children
+ *      (cross-account safety) and copy it to all same-parent siblings.
+ *   2. child created without a deviceId → inherit the family device.
+ * A session is attributed to a specific child only by the voice identify flow.
+ * Loop safety: siblings that already hold the deviceId are skipped and
+ * unchanged/empty writes return early, so the cascade converges.
  */
 
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");

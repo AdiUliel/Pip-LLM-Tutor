@@ -1,6 +1,5 @@
 // MaterialUploadScreen — 3 sub-tabs: existing materials list, manual Q/A
-// entry, file upload (PDF / image / txt). Translates the design from
-// ~/Downloads/ioT/screen-config.jsx.
+// entry, file upload (PDF / image / txt).
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';

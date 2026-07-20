@@ -25,8 +25,8 @@ const { getMessaging } = require("firebase-admin/messaging");
 const OFFLINE_THRESHOLD_MS  = 60 * 1000;        // 60 s without heartbeat → offline
 // A lesson is ended by inactivity once it has had no new exchange for the
 // child's configured deviceSleepMinutes — the same threshold at which the
-// device itself turns its screen off and deep-sleeps. Replaces the old fixed
-// 5-min cut. DEFAULT_SLEEP_MINUTES is the fallback when the child has no value.
+// device turns its screen off and deep-sleeps. DEFAULT_SLEEP_MINUTES is the
+// fallback when the child has no configured value.
 const DEFAULT_SLEEP_MINUTES = 50;
 
 const SUBJECT_HE = { math: "חשבון", english: "אנגלית" };

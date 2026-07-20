@@ -1,6 +1,5 @@
 // ReportsScreen — list of past sessions, filterable by subject. Tap a row to
-// open the per-question SessionDetailScreen. Layout from
-// ~/Downloads/ioT/screen-reports.jsx.
+// open the per-question SessionDetailScreen.
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';

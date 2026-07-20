@@ -180,9 +180,7 @@ function levelFromChild(child, subject) {
 }
 
 function deterministicFeedback({ child, isCorrect, expectedAnswer, childAnswer, streakWrong, streakCorrect }) {
-  // Gender-correct praise word: "אלוף" (boy) / "אלופה" (girl). The old code
-  // appended genderSuffix ("י") to "כל הכבוד", producing the non-word
-  // "כל הכבודי" for girls — "כל הכבוד" is invariant, so gender a real word instead.
+  // Gender-correct praise word: "אלוף" for a boy, "אלופה" for a girl.
   const champ = (child && child.gender === "boy") ? "אלוף" : "אלופה";
   if (isCorrect) {
     // Rare milestone (long streak) → celebrating; a solid streak → proud;
@@ -476,11 +474,8 @@ async function processLearningTurn({
   // When the previous turn injected "רוצה להמשיך?" as the next question and set
   // askToContinue:true, the child's response arrives here. Three-way:
   //   explicit NO / exit intent → end the session;
-  //   explicit YES             → clear the flag, continue normally;
-  //   anything else            → RE-ASK and KEEP the flag.
-  // The old code treated any non-"לא" as yes and CLEARED the flag — so a
-  // mis-heard reply ("בוא נסיים") silently armed normal grading, and the
-  // child's follow-up "לא" was graded as a (wrong) answer instead of ending.
+  //   explicit YES             → serve the parked next question;
+  //   anything else            → re-ask and keep the flag armed.
   if (session.askToContinue === true) {
     const t = String(childAnswer || "").toLowerCase().replace(/[.,!?;:]/g, " ").trim();
     const saidNo = detectExitIntent(t) ||
@@ -516,9 +511,8 @@ async function processLearningTurn({
         audioData: audioUrl,
       };
     }
-    // Explicit yes — serve the PARKED next question. Never fall through to
-    // grading: the old fall-through graded "כן" against the pending question's
-    // answer ("purple") → "wrong, want to try again?" nonsense.
+    // Explicit yes — serve the parked next question directly. A yes/no reply
+    // is never graded as an answer to the question itself.
     const pendingPrompt = String(session.pendingQuestionPrompt || "").trim() ||
       String(session.currentQuestion || "").trim();
     const resume = `יופי, ממשיכים! ${pendingPrompt}`;
@@ -683,10 +677,9 @@ async function processLearningTurn({
 
   // ── Session-cap auto-end: replace next question with farewell ────────────────
   if (shouldAutoEnd && advancesToNextQuestion) {
-    // Record the question that was JUST answered before ending — endSession
-    // returns before the normal transaction below, so without this the final
-    // turn vanished from the report: the child's last answer ("green") wasn't
-    // counted or listed, and questionsAsked came up short ("0/1 of 2").
+    // Record the question that was just answered before ending — endSession
+    // returns before the normal transaction below, so the final turn's counters
+    // and question-log entry must be written here.
     await Promise.all([
       sessionRef.set({
         questionsAsked: FieldValue.increment(1),
@@ -865,10 +858,8 @@ async function processLearningTurn({
         // next time-based break is measured from here.
         ...(shouldAskToContinue && {
           currentQuestion: continuePromptText,
-          // Park the NEXT question's prompt so the yes-handler can serve it —
-          // currentQuestion was just overwritten with the continue prompt, and
-          // without this the pending question's text was simply LOST (the
-          // yes-path then graded "כן" against its answer → nonsense wrongs).
+          // Park the next question's prompt so the yes-handler can serve it
+          // (currentQuestion itself now holds the continue prompt).
           pendingQuestionPrompt: nextQuestion.prompt,
           lastBreakAskedAtMs: Date.now(),
         }),
@@ -880,9 +871,8 @@ async function processLearningTurn({
   return {
     isCorrect,
     spokenFeedback: feedback.spokenFeedback,
-    // On a continue-prompt turn the device must DISPLAY the same thing the
-    // audio asks ("רוצה להמשיך?") — not the pending next question, which made
-    // the strip show a color question while the voice asked yes/no.
+    // On a continue-prompt turn the device displays the same text the audio
+    // asks; the pending next question is served only after an explicit yes.
     nextQuestion: shouldAskToContinue ? continuePromptText : nextQuestion.prompt,
     expectedAnswer: nextQuestion.expectedAnswer,
     emotion: feedback.emotion,

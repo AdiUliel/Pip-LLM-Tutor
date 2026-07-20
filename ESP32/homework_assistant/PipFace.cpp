@@ -1,30 +1,15 @@
 /* ============================================================================
  *  PipFace — implementation. See PipFace.h for the public API.
  * ----------------------------------------------------------------------------
- *  Lifted nearly byte-for-byte from the original Pip_ESP32.ino reference
- *  sketch — the drawing helpers and per-state logic are untouched so the
- *  visual output is identical to the design. Structural changes:
- *    - setup()/loop() removed; their bodies wrapped as Pip::begin/tick().
- *    - tick() is non-blocking — pacing via millis() instead of delay(33).
- *    - state-cycling demo loop dropped (lives in examples/PipDemo/ now).
- *    - bottom status strip cached + redrawn only on change.
- *    - new Pip::setDeviceStatus() maps the project's deviceState vocabulary
- *      onto the 12-emotion enum (table in PipFace.h).
- *    - bottom strip now renders Hebrew (and any UTF-8) via u8g2's
- *      unifont_t_hebrew, with a tiny bidi-lite pass to handle RTL display.
- *    - rendering moved to a FreeRTOS task so the face stays responsive
- *      while the main loop is blocked on HTTPS / STT / audio playback /
- *      I2S recording. tick() is now a no-op kept for API compatibility.
- *    - per-state drawing refreshed to match the new vector design:
- *        HAPPY      pink cheek blush dots
- *        LISTENING  two phased expanding sound rings (+ pulsing eyes)
- *        ENCOURAGING  single slow warm ring
- *        SPEAKING   ellipse mouth with rx/ry lip-sync (was rect)
- *        SLEEPY     yawning ellipse (was round-rect)
- *        OOPS       wide oval mouth + spark lines (was sweat drop)
- *        CONCERNED  straight diagonal worry brows (was curves)
- *        PROUD      4-point twinkle stars (was 5-pt stars)
- *        CELEBRATING confetti + twinkle flourish stars
+ *  Based on the team's Pip_ESP32.ino reference sketch, adapted into a library:
+ *    - Pip::begin()/tick() API; pacing via millis() (non-blocking).
+ *    - Rendering runs in a FreeRTOS task so the face stays responsive while
+ *      the main loop is blocked on HTTPS / STT / audio / I2S recording.
+ *    - Bottom status strip renders Hebrew (any UTF-8) via u8g2's
+ *      unifont_t_hebrew with a small bidi-lite pass for RTL; cached and
+ *      redrawn only on change.
+ *    - Pip::setDeviceStatus() maps the project's deviceState vocabulary onto
+ *      the 12-emotion enum (table in PipFace.h).
  * ========================================================================== */
 
 #include "PipFace.h"
@@ -185,8 +170,7 @@ void drawEyes(int dy, uint32_t t) {
       glowCircle(EX_L+gx,y-6,12); glowCircle(EX_R+gx,y-6,12); break; }
     case CONCERNED:
       glowCircle(EX_L,y,11); glowCircle(EX_R,y,11);
-      // Straight diagonal worry brows — outer-top down to inner-low
-      // (was a curve; new vector design draws this as a line).
+      // Straight diagonal worry brows — outer-top down to inner-low.
       face.drawWideLine(66,  98+dy, 98,  88+dy, 10, GLOWD);
       face.drawWideLine(66,  98+dy, 98,  88+dy, 7,  GLOW);
       face.drawWideLine(174, 98+dy, 142, 88+dy, 10, GLOWD);
@@ -211,7 +195,6 @@ void drawMouth(int dy, uint32_t t) {
   switch (state) {
     case SPEAKING: {
       // Ellipse mouth — rx + ry pulse independently (lip-sync feel).
-      // Was a rect — the new vector design uses an animated ellipse.
       int rx = 17 + (int)(6 * fabs(cos(t / 180.0)));
       int ry =  5 + (int)(9 * fabs(sin(t / 120.0)));
       glowEllipse(MX, y, rx, ry);
@@ -237,7 +220,7 @@ void drawMouth(int dy, uint32_t t) {
       break;
     }
     case OOPS:
-      // Wide oval mouth (was a small circle) — looks startled.
+      // Wide oval mouth — looks startled.
       glowEllipse(MX, y + 4, 13, 15);
       break;
     case IDLE: default:
@@ -278,7 +261,7 @@ void drawOverlay(int dy, uint32_t t) {
       break;
     }
     case PROUD: {
-      // 4-point twinkle stars (was 5-pt fillStar). Sharper, more "spark".
+      // 4-point twinkle stars — sharp "spark" look.
       drawTwinkle(56,  90  + dy, 9, GOLD);
       drawTwinkle(196, 104 + dy, 8, GOLD);
       drawTwinkle(186, 58  + dy, 7, GOLD);
@@ -296,7 +279,7 @@ void drawOverlay(int dy, uint32_t t) {
       break;
     }
     case OOPS: {
-      // Small "spark" lines around the face — was a sweat-drop circle.
+      // Small "spark" lines around the face.
       face.drawWideLine(40,  110 + dy, 28,  104 + dy, 4, GOLD);
       face.drawWideLine(200, 110 + dy, 212, 104 + dy, 4, GOLD);
       face.drawWideLine(44,  140 + dy, 32,  144 + dy, 4, GOLD);

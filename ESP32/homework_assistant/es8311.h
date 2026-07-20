@@ -41,13 +41,13 @@ bool initES8311() {
   es8311_write(0x00, 0x1F);   // Soft reset all registers
   delay(20);
   es8311_write(0x00, 0x00);   // Clear reset
-  es8311_write(0x00, 0x80);   // ★ Power-on command (was missing — critical!)
+  es8311_write(0x00, 0x80);   // Power-on command — required after reset
 
   // ── Clock: MCLK pin → 6.144 MHz (384 × 16 kHz) ───────────────────────────
   // Coefficients from official coeff_div table for {6144000, 16000}:
   //   pre_div=3, pre_multi=1, bclk_div=4, lrck=0x00/0xFF, osr=0x10
-  es8311_write(0x01, 0x3F);   // ★ Enable ALL clocks, MCLK from MCLK pin (was 0x30)
-  es8311_write(0x02, 0x48);   // ★ pre_div=3→(2<<5)=0x40, pre_multi=1→(1<<3)=0x08 (was 0x00)
+  es8311_write(0x01, 0x3F);   // Enable all clocks, MCLK from MCLK pin
+  es8311_write(0x02, 0x48);   // pre_div=3→(2<<5)=0x40, pre_multi=1→(1<<3)=0x08
   es8311_write(0x03, 0x10);   // fs_mode=0, adc_osr=0x10
   es8311_write(0x04, 0x10);   // dac_osr=0x10
   es8311_write(0x05, 0x00);   // adc_div=1, dac_div=1
@@ -56,38 +56,30 @@ bool initES8311() {
   es8311_write(0x08, 0xFF);   // lrck_l
 
   // ── I2S format: 16-bit (ES8311_RESOLUTION_16 → 3<<2 = 0x0C) ─────────────
-  es8311_write(0x09, 0x0C);   // ★ SDP In  (ADC→I2S) 16-bit I2S (was 0x00)
-  es8311_write(0x0A, 0x0C);   // ★ SDP Out (I2S→DAC) 16-bit I2S (was 0x00)
+  es8311_write(0x09, 0x0C);   // SDP In  (ADC→I2S) 16-bit I2S
+  es8311_write(0x0A, 0x0C);   // SDP Out (I2S→DAC) 16-bit I2S
 
   // ── Power up ──────────────────────────────────────────────────────────────
   es8311_write(0x0D, 0x01);   // Power up analog circuitry
   es8311_write(0x0E, 0x02);   // Enable analog PGA + ADC modulator
   es8311_write(0x12, 0x00);   // Power up DAC
-  es8311_write(0x13, 0x10);   // ★ Enable output to HP drive (was 0x00)
+  es8311_write(0x13, 0x10);   // Enable output to HP drive
 
   // ── Microphone (analog, not PDM) ──────────────────────────────────────────
   es8311_write(0x14, 0x1A);   // Enable analog MIC, DIFFERENTIAL, +PGA (official board value)
                                 // This board (per the LCD Wiki ai_chat demo) wires the mic
-                                // DIFFERENTIALLY. Single-ended (0x10) recorded only constant
-                                // clock/common-mode crosstalk (crest factor ~1.0, level
-                                // independent of speech) — differential rejects that and
-                                // passes the actual voice. The earlier "differential clips"
-                                // result was caused by reg17=0xC8 (+36dB), NOT by MIC1N; with
-                                // the low digital gain below it no longer over-drives.
-  // ADC DIGITAL volume. With the HPF now removing DC, this gain is clean. At 0xC8 the
-  // mic worked but Hebrew speech was quiet (RMS ~928, -31dBFS) and STT returned empty.
-  // Each step = 0.5dB. Bumped 0xDA→0xE0 (~+12dB, +3dB over the old level) so quiet /
-  // far-field speech reaches STT louder — the "mic sometimes can't hear me" fix. Still
-  // ~-19dBFS at normal speech, so there's headroom; if a LOUD close answer clips (watch
-  // "peak=…/32767" in tts_player, or the [Audio]/[Main] RMS logs), step back toward 0xDA.
+                                // differentially; single-ended (0x10) picks up only constant
+                                // clock/common-mode crosstalk instead of the voice.
+  // ADC digital volume, 0.5 dB per step. 0xE0 ≈ +12 dB so quiet / far-field
+  // speech reaches STT at a usable level, while normal speech stays ~-19 dBFS
+  // with headroom. If a loud close answer clips (watch "peak=…/32767" and the
+  // [Audio]/[Main] RMS serial logs), lower toward 0xDA.
   es8311_write(0x17, 0xE0);   // ADC digital volume (~+12dB for a louder capture)
 
-  // ── ADC high-pass filter — REMOVES DC OFFSET (two-stage) ──────────────────
-  // CRITICAL: both stages must be written. Stage 1 (0x1B) was previously MISSING,
-  // so a DC offset passed through and railed the ADC to a constant value (~8700),
-  // with speech only a tiny ripple on top — STT heard no speech. The full
-  // Espressif/arduino-audio-driver init writes BOTH of these.
-  es8311_write(0x1B, 0x0A);   // ★ ADC HPF stage 1 + ALC automute (was never set)
+  // ── ADC high-pass filter — removes DC offset (two-stage) ──────────────────
+  // Both stages must be written (as in the Espressif/arduino-audio-driver
+  // init); without the HPF a DC offset rails the ADC and drowns the speech.
+  es8311_write(0x1B, 0x0A);   // ADC HPF stage 1 + ALC automute
   es8311_write(0x1C, 0x6A);   // ADC HPF stage 2 + EQ bypass
 
   // ── DAC equalizer bypass ──────────────────────────────────────────────────

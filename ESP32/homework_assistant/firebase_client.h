@@ -557,7 +557,7 @@ struct TurnResult {
   String endReason;        // "child_request" | "declined_continue" | "timeout" — set iff sessionEnded
   bool   sttEmpty        = false;  // Phase 2 audio path: server STT found no speech → caller reprompts
   // Phase 1 (processTurn): MP3 bytes returned inline in the HTTP body. Owned by
-  // the caller — free(audioBuf) after playback. Empty on the old path.
+  // the caller — free(audioBuf) after playback. Empty on the post+poll path.
   uint8_t* audioBuf    = nullptr;
   size_t   audioLen    = 0;
 };
@@ -573,11 +573,9 @@ bool firestorePollForTurnResult(const String& sessionId,
 
   uint32_t start = millis();
 
-  // One TLS handshake + a single keep-alive HTTP connection for the WHOLE poll,
-  // instead of a fresh handshake every iteration. The old loop called _initSSL()
-  // (which stops + reopens the socket) on every pass, so each poll paid a full
-  // ~0.3–0.6 s TLS handshake and the effective period was ~1 s, not 0.5 s. Now
-  // we connect once, set reuse, and just re-GET — so the 250 ms interval is real.
+  // One TLS handshake + a single keep-alive HTTP connection for the whole poll:
+  // connect once, set reuse, and re-GET each iteration. A fresh handshake per
+  // pass would cost ~0.3–0.6 s each and stretch the effective poll period.
   _initSSL();
   HTTPClient http;
   http.begin(_sslClient, url);
@@ -933,9 +931,8 @@ bool firestorePollForIdentifyResult(const String& sessionId,
       out.promptText        = resp["fields"]["promptText"]["stringValue"].as<String>();
       out.matchedChildName  = resp["fields"]["matchedChildName"]["stringValue"].as<String>();
       out.matchedChildId    = resp["fields"]["matchedChildId"]["stringValue"].as<String>();
-      // ArduinoJson turns a missing/null field into the LITERAL "null" string —
-      // which is length>0 and once made the name loop treat a failed match as
-      // success. The server now writes "" instead, but guard here too.
+      // ArduinoJson renders a missing/null field as the literal string "null";
+      // normalize to empty so a failed match is not mistaken for a real id.
       if (out.matchedChildId == "null")   out.matchedChildId = "";
       if (out.matchedChildName == "null") out.matchedChildName = "";
       out.subject           = resp["fields"]["subject"]["stringValue"].as<String>();
@@ -1093,9 +1090,9 @@ int firestoreWriteDeviceState(const String& status,
   body["fields"]["bootCount"]["integerValue"]      = String(g_bootCount);
   body["fields"]["ttsCacheHits"]["integerValue"]   = String(g_ttsCacheHits);
   body["fields"]["ttsCacheMisses"]["integerValue"] = String(g_ttsCacheMisses);
-  // Who's currently in front of the device. Only ONCE IDENTIFIED — before that
-  // g_childId may be an arbitrary sibling from the limit-1 resolve, and stamping
-  // it would show "device busy with X" for a session that isn't happening.
+  // Who's currently in front of the device — reported only once the child has
+  // been identified by voice; before that g_childId may hold an arbitrary
+  // sibling from the limit-1 resolve.
   if (g_childIdentified && g_childId.length() > 0) {
     body["fields"]["activeChildId"]["stringValue"]   = g_childId;
     body["fields"]["activeChildName"]["stringValue"] = g_childName;
@@ -1121,12 +1118,10 @@ int firestoreWriteDeviceState(const String& status,
 }
 
 // ── Keep-alive heartbeat (loop() only) ───────────────────────────────────────
-// firestoreWriteDeviceState() calls _initSSL() (stop + reopen socket), so the
-// 10 s heartbeat paid a full ~2 s TLS handshake every time — and in wake-word mode
-// that's ~2 s every 10 s where loop() can't poll "היי פיפ". This keeps ONE
-// keep-alive HTTPClient across calls (the proven setReuse pattern from
-// firestorePollForTurnResult): only the FIRST heartbeat after another Firestore
-// call pays the handshake; the rest re-PATCH on the open socket (~0.1 s).
+// Keeps ONE keep-alive HTTPClient across calls so the periodic heartbeat does
+// not pay a fresh ~2 s TLS handshake every 10 s: only the first heartbeat after
+// another Firestore call pays the handshake; the rest re-PATCH on the open
+// socket (~0.1 s).
 //
 // It reuses the SHARED _sslClient — NOT a second concurrent TLS connection (that
 // OOMs this board; see the note below). Any other call's _initSSL() simply stops
@@ -1184,16 +1179,11 @@ void firestoreHeartbeat(const String& status,
   }
 }
 
-// NOTE: an earlier revision offloaded the two hot-path deviceState writes to a
-// background FreeRTOS task with its OWN WiFiClientSecure. On this board that ran
-// a second mbedTLS handshake concurrently with the main TLS connection and
-// exhausted the internal heap — every following TLS call then failed with
-// HTTP -1 and the device rebooted. Removed. The two writes were redundant anyway
-// (the post-playback "listening" write already pushes the next question, and the
-// 10 s heartbeat keeps the device "online"), so they're simply dropped from the
-// turn. If live "feedback" status during grading is wanted back, set it
-// server-side from answerQuestion (which already has admin access) — not with a
-// concurrent device-side TLS connection.
+// NOTE: all Firestore traffic runs on a single TLS connection from the main
+// task. A second concurrent WiFiClientSecure (e.g. from a background FreeRTOS
+// task) runs two mbedTLS handshakes at once and exhausts this board's internal
+// heap, after which every TLS call fails — so device-side writes must stay
+// single-threaded.
 
 // ── Read a pending remote command (start/stop) from the app, if any ──────────
 // Returns "start" | "stop" | "none".

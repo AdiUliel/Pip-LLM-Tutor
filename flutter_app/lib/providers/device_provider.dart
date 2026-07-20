@@ -31,10 +31,9 @@ class DeviceProvider extends ChangeNotifier {
   /// Drives per-child separation: a child sees "connected + activity" only while
   /// the device is actually running their session, not a sibling's.
   ///
-  /// Legacy fallback: firmware that predates activeChildId never reports it —
-  /// with no attribution info we treat every linked child as active (the old
-  /// shared behavior) instead of hiding live status/question from everyone.
-  /// Once the device reports the field, strict separation kicks in.
+  /// Fallback: firmware that does not report activeChildId gives no
+  /// attribution info, so every linked child is treated as active. Once the
+  /// device reports the field, strict per-child separation applies.
   bool isActiveFor(String childId) {
     if (!isOnline) return false;
     final a = _state?.activeChildId ?? '';
