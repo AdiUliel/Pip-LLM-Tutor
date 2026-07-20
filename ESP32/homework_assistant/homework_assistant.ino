@@ -625,10 +625,24 @@ void setup() {
 
   g_sessionId = firestoreCreateSession(SESSION_SUBJECT, !useIdentifyFlow);
   if (g_sessionId.isEmpty()) {
-    Serial.println("❌ Could not create Firestore session.");
+    // createSession can transiently fail with HTTP -1/-11 (a WiFi/TLS/heap
+    // hiccup). Rather than halt forever on the first failure (the old
+    // while(true)), retry with exponential backoff (2s→…→30s cap) so a passing
+    // glitch self-heals instead of bricking the boot until a manual reset. The
+    // face keeps ticking during each wait so the screen/button stay responsive.
+    Serial.println("❌ createSession failed — will retry with backoff.");
     faceStatus("error");
+    faceStrip("בעיית תקשורת עם השרת — מנסה שוב...");
     firestoreWriteDeviceState("error");
-    while (true) { faceTick(); delay(200); }
+    uint32_t backoffMs = 2000;
+    for (int attempt = 1; g_sessionId.isEmpty(); attempt++) {
+      Serial.printf("[Session] retry #%d in %lus...\n",
+                    attempt, (unsigned long)(backoffMs / 1000));
+      for (uint32_t t = millis(); millis() - t < backoffMs; ) { faceTick(); delay(20); }
+      backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;   // cap at 30s
+      g_sessionId = firestoreCreateSession(SESSION_SUBJECT, !useIdentifyFlow);
+    }
+    Serial.println("[Session] created after retry — recovered.");
   }
 
   // App-link boot check: the app shows this device "online" only while its
