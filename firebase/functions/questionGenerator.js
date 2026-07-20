@@ -226,6 +226,80 @@ function stripAnswerFiller(text) {
   return text.split(" ").filter((t) => t && !ANSWER_FILLER.has(t)).join(" ");
 }
 
+// ── Cross-script phonetic matching (Hebrew STT ↔ English answer) ─────────────
+// In English practice the child answers by VOICE, and the Hebrew-primary STT
+// often writes the English word in Hebrew letters — "רד" for red, "בלו" for
+// blue. The exact/variant compare above can never match those, so correct
+// answers were graded wrong. Fix: reduce both sides to a shared consonant
+// "skeleton" — vowels dropped, letters Hebrew spelling can't distinguish merged
+// (b/v/w→b, p/f→p, s/sh/z/צ→s, d/t/th→t, k/c/q/ck→k, ch/ג'→j, silent gh) —
+// and accept when the skeletons are equal. Only ever applied CROSS-script
+// (Hebrew transcript vs Latin expected), so Hebrew↔Hebrew and math grading are
+// untouched.
+const HEBREW_RE = /[֐-׿]/;
+
+// Hebrew letter → skeleton token. Vowel-ish letters (אהעיו) drop — Hebrew
+// spellings of English words use them for vowel sounds ("בלו", "ואן").
+const HE_SKEL = {
+  "א": "", "ב": "b", "ג": "g", "ד": "t", "ה": "", "ו": "", "ז": "s",
+  "ח": "h", "ט": "t", "י": "", "כ": "k", "ך": "k", "ל": "l", "מ": "m",
+  "ם": "m", "נ": "n", "ן": "n", "ס": "s", "ע": "", "פ": "p", "ף": "p",
+  "צ": "s", "ץ": "s", "ק": "k", "ר": "r", "ש": "s", "ת": "t",
+};
+// NOTE on geresh (ג'/צ'/ז'): normalizeText strips apostrophes BEFORE we get
+// here, so "צ'ר" arrives as "צר". The Latin side therefore maps to the BASE
+// letters' sounds: ch→s (what stripped צ' becomes) and j→g (stripped ג').
+
+// Double-vav is ambiguous — the w SOUND as a consonant ("ווטר" water) or just
+// a long vowel ("וואן" one, where the spelling has no w). Emit both readings.
+function hebrewSkeletons(word) {
+  const build = (vavAsConsonant) => {
+    let out = "";
+    for (let i = 0; i < word.length; i++) {
+      const ch = word[i];
+      if (ch === "ו" && word[i + 1] === "ו") {
+        if (vavAsConsonant) out += "b";
+        i++; continue;
+      }
+      if (HE_SKEL[ch] != null) out += HE_SKEL[ch];
+    }
+    return out.replace(/(.)\1+/g, "$1");             // collapse doubles
+  };
+  return Array.from(new Set([build(true), build(false)]));
+}
+
+// English word → the same skeleton alphabet. Returns two variants because a
+// `w` may surface in Hebrew as a consonant ("ווטר") or vanish into a vowel
+// ("one" → "ואן"): try w→v-like and w→dropped.
+function latinSkeletons(word) {
+  const base = word.toLowerCase()
+    .replace(/wh/g, "w")                             // white — silent h
+    .replace(/gh/g, "")                              // eight, night — silent
+    .replace(/c(?=[eiy])/g, "s")                     // soft c: pencil, rice
+    .replace(/ph/g, "p").replace(/sh/g, "s").replace(/ch/g, "s")
+    .replace(/th/g, "t").replace(/ck/g, "k")
+    .replace(/x/g, "ks").replace(/q/g, "k").replace(/c/g, "k")
+    .replace(/j/g, "g");
+  return [base.replace(/w/g, "v"), base.replace(/w/g, "")].map((v) =>
+    v.replace(/v/g, "b").replace(/f/g, "p").replace(/z/g, "s").replace(/d/g, "t")
+      .replace(/[aeiouy]/g, "")
+      .replace(/[^a-z]/g, "")
+      .replace(/(.)\1+/g, "$1"));
+}
+
+// True when one side is Hebrew script, the other Latin, and their phonetic
+// skeletons agree ("רד" ↔ "red"). Same-script pairs return false — the exact
+// paths in checkAnswer already own those.
+function phoneticMatch(expectedWord, childWord) {
+  const expHeb = HEBREW_RE.test(expectedWord);
+  const ansHeb = HEBREW_RE.test(childWord);
+  if (expHeb === ansHeb) return false;
+  const hebs = hebrewSkeletons(ansHeb ? childWord : expectedWord).filter(Boolean);
+  if (hebs.length === 0) return false;
+  const latin = ansHeb ? expectedWord : childWord;
+  return latinSkeletons(latin).some((s) => s.length > 0 && hebs.includes(s));
+}
+
 function checkAnswer(expectedAnswer, childAnswer) {
   const expected = answerVariants(expectedAnswer);
   const actual = normalizeText(childAnswer);
@@ -233,6 +307,15 @@ function checkAnswer(expectedAnswer, childAnswer) {
   if (expected.includes(actual)) return true;                  // exact / variant match
   const stripped = stripAnswerFiller(actual);                  // "זה תשע" → "תשע"
   if (stripped && expected.includes(stripped)) return true;
+  // Cross-script phonetic pass: Hebrew-lettered STT of an English answer
+  // ("רד" for red). Checked word-by-word (child may pad with filler) and as a
+  // spaces-stripped whole for multi-word answers ("ice cream" ↔ "אייס קרים").
+  const expRaw = normalizeText(expectedAnswer);
+  const answerWords = (stripped || actual).split(" ");
+  if (answerWords.some((w) => phoneticMatch(expRaw, w))) return true;
+  if (phoneticMatch(expRaw.replace(/\s+/g, ""), (stripped || actual).replace(/\s+/g, ""))) {
+    return true;
+  }
   // Loose substring match lets a child pad a TEXT answer ("a dog", "dog!").
   // Skip it for numbers: "9" must not match inside "19"/"90", nor "תשע" (9)
   // inside "תשע עשרה" (19).
