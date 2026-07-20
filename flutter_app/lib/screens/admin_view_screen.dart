@@ -9,6 +9,7 @@ import '../constants.dart';
 import '../providers/child_provider.dart';
 import '../providers/config_provider.dart';
 import '../providers/device_provider.dart';
+import '../services/firebase_service.dart';
 import '../theme.dart';
 import '../widgets/p_card.dart';
 import '../widgets/screen_header.dart';
@@ -27,7 +28,6 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
   Widget build(BuildContext context) {
     final child = context.watch<ChildProvider>().child;
     final device = context.watch<DeviceProvider>();
-    final config = context.read<ConfigProvider>();
     final state = device.state;
     final online = device.isOnline;
     final status = state?.status ?? DeviceStatus.idle;
@@ -101,14 +101,7 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
                     label: Text(_didReset
                         ? '✓ אופס לברירת מחדל'
                         : 'איפוס לברירות מחדל'),
-                    onPressed: () async {
-                      await config.resetToDefaults();
-                      if (!mounted) return;
-                      setState(() => _didReset = true);
-                      Future.delayed(const Duration(seconds: 2), () {
-                        if (mounted) setState(() => _didReset = false);
-                      });
-                    },
+                    onPressed: () => _resetAll(),
                   ),
                 ],
               ),
@@ -117,6 +110,59 @@ class _AdminViewScreenState extends State<AdminViewScreen> {
         ),
       ),
     );
+  }
+
+  // "Reset to defaults" — clears the 4 local app settings AND unpairs the
+  // physical device from ALL the parent's children (clears their deviceId), so
+  // the device finds no linked child on its next resolve and returns to pairing
+  // mode. Confirms first (unpairing is destructive).
+  Future<void> _resetAll() async {
+    final config = context.read<ConfigProvider>();
+    final fb = context.read<FirebaseService>();
+    final child = context.read<ChildProvider>().child;
+    final deviceId = child?.deviceId ?? '';
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('איפוס לברירות מחדל?'),
+        content: Text(
+          deviceId.isEmpty
+              ? 'ההגדרות יחזרו לברירת המחדל.'
+              : 'ההגדרות יחזרו לברירת המחדל, וההתקן ינותק מכל הילדים ויחזור '
+                  'למצב חיבור (pairing). תצטרכו לשייך אותו מחדש דרך האפליקציה.',
+          textAlign: TextAlign.right,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ביטול'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.coral),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('איפוס'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    await config.resetToDefaults();
+    // Unlink the device from every sibling that shares it → the device resolves
+    // no linked child next boot and shows its pairing code again.
+    if (deviceId.isNotEmpty && child != null) {
+      final kids = await fb.watchChildrenOfParent(child.parentId).first;
+      await Future.wait([
+        for (final c in kids)
+          if (c.deviceId == deviceId) fb.saveChild(c.copyWith(deviceId: '')),
+      ]);
+    }
+    if (!mounted) return;
+    setState(() => _didReset = true);
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _didReset = false);
+    });
   }
 
   Widget _kv(String k, String v, {Color? valueColor, bool last = false}) {
