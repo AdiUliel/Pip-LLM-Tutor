@@ -178,7 +178,7 @@ async function getAccessToken() {
 // nothing was recognised). Shared by the transcribeAudio Cloud Function (device
 // sends base64 JSON) and processTurn's Phase-2 audio path (device sends raw PCM in
 // the body, which we base64 here for Google). Throws on a non-OK STT response.
-async function recognizeSpeech(audioBase64, languageCode = "he-IL") {
+async function recognizeSpeech(audioBase64, languageCode = "he-IL", phraseHints = []) {
   const accessToken = await getAccessToken();
   const config = {
     encoding:        "LINEAR16",
@@ -193,6 +193,13 @@ async function recognizeSpeech(audioBase64, languageCode = "he-IL") {
   // Hebrew numbers.
   if (languageCode === "en-US") {
     config.alternativeLanguageCodes = ["he-IL"];
+  }
+  // Bias recognition toward what we EXPECT the child to say (the current
+  // question's answer, כן/לא on a continue prompt). Critical in English
+  // lessons: an accent-less kid saying "green" otherwise snaps to a Hebrew
+  // word via the alternative language.
+  if (phraseHints.length > 0) {
+    config.speechContexts = [{ phrases: phraseHints.slice(0, 20), boost: 20 }];
   }
   const sttRes = await fetch(
     "https://speech.googleapis.com/v1/speech:recognize",
@@ -836,9 +843,27 @@ exports.processTurn = onRequest(
       if (!sessionId || !Buffer.isBuffer(pcm) || pcm.length < 1000) {
         return res.status(400).json({ error: "sessionId (query) and PCM body required" });
       }
+      // Pre-STT session peek: the subject fixes the primary language even on
+      // older firmware (?lang missing), and the current expected answer becomes
+      // a phrase hint that biases recognition toward it — a kid saying "green"
+      // with a Hebrew accent otherwise snaps to a Hebrew word. Best-effort.
+      let sttLang = languageCode;
+      const sttHints = [];
+      try {
+        const sSnap = await db.collection("sessions").doc(sessionId).get();
+        if (sSnap.exists) {
+          const s = sSnap.data();
+          if (s.subject === "english") sttLang = "en-US";
+          const exp = String(s.currentExpectedAnswer || "").trim();
+          if (exp && !/^\d+$/.test(exp)) sttHints.push(exp);   // words, not digits
+          if (s.askToContinue === true) sttHints.push("כן", "לא");
+        }
+      } catch (e) {
+        console.warn("[processTurn] pre-STT session read failed:", e.message);
+      }
       let transcript;
       try {
-        transcript = await recognizeSpeech(pcm.toString("base64"), languageCode);
+        transcript = await recognizeSpeech(pcm.toString("base64"), sttLang, sttHints);
       } catch (err) {
         console.error("[processTurn] STT failed:", err);
         return res.status(502).json({ error: "STT failed" });

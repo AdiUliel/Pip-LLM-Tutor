@@ -645,8 +645,35 @@ async function processLearningTurn({
   // advance to a new question, unchanged on a hint (same question).
   const newTurnSeq = (Number(session.turnSeq) || 1) + (advancesToNextQuestion ? 1 : 0);
 
-  // ── 50-min auto-end: replace next question with farewell ─────────────────────
+  // ── Session-cap auto-end: replace next question with farewell ────────────────
   if (shouldAutoEnd && advancesToNextQuestion) {
+    // Record the question that was JUST answered before ending — endSession
+    // returns before the normal transaction below, so without this the final
+    // turn vanished from the report: the child's last answer ("green") wasn't
+    // counted or listed, and questionsAsked came up short ("0/1 of 2").
+    await Promise.all([
+      sessionRef.set({
+        questionsAsked: FieldValue.increment(1),
+        correctCount: FieldValue.increment(isCorrect ? 1 : 0),
+        wrongCount: FieldValue.increment(isCorrect ? 0 : 1),
+        starsEarned: FieldValue.increment(isCorrect ? 1 : 0),
+        longestStreak: Math.max(Number(session.longestStreak || 0), Number(streakCorrect || 0)),
+      }, { merge: true }),
+      sessionRef.collection("questions").doc(exchangeId).set({
+        prompt: currentQuestion,
+        expectedAnswer,
+        childAnswerTranscript: childAnswer,
+        correct: isCorrect,
+        mood,
+        difficulty: currentDifficulty,
+        topic: session.currentTopic || subject,
+        fromMaterial: Boolean(session.currentFromMaterial),
+        feedback: feedback.spokenFeedback,
+        emotion: feedback.emotion,
+        askedAt: exchangeData.askedAt || now,
+        answeredAt: now,
+      }, { merge: true }),
+    ]);
     const childName = child?.name || "";
     const farewellText = feedback.spokenFeedback.trim() + " " +
       (childName

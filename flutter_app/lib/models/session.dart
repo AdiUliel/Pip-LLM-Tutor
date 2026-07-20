@@ -59,7 +59,9 @@ class Session {
       case 'declined_continue':
         return 'הילד/ה ביקש/ה לסיים';
       case 'timeout':
-        return 'הגיע זמן השיעור (50 דק\')';
+        // No hardcoded minutes — the cap is the child's configured session
+        // length (5–60), which this model doesn't know.
+        return 'הגיע זמן השיעור שנקבע';
       case 'inactivity':
         return 'החיבור להתקן נקטע';
       default:
