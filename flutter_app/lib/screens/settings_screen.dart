@@ -238,7 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Emotional Tutor · גרסה 0.9 (MVP)',
+                    'Pip - Personal Tutor for Kids · גרסה 0.9 (MVP)',
                     textAlign: TextAlign.center,
                     style: AppTextStyles.hint(context).copyWith(fontSize: 12),
                   ),

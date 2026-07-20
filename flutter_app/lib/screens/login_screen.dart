@@ -162,9 +162,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Emotional Tutor',
+                      'Pip - Personal Tutor for Kids',
                       textAlign: TextAlign.center,
-                      style: AppTextStyles.display(context).copyWith(fontSize: 26),
+                      style: AppTextStyles.display(context).copyWith(fontSize: 22),
                     ),
                     const SizedBox(height: 2),
                     Text(

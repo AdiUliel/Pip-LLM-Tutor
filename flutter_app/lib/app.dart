@@ -27,7 +27,7 @@ class EmotionalTutorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Emotional Tutor',
+      title: 'Pip - Personal Tutor for Kids',
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
       theme: buildAppTheme(),
