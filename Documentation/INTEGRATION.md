@@ -7,61 +7,49 @@ have to do to deploy and run it.
 ## The connected flow
 
 ```text
-                         ┌──────────────────────────────────────────┐
-                         │            Firebase / Cloud Functions       │
-                         │              (region: europe-west10)        │
-   ESP32 device          │                                            │     Flutter app
- ┌───────────────┐       │  onSessionCreated ─ first question + TTS    │   ┌──────────────┐
- │ button + mic  │       │  answerQuestion   ─ grade + Gemini + TTS    │   │ device monitor│
- │ ES8311 codec  │       │  transcribeAudio  ─ STT proxy               │   │ reports/trends│
- │ ILI9341 +     │       │  Gemini (Vertex, global endpoint)           │   │ child config  │
- │ pip_face      │       └──────────────────────────────────────────┘   └──────────────┘
- └──────┬────────┘                     ▲   │                                   ▲   │
-        │ 1. create session            │   │ 2. seed question+audio            │   │
-        │  {childId,deviceId,subject,  │   ▼                                   │   ▼
-        │   startedAt,status:starting, ├─ sessions/{id} (currentQuestion,      │  watch sessions,
-        │   awaitingFirstQuestion}     │   currentQuestionAudioUrl)            │  questions, deviceState
-        │                              │                                       │
-        │ 3. speak question, listen    │                                       │
-        │ 4. submit learning turn ─────┼─ sessions/{id}/exchanges/{id}         │
-        │      {childAnswer,pending}   │   (childAnswer)                        │
-        │                              │ 5. answerQuestion grades, calls       │
-        │                              │    Gemini, generates next question,   │
-        │ 6. poll exchange ◄───────────┼─ writes {spokenFeedback, emotion,     │
-        │      until status:done       │   nextQuestion, audioUrl, isCorrect}  │
-        │ 7. show emotion + speak audio│                                       │
-        │ 8. loop to step 3            │                                       │
-        │                              │                                       │
-        └─ deviceState/{deviceId} ─────┴──────── status + heartbeat ───────────┘
+   ESP32 device                Firebase / Cloud Functions              Flutter app
+ ┌───────────────┐            (region: europe-west10)               ┌───────────────┐
+ │ button + mic  │                                                  │ device monitor │
+ │ ES8311 codec  │   1. create session {childId, deviceId,          │ reports/trends │
+ │ ILI9341 +     │      subject, startedAt} ───────────────▶        │ child config   │
+ │ pip_face      │      onSessionCreated seeds the first            └───────┬───────┘
+ └──────┬────────┘      question + its TTS audio                            │
+        │                                                                   │
+        │ 2. speak question, record answer (push-to-talk)                   │
+        │ 3. POST raw PCM ──▶ processTurn:                                  │
+        │       STT → grade → Gemini (gated) → TTS,                         │
+        │       writes sessions/questions/exchanges docs ───────────────────┤
+        │ 4. response: feedback + emotion + next question                   │ watches
+        │       in headers, MP3 audio in the body                           │ sessions,
+        │ 5. show emotion, speak audio, loop to 2                           │ questions,
+        │                                                                   │ deviceState
+        └── deviceState/{deviceId}: status + heartbeat every 10 s ──────────┘
 ```
 
 The device, functions, and app all read/write the **same Firestore documents** —
 that shared schema is what connects them. See `LLM_INTERFACE.md` for field-level
-detail.
+detail. (`answerQuestion`, a Firestore-trigger route, stays deployed as the
+app-initiated / fallback path.)
 
-## What was changed to connect everything
+## How each part is wired
 
 **Cloud Functions (`firebase/functions/`)**
 - `setGlobalOptions({ region: "europe-west10" })` so *all* functions run in one
-  region (previously only `transcribeAudio` was pinned; the rest defaulted to
-  `us-central1`). The functions must use the Firebase Functions v2 API for this
-  global option to apply.
-- Gemini moved to the Vertex **`global`** endpoint and the model bumped to
-  `gemini-2.5-flash` (the previous `gemini-2.0-flash-001` configuration returned
-  404 in this project).
-- **TTS audio is now actually produced.** `synthesizeAndStore` is wired into both
-  the learning-turn path (feedback + next question) and the free-text path, and
-  the audio is uploaded *before* `status:"done"` so the polling device never sees
-  a done doc without an `audioUrl`.
-- New `onSessionCreated` trigger seeds the first question and its audio when the
+  region. The functions must use the Firebase Functions v2 API for this global
+  option to apply.
+- Gemini runs through the Vertex **`global`** endpoint; the tutor feedback uses
+  `gemini-2.5-flash-lite` and material extraction uses `gemini-2.5-flash`.
+- **TTS audio** is synthesized for every spoken reply; on the trigger path the
+  audio is uploaded *before* `status:"done"`, so a polling device never sees a
+  done doc without an `audioUrl`.
+- The `onSessionCreated` trigger seeds the first question and its audio when the
   device creates a session with `awaitingFirstQuestion:true`.
 
 **ESP32 firmware (`ESP32/homework_assistant/`)**
 - Drives the full adaptive tutor loop (speak question → listen → grade → speak
-  feedback + next question → repeat) instead of one-shot free-text Q&A.
-- Session creation is now **rules-compliant** (`childId, deviceId, subject,
-  startedAt`) — the old version sent only `deviceId` and was rejected by the
-  security rules.
+  feedback + next question → repeat).
+- Session creation sends the full **rules-required** document (`childId,
+  deviceId, subject, startedAt`) so the Firestore security rules accept it.
 - **Child auto-detect:** queries `children` where `deviceId ==` this device's
   Firebase UID; falls back to `CHILD_ID` in `secrets.h` (the Firestore child
   document ID, not the device UID); else runs generic.
@@ -74,15 +62,14 @@ detail.
   bottom strip.
 
 **pip_face (`pip_face/`)**
-- README wiring example corrected for *this* board (the old example used
-  `TFT_DC 9` / `TFT_RST 8`, but GPIO8 is the I2S speaker line here). The
-  configured `User_Setup.h` ships with the patched TFT_eSPI in
-  `ESP32/modified libraries/TFT_eSPI/`.
+- README wiring example matches *this* board (GPIO8 is the I2S speaker line,
+  so the display uses different DC/RST pins). The configured `User_Setup.h`
+  ships with the patched TFT_eSPI in `ESP32/modified libraries/TFT_eSPI/`.
 
 **Rules**
-- `storage.rules` merged: the device's `tts/` public read **and** the app's
-  `materials/` auth read/write now live in one ruleset (they were split across
-  two divergent files). `firebase/` and `flutter_app/` copies are identical.
+- One `storage.rules` ruleset covers both the device's `tts/` public read and
+  the app's `materials/` authenticated read/write; the `firebase/` and
+  `flutter_app/` copies are identical.
 
 ## Deploy
 
@@ -132,6 +119,8 @@ place.
 5. Board settings: ESP32S3 Dev Module, **PSRAM: OPI PSRAM**, Flash 16 MB,
    Partition "Huge APP".
 6. Flash `homework_assistant.ino`.
+7. Button line: `pins.h` uses IO3 (with IO2 as GND); if a unit's IO3 expansion
+   line is flaky, switch `PIN_BTN` to GPIO0 (the onboard BOOT button).
 
 ## Test checklist (edge-to-edge)
 
@@ -146,12 +135,3 @@ place.
 4. Hold the button, answer out loud, release → device shows thinking, then the
    emotion, and speaks the feedback + next question.
 5. App → Reports / Session detail shows the question log filling in.
-
-## Known things to verify on real hardware
-
-- **Button line:** `pins.h` uses IO3 (with IO2 as GND). If your unit's IO3
-  expansion line is flaky, switch `PIN_BTN` to GPIO0 (onboard BOOT button).
-- **`europe-west10` trigger support** — see the deploy note above.
-- **Vertex model availability** — we use the `global` endpoint to avoid
-  region-specific gaps; if you pin `GEMINI_LOCATION`, confirm the model exists
-  there.

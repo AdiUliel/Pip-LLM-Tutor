@@ -17,7 +17,7 @@ flowchart TB
         ST[(Storage<br/>homework files · TTS cache)]
         subgraph AI["Google Cloud AI APIs — via service account, no keys"]
             STT[Speech-to-Text]
-            GEM[Gemini 2.5 Flash<br/>Vertex AI]
+            GEM[Gemini 2.5 Flash-Lite<br/>Vertex AI]
             TTS[Text-to-Speech he-IL]
         end
     end
@@ -46,7 +46,7 @@ flowchart TB
 
 - **Device → Cloud Functions:** one `processTurn` HTTPS call per answer — uploads
   the raw PCM audio, receives the graded feedback + the spoken MP3 inline
-  (Phase 2; see [PERFORMANCE_EVALUATION.md](PERFORMANCE_EVALUATION.md)).
+  (see [PERFORMANCE_EVALUATION.md](PERFORMANCE_EVALUATION.md)).
 - **Device → Firestore (direct):** the device also writes its `deviceState`
   heartbeat and creates sessions over the Firestore REST API (anonymous auth), so
   the app sees it live.

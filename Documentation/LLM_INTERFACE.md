@@ -1,25 +1,29 @@
-# LLM Interface — Emotional Tutor
+# LLM Interface — Pip LLM Tutor
 
-This project now includes a real LLM integration layer for the emotional tutor flow.
-The main LLM interface is implemented in Firebase Cloud Functions so the ESP32 / Raspberry Pi device does **not** hold an API key and does **not** call Gemini directly.
+The LLM integration layer of the tutor. It is implemented in Firebase Cloud
+Functions so the ESP32 device does **not** hold an API key and does **not**
+call Gemini directly.
 
 ## High-level flow
 
+Primary path — one synchronous HTTPS call per turn (`processTurn`):
+
 ```text
-Child speaks
+Child speaks (push-to-talk)
   ↓
-Device performs / receives Speech-to-Text transcript
+Device uploads the raw PCM audio to processTurn
   ↓
-Device writes child answer to Firestore
+processTurn: Speech-to-Text → grade the answer → Gemini feedback (only when
+needed) → generate next question → Text-to-Speech
   ↓
-Cloud Function reads the session state
-  ↓
-Cloud Function checks correctness + calls Gemini for emotional feedback
-  ↓
-Cloud Function generates next math/English question
-  ↓
-Device reads Firestore and speaks/displays the response
+Device receives feedback + next question in the response headers and the MP3
+audio in the response body, and speaks/displays it
 ```
+
+The function still writes the same `sessions` / `questions` / `exchanges`
+documents, so the parent app follows the lesson live from Firestore. A
+Firestore-trigger path (`answerQuestion`, described below) remains deployed as
+the app-initiated / fallback route.
 
 ## Main Firestore collections
 
@@ -194,17 +198,6 @@ Output:
 
 The Firestore trigger `answerQuestion` processes this pending exchange.
 
-## Files added / changed
-
-```text
-firebase/functions/index.js
-firebase/functions/tutorEngine.js
-firebase/functions/questionGenerator.js
-firebase/firestore.rules
-flutter_app/firestore.rules
-Documentation/LLM_INTERFACE.md
-```
-
 ## Deploy
 
 From the `firebase/` folder:
@@ -251,13 +244,15 @@ not uniform across regions (Berlin/europe-west10 does not serve every Gemini
 model). The *functions* still run in europe-west10; only the model endpoint is
 global. To pin a specific region instead, set `GEMINI_LOCATION`.
 
-The previous model `gemini-2.0-flash-001` was discontinued (404). Default is now
-`gemini-2.5-flash`.
+Models in use: the tutor feedback engine runs `gemini-2.5-flash-lite` (low
+latency; the reply is a short fixed-JSON, so the lite model is sufficient), and
+homework-material question extraction runs `gemini-2.5-flash` (multimodal PDF /
+image analysis). Both are overridable via environment variables.
 
 Optional environment variables:
 
 ```text
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-2.5-flash-lite
 GEMINI_LOCATION=global
 FUNCTIONS_REGION=europe-west10
 ```
@@ -268,4 +263,4 @@ FUNCTIONS_REGION=europe-west10
 - Lets the app and device share the same tutor logic.
 - Keeps session history and reports consistent.
 - Allows fallback logic if Gemini fails.
-- Makes it easier to add safety filters and parent controls later.
+- Central place for the child-safety filters and parent controls.

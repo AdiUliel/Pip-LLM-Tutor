@@ -36,18 +36,18 @@ The key algorithmic decisions evaluated:
 | Turn types | Correct answer (no LLM) and wrong answer (Gemini hint), warm path |
 | Date | Measured 2026-06-29 |
 
-The same metric was captured after each optimisation iteration (baseline →
-Phase 0 → Phase 1 → Phase 2) so the effect of each change is isolated.
+The same metric was captured for each configuration in the table below, so the
+effect of each change is isolated.
 
-## 3. Results — latency by iteration
+## 3. Results — latency by configuration
 
-| Iteration | Key lever | Correct | Wrong (Gemini) | Net hops |
+| Configuration | Key characteristics | Correct | Wrong (Gemini) | Net hops |
 |---|---|---|---|---|
-| WAV/URL origin | full uncompressed WAV downloaded before playback | ~20 s † | — | 5 |
-| MP3-URL baseline | MP3 over URL; write→trigger→poll→download | **14.8 s** | 17–19 s | 5 |
-| Phase 0 | `minInstances`, `preferRest`, `thinkingBudget:0`, keep-alive poll | 10.8 s | 12.5 s | 5 (warm) |
-| Phase 1 | one synchronous `processTurn` (grade + gated Gemini + TTS inline); SD-cached prompts | 6.3–6.6 s | 7–8.3 s | 2 |
-| **Phase 2** | upload raw PCM to `processTurn` (STT server-side); keep-alive heartbeat | **4.0–4.3 s** | 5.8 s | 1 |
+| WAV over URL | full uncompressed WAV downloaded before playback | ~20 s † | — | 5 |
+| MP3 over URL | write→trigger→poll→download | **14.8 s** | 17–19 s | 5 |
+| + warm config | `minInstances`, `preferRest`, `thinkingBudget:0`, keep-alive poll | 10.8 s | 12.5 s | 5 (warm) |
+| + single-call turn | one synchronous `processTurn` (grade + gated Gemini + TTS inline); SD-cached prompts | 6.3–6.6 s | 7–8.3 s | 2 |
+| **+ server-side STT (current)** | raw PCM uploaded to `processTurn`; keep-alive heartbeat | **4.0–4.3 s** | 5.8 s | 1 |
 
 † Not instrumented (timers were added at the MP3 baseline).
 
@@ -70,11 +70,11 @@ The original MP3-URL baseline, broken down by stage on three real turns (device
 | **RECORD → FIRST SOUND** | **14.8 s** | **17.0 s** | **19.0 s** | 5.4–9.8 s |
 
 Gap = total − the four measured stages; it's the two `firestoreWriteDeviceState`
-writes (local preprocessing is sub-100 ms). Phase 1 collapsed C+D+E+F+the writes
-into a single `processTurn` call, and Phase 2 folded STT (B) in too — which is why
-the after-figures below land near 4 s.
+writes (local preprocessing is sub-100 ms). The single-call design collapses
+B+C+D+E+F+the writes into one `processTurn` request — which is why the
+current-configuration figures below land near 4 s.
 
-## 4. Results — Phase 2 measured live on hardware
+## 4. Results — current configuration measured live on hardware
 
 Three consecutive real turns (the raw `[lat]` output):
 

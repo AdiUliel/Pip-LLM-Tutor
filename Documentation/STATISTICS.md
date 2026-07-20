@@ -26,14 +26,14 @@ forward-looking additions. Everything is grounded in the actual data model
 | Device online/offline + current question live | Device monitor | `deviceState.lastHeartbeat` freshness |
 | Average accuracy across sessions | Dashboard | `StatsProvider.averageAccuracy` |
 
-## 2. Measured engineering statistics (poster-ready)
+## 2. Measured engineering statistics 
 
 Real numbers, measured on hardware (see `latency-results.pdf` / `LATENCY.md`):
 
 | Metric | Value |
 |---|---|
 | Turn latency (record-end → robot speaks), original | **14.8–19 s** |
-| Turn latency after optimisation (Phase 2) | **4.0–5.8 s** |
+| Turn latency, current single-call design | **4.0–5.8 s** |
 | Improvement | **~3.5× faster** (10–13 s cut per turn) |
 | Serial network hops per turn | **5 → 1** |
 | Audio delivery: URL download → inline decode | **2.6–3.8 s → 2–4 ms** |
@@ -54,7 +54,7 @@ Codebase (counted from the repo, 2026-07-17):
 | Pre-cached spoken phrases | **8** (SD cache, warmed at boot) |
 | Languages | Hebrew UI + speech, English content; he-IL / en-US STT |
 
-## 3. Per-turn data now captured (ready to chart)
+## 3. Per-turn data now captured 
 
 Each answered question writes these fields (in `tutorEngine.js`); the data
 accumulates from deploy onward and can be charted in the app with a query only —
@@ -66,7 +66,7 @@ no further backend work:
 | `questions.difficulty` | **Accuracy by difficulty level** — shows the adaptive engine working on the 1–10 ladder |
 | `questions.fromMaterial` | **Material vs generated**: share and accuracy on parent-uploaded homework |
 | `questions.mood` + `questions.correct` | **Mood ↔ accuracy correlation** — the emotional-tutor premise, with data |
-| `session.longestStreak` (now maintained) | **Longest correct streak** — the app already renders it; previously always 0, now real |
+| `session.longestStreak` | **Longest correct streak** in the session — rendered in the session summary |
 | `children.levelHistory[]` (`{subject, level, at}`) | **Level progression over time** — the clearest "is my child improving" curve |
 | `exchange.llmUsed` | **LLM skip rate**: % of turns answered deterministically (the `needsLLM` gate) — quantifies the cost/latency win |
 | `exchange.processingMs` + `session.processingMsTotal` | **Live turn-latency distribution / averages** in production, continuing the LATENCY.md story |
@@ -85,30 +85,3 @@ transition (engineering/reliability data, not parent-facing):
 | `uptimeSec` | seconds since boot — session stability |
 | `bootCount` | cold boots + deep-sleep wakes (RTC-persisted) — activation count |
 | `ttsCacheHits` / `ttsCacheMisses` | **TTS cache hit rate** — how often a spoken phrase was served instantly from SD vs synthesized in the cloud |
-
-## 4. Computable now from existing session data
-
-Available app-side from the `sessions` stream, no backend change (some already
-surfaced in §1; the rest are a small `StatsProvider` addition away):
-
-- Hint effectiveness: % solved on the 2nd try after a hint (consecutive
-  `questions` with the same prompt).
-- Most-missed questions/words ("top 5 hardest") — group `questions` by prompt.
-- Child thinking time per question — gap between `answeredAt` and the next `askedAt`.
-- Time-of-day usage histogram — from `sessions.startedAt`.
-- Session end-reason breakdown (child asked / declined / 50-min cap / inactivity)
-  — `StatsProvider.endReasonBreakdown`.
-- Materials funnel: files uploaded → questions extracted → blocked by validation
-  (`materials` docs: `items.length`, `status`).
-
-## 5. Future work
-
-Lower priority — each needs a new hook or is a nice-to-have:
-
-- **Recording duration / silence-rejection count per turn** — measured on-device
-  (serial-logged) but not yet sent up; would need a per-turn device write.
-- **Device uptime % / heartbeat-gap history** — `bootCount`/`uptimeSec` are now
-  captured, but a historical uptime chart needs a log or Cloud Monitoring (the
-  `deviceState` fields are overwritten each transition).
-- **Answers-per-hour cloud cost** — the token, STT-seconds and TTS-character
-  counters (all captured) can be combined into a per-device economics figure.

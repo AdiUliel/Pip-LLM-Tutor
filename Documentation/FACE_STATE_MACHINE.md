@@ -111,10 +111,10 @@ mapping.
 
 ## 5. Notes on the implementation
 
-All 12 designed face states are now reachable. PROUD and PLAYFUL — previously
-defined but unused — are wired as of this version:
+All 12 designed face states are reachable. The two celebration/engagement
+states work as follows:
 
-- **PROUD** — the backend now emits `emotion:"proud"` for a solid correct streak
+- **PROUD** — the backend emits `emotion:"proud"` for a solid correct streak
   (`streakCorrect ≥ 2`), and `pipEmotionFor()` maps it to the PROUD face.
   CELEBRATING is reserved for a rare long streak (`≥ 5`), keeping it special.
 - **PLAYFUL** — the firmware shows a brief PLAYFUL wink when the child goes quiet
