@@ -10,6 +10,10 @@ class DeviceState {
   final DeviceStatus status;
   final Subject? activeSubject;
   final String? currentQuestion;
+  /// Display name of the child currently using the device (set after identify;
+  /// null when idle/unpaired). Lets the app show the live session under the
+  /// child actually in front of the device, not just the device owner.
+  final String? activeChildName;
   /// "start" | "stop" | "none" (parent app writes; device clears it).
   final String command;
 
@@ -19,6 +23,7 @@ class DeviceState {
     required this.status,
     required this.activeSubject,
     required this.currentQuestion,
+    this.activeChildName,
     required this.command,
   });
 
@@ -39,6 +44,7 @@ class DeviceState {
         activeSubject:
             m['activeSubject'] == null ? null : subjectFromId(m['activeSubject'] as String),
         currentQuestion: m['currentQuestion'] as String?,
+        activeChildName: m['activeChildName'] as String?,
         command: (m['command'] ?? 'none') as String,
       );
 
@@ -48,6 +54,7 @@ class DeviceState {
         'activeSubject':
             activeSubject == null ? null : subjectMeta[activeSubject!]!.id,
         'currentQuestion': currentQuestion,
+        'activeChildName': activeChildName,
         'command': command,
       };
 
@@ -56,6 +63,7 @@ class DeviceState {
     DeviceStatus? status,
     Subject? activeSubject,
     String? currentQuestion,
+    String? activeChildName,
     String? command,
   }) =>
       DeviceState(
@@ -64,6 +72,7 @@ class DeviceState {
         status: status ?? this.status,
         activeSubject: activeSubject ?? this.activeSubject,
         currentQuestion: currentQuestion ?? this.currentQuestion,
+        activeChildName: activeChildName ?? this.activeChildName,
         command: command ?? this.command,
       );
 

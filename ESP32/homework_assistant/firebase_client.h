@@ -45,6 +45,7 @@ static String g_idToken      = "";
 static String g_refreshToken = "";
 static String g_sessionId    = "";
 static String g_childId      = "";   // resolved child profile (may be empty)
+static String g_childName    = "";   // resolved child's display name (for deviceState.activeChildName)
 static String g_firebaseUid  = "";   // Firebase anonymous UID == deviceId
 // Sequence of the CURRENT question. Read from the session at start, then updated
 // from each processTurn response (X-Turn-Seq). Echoed on every answer so the
@@ -293,6 +294,8 @@ String firestoreResolveChildId() {
       String name = resp[0]["document"]["name"].as<String>();
       String childId = name.substring(name.lastIndexOf('/') + 1);
       Serial.println("[Firestore] Auto-detected child: " + childId);
+      String cn = resp[0]["document"]["fields"]["name"]["stringValue"].as<String>();
+      if (cn.length()) g_childName = cn;
 
       // Cache the idle power policy (screen-off / deep-sleep) from settings.
       // Firestore REST returns integers as decimal strings under "integerValue".
@@ -375,6 +378,8 @@ void firestoreReadChildProfile(const String& childId) {
     if (lm.length()) g_childLevelMath    = lm.toInt();
     if (le.length()) g_childLevelEnglish = le.toInt();
   }
+  String nm = resp["fields"]["name"]["stringValue"].as<String>();
+  if (nm.length()) g_childName = nm;
   Serial.printf("[Firestore] refreshed profile for %s: idle %d/%d min, level math %d / english %d\n",
                 childId.c_str(), g_screenOffMinutes, g_deviceSleepMinutes,
                 g_childLevelMath, g_childLevelEnglish);
@@ -1059,6 +1064,8 @@ int firestoreWriteDeviceState(const String& status,
   url += "&updateMask.fieldPaths=bootCount";
   url += "&updateMask.fieldPaths=ttsCacheHits";
   url += "&updateMask.fieldPaths=ttsCacheMisses";
+  url += "&updateMask.fieldPaths=activeChildId";
+  url += "&updateMask.fieldPaths=activeChildName";
 
   JsonDocument body;
   body["fields"]["status"]["stringValue"]        = status;       // idle|asking|listening|feedback|break|error
@@ -1076,6 +1083,15 @@ int firestoreWriteDeviceState(const String& status,
   body["fields"]["bootCount"]["integerValue"]      = String(g_bootCount);
   body["fields"]["ttsCacheHits"]["integerValue"]   = String(g_ttsCacheHits);
   body["fields"]["ttsCacheMisses"]["integerValue"] = String(g_ttsCacheMisses);
+  // Who's currently in front of the device (set after identify). Lets the app
+  // label the live session with the active child, not just the device owner.
+  if (g_childId.length() > 0) {
+    body["fields"]["activeChildId"]["stringValue"]   = g_childId;
+    body["fields"]["activeChildName"]["stringValue"] = g_childName;
+  } else {
+    body["fields"]["activeChildId"]["nullValue"]   = nullptr;
+    body["fields"]["activeChildName"]["nullValue"] = nullptr;
+  }
 
   String bodyStr;
   serializeJson(body, bodyStr);

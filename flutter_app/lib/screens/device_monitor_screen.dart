@@ -101,6 +101,14 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          if ((state?.activeChildName ?? '').isNotEmpty) ...[
+                            Text(
+                              'פעיל כעת: ${state!.activeChildName}',
+                              style: AppTextStyles.label(context)
+                                  .copyWith(color: AppColors.sky),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
                           Text(
                             'שאלה נוכחית',
                             style: AppTextStyles.hint(context)
