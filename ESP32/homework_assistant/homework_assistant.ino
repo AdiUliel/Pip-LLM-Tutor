@@ -470,6 +470,7 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
     speakTextCached("לא הכרתי את השם הזה. אפשר להגיד אותו שוב, בבקשה?");
   }
   g_childId = child.matchedChildId;
+  g_childIdentified = true;   // real child confirmed — deviceState may attribute activity now
 
   // ── Step 2 — speak greeting + ask for subject, record answer ──────────────
   if (!child.audioUrl.isEmpty()) {
@@ -657,6 +658,10 @@ void setup() {
     }
     Serial.println("[Session] created after retry — recovered.");
   }
+  // Fixed-child build (CHILD_ID in secrets.h): the child is known without a
+  // voice identify, so deviceState may attribute activity immediately. The
+  // identify flow sets this flag only after the spoken name actually matches.
+  if (!useIdentifyFlow && !g_childId.isEmpty()) g_childIdentified = true;
 
   // App-link boot check: the app shows this device "online" only while its
   // deviceState/{uid} doc keeps getting fresh writes. Print the result of the FIRST

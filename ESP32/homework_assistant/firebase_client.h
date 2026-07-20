@@ -46,6 +46,11 @@ static String g_refreshToken = "";
 static String g_sessionId    = "";
 static String g_childId      = "";   // resolved child profile (may be empty)
 static String g_childName    = "";   // resolved child's display name (for deviceState.activeChildName)
+// True only once the child in front of the device was actually IDENTIFIED
+// (voice identify matched, or a fixed CHILD_ID build). Until then g_childId may
+// hold an ARBITRARY sibling (limit-1 resolve when siblings share the device),
+// so deviceState must not attribute activity to it.
+static bool g_childIdentified = false;
 static String g_firebaseUid  = "";   // Firebase anonymous UID == deviceId
 // Sequence of the CURRENT question. Read from the session at start, then updated
 // from each processTurn response (X-Turn-Seq). Echoed on every answer so the
@@ -1083,9 +1088,10 @@ int firestoreWriteDeviceState(const String& status,
   body["fields"]["bootCount"]["integerValue"]      = String(g_bootCount);
   body["fields"]["ttsCacheHits"]["integerValue"]   = String(g_ttsCacheHits);
   body["fields"]["ttsCacheMisses"]["integerValue"] = String(g_ttsCacheMisses);
-  // Who's currently in front of the device (set after identify). Lets the app
-  // label the live session with the active child, not just the device owner.
-  if (g_childId.length() > 0) {
+  // Who's currently in front of the device. Only ONCE IDENTIFIED — before that
+  // g_childId may be an arbitrary sibling from the limit-1 resolve, and stamping
+  // it would show "device busy with X" for a session that isn't happening.
+  if (g_childIdentified && g_childId.length() > 0) {
     body["fields"]["activeChildId"]["stringValue"]   = g_childId;
     body["fields"]["activeChildName"]["stringValue"] = g_childName;
   } else {

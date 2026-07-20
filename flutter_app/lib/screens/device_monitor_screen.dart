@@ -68,7 +68,7 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
     final activeForThisChild = child != null && device.isActiveFor(child.id);
     final busyWithOther = child != null && device.isBusyWithOther(child.id);
 
-    final emo = !online
+    final emo = !online || busyWithOther
         ? RobotEmotion.neutral
         : status == DeviceStatus.listening
             ? RobotEmotion.listening
@@ -243,6 +243,7 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
           content: Text(wasEmpty ? 'ההתקן חובר בהצלחה' : 'ההתקן הוחלף בהצלחה'),
         ),
       );
+      _loadSiblingDevices(); // deviceId changed — refresh which siblings differ
     } catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(
@@ -263,6 +264,7 @@ class _DeviceMonitorScreenState extends State<DeviceMonitorScreen> {
       await childProv.save(cur.copyWith(deviceId: deviceId));
       if (!mounted) return;
       messenger.showSnackBar(const SnackBar(content: Text('חובר לאותו התקן')));
+      _loadSiblingDevices(); // drop the button for the device we now share
     } catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text('החיבור נכשל: $e')));

@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../constants.dart';
 import '../models/device_state.dart';
 import '../services/device_sync_service.dart';
 
@@ -26,16 +27,30 @@ class DeviceProvider extends ChangeNotifier {
   String? get activeChildId => _state?.activeChildId;
   String? get activeChildName => _state?.activeChildName;
 
-  /// True only when the device is online AND currently working with [childId].
+  /// True when the device is online AND currently working with [childId].
   /// Drives per-child separation: a child sees "connected + activity" only while
   /// the device is actually running their session, not a sibling's.
-  bool isActiveFor(String childId) =>
-      isOnline && (_state?.activeChildId ?? '') == childId;
+  ///
+  /// Legacy fallback: firmware that predates activeChildId never reports it —
+  /// with no attribution info we treat every linked child as active (the old
+  /// shared behavior) instead of hiding live status/question from everyone.
+  /// Once the device reports the field, strict separation kicks in.
+  bool isActiveFor(String childId) {
+    if (!isOnline) return false;
+    final a = _state?.activeChildId ?? '';
+    if (a.isEmpty) return true; // legacy firmware — no attribution reported
+    return a == childId;
+  }
 
   /// Online but running a DIFFERENT child's session (device is "busy").
+  /// Requires a non-idle status: a device that is merely powered on (boot,
+  /// between sessions) isn't "busy with" anyone.
   bool isBusyWithOther(String childId) {
     final a = _state?.activeChildId ?? '';
-    return isOnline && a.isNotEmpty && a != childId;
+    return isOnline &&
+        a.isNotEmpty &&
+        a != childId &&
+        (_state?.status ?? DeviceStatus.idle) != DeviceStatus.idle;
   }
 
   /// Switch to (or start watching) a different device.
