@@ -658,6 +658,12 @@ void setup() {
       delay(200);
       if (++tick >= 40) {                          // ~8 s between cloud checks
         tick = 0;
+        // Keep the app's heartbeat fresh WHILE waiting to be paired. Without this
+        // the only deviceState write was the one boot write (line ~639), so ~60 s
+        // later the app's pairing freshness check (pairingMaxHeartbeatAgeSec=60)
+        // sees a stale/absent heartbeat and refuses with "ההתקן נמצא, אבל לא דיווח
+        // עדכני" — making a device that's been on >1 min impossible to pair.
+        firestoreWriteDeviceState("idle");
         g_childId = firestoreResolveChildId();      // also refreshes idle-policy settings
       }
     }
