@@ -1,9 +1,10 @@
 const { FieldValue } = require("firebase-admin/firestore");
 const { answerVariants, checkAnswer, clamp, generateQuestion } = require("./questionGenerator");
 
-// Default model — kept in sync with index.js. gemini-2.0-flash-001 was
-// discontinued (404); 2.5-flash is the current child-safe default.
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// Default model — kept in sync with index.js. index.js always passes an
+// explicit model, so this fallback only matters if llmFeedback is called
+// directly; keep it aligned with index.js (flash-lite for latency).
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 // Child-safe safety settings applied to every Gemini call in this module.
 const CHILD_SAFETY_SETTINGS = [
@@ -433,6 +434,10 @@ async function processLearningTurn({
 
   const t0 = Date.now();   // turn-processing stopwatch (for exchange.processingMs)
   const child = await readChild(db, session.childId);
+  // Gender-correct 2nd-person verb for the fixed (non-LLM) prompts: masc "רוצה
+  // לנסות/להמשיך", fem "רוצָה" needs the pronoun to force the feminine reading,
+  // so we say "את" + verb for girls. boy → "", girl → "את ".
+  const youWant = (child && child.gender === "boy") ? "רוצה" : "את רוצה";
   let currentQuestion = session.currentQuestion;
   let expectedAnswer = session.currentExpectedAnswer;
 
@@ -492,7 +497,8 @@ async function processLearningTurn({
     if (!saidYes) {
       // Unclear reply — repeat the yes/no question, flag stays armed so the
       // next "לא" actually ends the session. turnSeq unchanged (no advance).
-      const q = "לא הבנתי. רוצה להמשיך לתרגל עוד קצת? תגיד כן או לא.";
+      const reSayYesNo = (child && child.gender === "boy") ? "תגיד" : "תגידי";
+      const q = `לא הבנתי. ${youWant} להמשיך לתרגל עוד קצת? ${reSayYesNo} כן או לא.`;
       const audioUrl = synthesize ? await synthesize(q, `${exchangeId}_reask`) : "";
       await exchangeRef.set(
         { status: "done", spokenFeedback: q, audioData: audioUrl, emotion: "encouraging", answeredAt: FieldValue.serverTimestamp() },
@@ -736,7 +742,8 @@ async function processLearningTurn({
   // Build the spoken utterance. In hint mode the feedback already contains
   // a "try again?" prompt — don't append the question again to avoid the
   // robot saying it twice in a row.
-  const continuePromptText = "רוצה להמשיך לתרגל עוד קצת? תגיד כן או לא.";
+  const sayYesNo = (child && child.gender === "boy") ? "תגיד" : "תגידי";
+  const continuePromptText = `${youWant} להמשיך לתרגל עוד קצת? ${sayYesNo} כן או לא.`;
   const spokenText = isHintMode
     ? feedback.spokenFeedback.trim()
     : shouldAskToContinue

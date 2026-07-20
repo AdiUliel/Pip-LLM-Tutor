@@ -84,7 +84,11 @@ const ai = new GoogleGenAI({
   location: process.env.GEMINI_LOCATION || "global",
 });
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// flash-lite: lower-latency variant, ample for our tiny fixed-JSON feedback
+// (maxOutputTokens 180). The [lat] logs showed LLM turns at 2–2.8 s vs 0.4–1 s
+// without — this is the biggest remaining server-side win. Revert by setting
+// GEMINI_MODEL=gemini-2.5-flash if feedback quality regresses.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 // Child-safe safety settings applied to every Gemini call in this file.
 const CHILD_SAFETY_SETTINGS = [
