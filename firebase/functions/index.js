@@ -407,7 +407,14 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
       { merge: true }
     );
   } else {
-    promptText = `לא הבנתי את השם. חזור שוב על שמך.`;
+    // After several misses with multiple siblings, read the names out loud —
+    // otherwise a child whose name STT keeps missing is stuck re-asking forever
+    // (the single-child fallback above is disabled when siblings share a device).
+    const names = children.map((c) => String(c.name || "").trim()).filter(Boolean);
+    promptText =
+      attempts >= FALLBACK_AFTER && names.length >= 2 && names.length <= 4
+        ? `לא הצלחתי לזהות. מי כאן — ${names.join(" או ")}?`
+        : `לא הבנתי את השם. חזור שוב על שמך.`;
   }
 
   const audioUrl = await safeSynthesize(promptText, `${exchangeId}_identify`);

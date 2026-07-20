@@ -92,18 +92,22 @@ LLM, saving ~1.5 s and one API call on the majority of turns.
 
 ## 5. Correctness of the grading algorithm
 
-Answers are graded by a deterministic check (normalisation + accepted answer
-variants) before any LLM call. During development, grading false-positives (e.g.
-partial/near-miss transcripts scored as correct) were found and fixed
-(commit `f9febcc`), and English answers spoken in Hebrew are handled via an STT
-alternative-language path. Grading is validated qualitatively per turn against the
-child's transcript, which is logged in `sessions/{id}/questions` (prompt, expected
-answer, transcript, correct/wrong) for review.
+Answers are graded by a deterministic pipeline (normalisation → accepted answer
+variants → filler stripping → spoken-Hebrew number parsing → cross-script
+phonetic matching) before any LLM call. The pipeline is covered by an automated
+test suite committed at `firebase/functions/test/run_tests.js` (run with
+`npm test` from `firebase/functions/`):
 
-The per-turn telemetry now recorded (`correct`, `topic`, `difficulty`, `llmUsed`,
-`processingMs`, token counts — see [STATISTICS.md](STATISTICS.md)) makes the next
-step a quantitative one: accuracy-by-topic, LLM-skip-rate, and live latency
-percentiles can be measured directly from production data.
+| Test group | What it verifies | Cases |
+|---|---|---|
+| Exact / variant / filler | digits, Hebrew number words, lead-in phrases | 8 |
+| Spoken Hebrew numbers | 0–999, both genders, tens+units, teens, hundreds — plus non-matches (9 ≠ 19, 24 ≠ 240) | 27 |
+| Cross-script phonetic | English answered in Hebrew letters ("רד" ↔ red) across the vocabulary bank, with false-positive guards | 60 |
+| Generator self-consistency | every generated question (both subjects × 10 difficulty levels) has a non-empty prompt/answer, the answer grades correct against itself, and math prompts are re-parsed to verify the arithmetic | ~1,400 |
+
+**Result: 1,499 assertions, 100% pass.** Each graded turn is also logged in
+`sessions/{id}/questions` (prompt, expected answer, transcript, correct/wrong),
+so grading decisions can be reviewed against the child's actual transcript.
 
 ## 6. Reproducing the measurement
 

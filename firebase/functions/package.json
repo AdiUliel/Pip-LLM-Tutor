@@ -2,6 +2,7 @@
   "name": "llm-homework-assistant-functions",
   "description": "Cloud Functions: trigger on new exchange, call LLM, write answer back",
   "scripts": {
+    "test": "node test/run_tests.js",
     "serve": "firebase emulators:start --only functions,firestore",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",

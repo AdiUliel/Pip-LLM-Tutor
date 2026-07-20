@@ -78,6 +78,16 @@ static void _initSSL() {
   _sslClient.setInsecure();  // no CA bundle needed
 }
 
+// Print the link/heap context alongside an HTTP failure. HTTP -1/-11 are
+// transport-level errors (TLS connect / read timeout); knowing the WiFi RSSI
+// and free heap at that moment tells apart a weak-signal problem from a
+// heap-pressure problem.
+static void _logNetDiag(int code) {
+  if (code > 0) return;   // real HTTP status — not a transport failure
+  Serial.printf("[NetDiag] rssi=%d dBm  freeHeap=%u B  (HTTP %d)\n",
+                (int)WiFi.RSSI(), (unsigned)ESP.getFreeHeap(), code);
+}
+
 // ── ISO-8601 UTC timestamp (needs NTP synced; see syncClock() in the sketch) ──
 // Firestore timestampValue must be RFC-3339 / ISO-8601. The deviceState
 // heartbeat freshness drives the app's online indicator, so this must be a real
@@ -328,6 +338,7 @@ String firestoreResolveChildId() {
     }
   } else {
     Serial.printf("[Firestore] child runQuery HTTP %d\n", code);
+    _logNetDiag(code);
     http.end();
   }
 
@@ -431,6 +442,7 @@ String firestoreCreateSession(const String& subject = SESSION_SUBJECT,
   int code = http.POST(bodyStr);
   if (code != 200) {
     Serial.printf("[Firestore] createSession failed: HTTP %d — %s\n", code, http.getString().c_str());
+    _logNetDiag(code);
     http.end();
     return "";
   }
@@ -720,6 +732,7 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     if (code == 401 && attempt == 0) { firebaseRefreshToken(); http.end(); continue; }
     if (code != 200) {
       Serial.printf("[Firestore] processTurn HTTP %d — %s\n", code, http.getString().c_str());
+      _logNetDiag(code);
       http.end();
       return false;
     }
@@ -789,6 +802,7 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
     if (code == 401 && attempt == 0) { firebaseRefreshToken(); http.end(); continue; }
     if (code != 200) {
       Serial.printf("[Firestore] processTurnAudio HTTP %d — %s\n", code, http.getString().c_str());
+      _logNetDiag(code);
       http.end();
       return false;
     }
