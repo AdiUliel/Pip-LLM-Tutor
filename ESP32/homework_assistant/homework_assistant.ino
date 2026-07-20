@@ -589,9 +589,22 @@ void setup() {
   // the saved refresh token has been invalidated.
   g_idToken = firebaseBootAuth();
   if (g_idToken.isEmpty()) {
-    Serial.println("❌ Firebase auth failed. Check FIREBASE_WEB_API_KEY in secrets.h");
+    // Auth is an HTTPS call, so it can transiently fail with -1/-11 on a
+    // WiFi/TLS/heap hiccup — don't halt forever on the first miss. Retry with
+    // exponential backoff (2s→…→30s cap) so a passing glitch self-heals. (A
+    // genuinely wrong FIREBASE_WEB_API_KEY will just keep failing — check
+    // secrets.h if it never recovers.)
+    Serial.println("❌ Firebase auth failed — retrying with backoff. (If it never recovers, check FIREBASE_WEB_API_KEY in secrets.h.)");
     faceStatus("error");
-    while (true) { faceTick(); delay(200); }
+    faceStrip("בעיית התחברות לשרת — מנסה שוב...");
+    uint32_t backoffMs = 2000;
+    for (int attempt = 1; g_idToken.isEmpty(); attempt++) {
+      Serial.printf("[Auth] retry #%d in %lus...\n", attempt, (unsigned long)(backoffMs / 1000));
+      for (uint32_t t = millis(); millis() - t < backoffMs; ) { faceTick(); delay(20); }
+      backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;   // cap at 30s
+      g_idToken = firebaseBootAuth();
+    }
+    Serial.println("[Auth] authenticated after retry — recovered.");
   }
 
   // Publish the user-visible pairing code → this device's UID so the parent app
@@ -713,10 +726,20 @@ void setup() {
     faceEmotion("thinking");
     ready = firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio, 30000, &g_currentSubject);
     if (!ready) {
-      Serial.println("❌ No first question. Check Cloud Functions / Vertex AI setup.");
+      // The first question comes from the backend over the network; a transient
+      // -1/-11 (or a slow function cold-start) shouldn't brick the boot. Keep
+      // re-waiting with a short backoff instead of halting forever.
+      Serial.println("❌ No first question yet — will keep waiting/retrying. (If it never arrives, check Cloud Functions / Vertex AI.)");
       faceStatus("error");
       firestoreWriteDeviceState("error");
-      while (true) { faceTick(); delay(200); }
+      uint32_t backoffMs = 3000;
+      while (!ready) {
+        for (uint32_t t = millis(); millis() - t < backoffMs; ) { faceTick(); delay(20); }
+        backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;   // cap at 30s
+        faceEmotion("thinking");
+        ready = firestoreWaitForCurrentQuestion(g_sessionId, g_currentQuestion, firstAudio, 30000, &g_currentSubject);
+      }
+      Serial.println("[Tutor] First question arrived after retry — recovered.");
     }
   }
 
