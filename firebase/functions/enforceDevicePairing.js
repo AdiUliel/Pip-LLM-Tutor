@@ -1,23 +1,30 @@
 /**
- * enforceDeviceUniqueness — one device ↔ one PARENT (siblings may share it).
+ * enforceDeviceUniqueness — the device belongs to the PARENT ACCOUNT (family
+ * device): every child under the same parent shares it automatically.
  *
  * A physical ESP32 has a STABLE anonymous UID and a MAC-derived pairing code,
  * and resolves "its" child on the device with:
  *     children where deviceId == <device UID>  limit 1
  * (see ESP32/homework_assistant/firebase_client.h: firestoreResolveChildId).
+ * That limit-1 pick is arbitrary among siblings — which is fine: a session is
+ * attributed to a specific child ONLY by the voice identify flow (the child
+ * says their name → matchChildByName over the parent's children →
+ * session.childId), and the firmware reports activeChildId only after that.
  *
- * Pairing the same device to a NEW child (pairing_sheet → child.deviceId = UID)
- * only sets the new child's deviceId — the PREVIOUS child keeps it. Two children
- * then share the same deviceId, and the device's limit-1 query sticks to the
- * stale/older one ("always loads the last child, e.g. Naama"). The device query
- * also has no parentId filter, so a device re-paired across accounts matches
- * children from both.
+ * What this trigger does on every children/{childId} write:
+ *   1. deviceId SET/CHANGED on a child →
+ *      a. clear that deviceId from every OTHER-PARENT child (cross-account
+ *         safety: a re-paired device must not match two accounts), and
+ *      b. COPY it to every same-parent sibling — pairing through ANY child
+ *         links the whole family, so each child's app view shows the device.
+ *   2. child CREATED without a deviceId → inherit the family device from any
+ *      sibling that has one (adding a child auto-connects it).
  *
- * This trigger keeps a device within ONE parent account: whenever a child's
- * deviceId becomes a (new) non-empty value, it clears that deviceId from every
- * OTHER-PARENT child (cross-account safety). Siblings under the SAME parent may
- * share the device — they're told apart per session by the voice identify flow
- * (matchChildByName → session.childId), so they're intentionally NOT unlinked.
+ * Loop safety: propagation re-fires the trigger, but siblings already holding
+ * the same deviceId are filtered out and unchanged-deviceId writes return
+ * early, so the cascade converges. Clearing (deviceId:"") on an EXISTING doc
+ * returns early too — the technician reset (which blanks the whole family)
+ * does not resurrect the link.
  */
 
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
@@ -28,39 +35,66 @@ exports.enforceDeviceUniqueness = onDocumentWritten(
   async (event) => {
     const after = event.data?.after?.data();
     if (!after) return;                    // deletion — nothing to enforce
+    const db = getFirestore();
+    const thisId = event.params.childId;
+    const before = event.data?.before?.data();
     const deviceId = after.deviceId;
-    if (!deviceId) return;                 // child not paired — nothing to enforce
+
+    // ── No device on this child ──────────────────────────────────────────────
+    if (!deviceId) {
+      // Newly CREATED child (no `before`): inherit the family device from a
+      // sibling, so a child added later is connected without re-pairing.
+      // Existing docs being cleared (reset/unpair) return here untouched.
+      if (!before && after.parentId) {
+        const family = await db
+          .collection("children")
+          .where("parentId", "==", after.parentId)
+          .get();
+        const donor = family.docs.find((d) => d.id !== thisId && d.data().deviceId);
+        if (donor) {
+          await event.data.after.ref.update({ deviceId: donor.data().deviceId });
+          console.log(
+            `[pairing] new child ${thisId} inherited family device ` +
+            `${donor.data().deviceId} from sibling ${donor.id}`
+          );
+        }
+      }
+      return;
+    }
 
     // Act only when THIS write actually set/changed the deviceId, so ordinary
     // child edits (name / settings / level …) don't trigger a full scan. On a
     // fresh create `before` is undefined → treat as a change.
-    const before = event.data?.before?.data();
     if (before && before.deviceId === deviceId) return;
 
-    const db = getFirestore();
-    const thisId = event.params.childId;
-
-    const dupes = await db
-      .collection("children")
-      .where("deviceId", "==", deviceId)
-      .get();
-
-    // Siblings (same parent) may SHARE one device — the device tells them apart
-    // per session via the voice identify flow (matchChildByName → session.childId).
-    // So unlink only children of OTHER parents (keeps cross-account safety).
+    // ── deviceId set/changed → the device follows the whole family ──────────
     const thisParentId = after.parentId;
-    const stale = dupes.docs.filter(
+    const [dupes, family] = await Promise.all([
+      db.collection("children").where("deviceId", "==", deviceId).get(),
+      thisParentId
+        ? db.collection("children").where("parentId", "==", thisParentId).get()
+        : Promise.resolve({ docs: [] }),
+    ]);
+
+    // a. Cross-account safety: strip the device from other parents' children.
+    const otherParents = dupes.docs.filter(
       (d) => d.id !== thisId && d.data().parentId !== thisParentId
     );
-    if (stale.length === 0) return;
+    // b. Family share: copy to same-parent siblings that don't have it yet
+    //    (also swaps them over when the family pairs a REPLACEMENT device).
+    const toShare = family.docs.filter(
+      (d) => d.id !== thisId && d.data().deviceId !== deviceId
+    );
 
-    // Clear the link on every other child that still claims this device.
-    // Writing deviceId:"" re-fires this trigger for those docs, but the empty
-    // guard above returns immediately — no loop.
-    await Promise.all(stale.map((d) => d.ref.update({ deviceId: "" })));
+    if (otherParents.length === 0 && toShare.length === 0) return;
+    await Promise.all([
+      ...otherParents.map((d) => d.ref.update({ deviceId: "" })),
+      ...toShare.map((d) => d.ref.update({ deviceId })),
+    ]);
     console.log(
-      `[pairing] device ${deviceId} -> child ${thisId}; unlinked ${stale.length} ` +
-      `stale child(ren): ${stale.map((d) => d.id).join(", ")}`
+      `[pairing] device ${deviceId} -> child ${thisId}; ` +
+      `shared with ${toShare.length} sibling(s), ` +
+      `unlinked ${otherParents.length} other-parent child(ren)`
     );
   }
 );
