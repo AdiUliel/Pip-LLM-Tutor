@@ -180,8 +180,16 @@ function levelFromChild(child, subject) {
 }
 
 function deterministicFeedback({ child, isCorrect, expectedAnswer, childAnswer, streakWrong, streakCorrect }) {
-  // Gender-correct praise word: "אלוף" for a boy, "אלופה" for a girl.
-  const champ = (child && child.gender === "boy") ? "אלוף" : "אלופה";
+  // Gender-correct praise word, rotated so it isn't always "אלוף". Every pair
+  // is WRITTEN differently for boy/girl, so the TTS can't pick the wrong
+  // pronunciation (unlike ambiguous forms such as "עבדת").
+  const PRAISE_WORDS = {
+    boy: ["אלוף", "גאון", "כוכב", "מלך"],
+    girl: ["אלופה", "גאונית", "כוכבת", "מלכה"],
+  };
+  const praisePool =
+    (child && child.gender === "boy") ? PRAISE_WORDS.boy : PRAISE_WORDS.girl;
+  const champ = praisePool[Math.floor(Math.random() * praisePool.length)];
   if (isCorrect) {
     // Rare milestone (long streak) → celebrating; a solid streak → proud;
     // a single correct answer → happy. Keeps celebrating special.
