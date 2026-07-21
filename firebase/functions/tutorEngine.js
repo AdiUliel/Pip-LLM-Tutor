@@ -194,7 +194,7 @@ function deterministicFeedback({ child, isCorrect, expectedAnswer, childAnswer, 
     }
     if (streakCorrect >= 2) {
       return {
-        spokenFeedback: `מעולה! זאת תשובה נכונה. צברת רצף יפה, כל הכבוד, ${champ}!`,
+        spokenFeedback: `מעולה! זאת תשובה נכונה. איזה רצף יפה, כל הכבוד, ${champ}!`,
         emotion: "proud",
         shouldTakeBreak: false,
       };
@@ -215,7 +215,7 @@ function deterministicFeedback({ child, isCorrect, expectedAnswer, childAnswer, 
   }
 
   return {
-    spokenFeedback: `ניסית, וזה הכי חשוב! ענית ${childAnswer || "תשובה לא ברורה"}, אבל התשובה הנכונה היא ${expectedAnswer}. בפעם הבאה ננסה לחשב שלב שלב — אני בטוח שנצליח יחד!`,
+    spokenFeedback: `ניסיון יפה, וזה הכי חשוב! שמעתי ${childAnswer || "תשובה לא ברורה"}, אבל התשובה הנכונה היא ${expectedAnswer}. בפעם הבאה ננסה לחשב שלב שלב — אני בטוח שנצליח יחד!`,
     emotion: "encouraging",
     shouldTakeBreak: false,
   };
@@ -485,8 +485,8 @@ async function processLearningTurn({
     if (saidNo) {
       const childName = child?.name || "";
       const farewellText = childName
-        ? `בסדר, מסיימים כאן. כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
-        : `בסדר, מסיימים כאן. כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+        ? `בסדר, מסיימים כאן. כל הכבוד ${childName}! היה שיעור מצוין היום. נתראה בפעם הבאה!`
+        : `בסדר, מסיימים כאן. כל הכבוד! היה שיעור מצוין היום. נתראה בפעם הבאה!`;
       return endSession(farewellText, "declined_continue");
     }
     if (!saidYes) {
@@ -549,8 +549,8 @@ async function processLearningTurn({
   if (detectExitIntent(childAnswer)) {
     const childName = child?.name || "";
     const farewellText = childName
-      ? `בסדר, מסיימים כי ביקשת לעצור. כל הכבוד ${childName}! עבדת מצוין היום. נתראה בפעם הבאה!`
-      : `בסדר, מסיימים כי ביקשת לעצור. כל הכבוד! עבדת מצוין היום. נתראה בפעם הבאה!`;
+      ? `בסדר, עוצרים כאן. כל הכבוד ${childName}! היה שיעור מצוין היום. נתראה בפעם הבאה!`
+      : `בסדר, עוצרים כאן. כל הכבוד! היה שיעור מצוין היום. נתראה בפעם הבאה!`;
     return endSession(farewellText, "child_request");
   }
 
