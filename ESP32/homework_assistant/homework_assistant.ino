@@ -599,7 +599,7 @@ void setup() {
   static const char* const STATIC_TTS_PHRASES[] = {
     "היי! מי כאן? תגיד לי את השם שלך אחרי שתלחץ על הכפתור.",
     "לא שמעתי. תלחץ על הכפתור ותגיד שוב את השם שלך.",
-    "לא שמעתי אותך. נסה לענות שוב.",
+    "לא שמעתי. נסה לענות שוב.",
     "לא הכרתי את השם הזה. אפשר להגיד אותו שוב, בבקשה?",
     "לא שמעתי. חשבון או אנגלית?",
     "לא הבנתי. חשבון או אנגלית?",
@@ -766,7 +766,7 @@ void repromptAfterMiss() {
   // question itself is already shown on the strip via faceStrip(), so the child
   // still sees what to answer.
   (void)q;   // kept for context/logging; intentionally not spoken
-  String msg = String("לא שמעתי אותך. ") + tail;
+  String msg = String("לא שמעתי. ") + tail;
   faceEmotion("encouraging");
   speakTextCached(msg);
   backToListening();
