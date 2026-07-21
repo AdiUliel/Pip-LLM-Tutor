@@ -206,10 +206,26 @@ Future<void> _showAlerts(BuildContext context) async {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                'התראות',
-                textAlign: TextAlign.right,
-                style: AppTextStyles.title(sheetCtx).copyWith(fontSize: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'התראות',
+                      textAlign: TextAlign.right,
+                      style:
+                          AppTextStyles.title(sheetCtx).copyWith(fontSize: 18),
+                    ),
+                  ),
+                  if (alerts.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: () =>
+                          sheetCtx.read<ConfigProvider>().dismissAlerts({
+                        for (final a in alerts) a.id: a.fingerprint,
+                      }),
+                      icon: const Icon(Icons.clear_all_rounded, size: 18),
+                      label: const Text('נקה הכל'),
+                    ),
+                ],
               ),
               const SizedBox(height: 12),
               if (alerts.isEmpty)

@@ -89,4 +89,13 @@ class ConfigProvider extends ChangeNotifier {
     await _prefs.setString(_kDismissedAlerts, json.encode(map));
     notifyListeners();
   }
+
+  /// Dismiss a batch of alerts (the "clear all" button) in one prefs write.
+  Future<void> dismissAlerts(Map<String, String> idToFingerprint) async {
+    if (idToFingerprint.isEmpty) return;
+    final map = Map<String, String>.from(_dismissedAlerts);
+    map.addAll(idToFingerprint);
+    await _prefs.setString(_kDismissedAlerts, json.encode(map));
+    notifyListeners();
+  }
 }
