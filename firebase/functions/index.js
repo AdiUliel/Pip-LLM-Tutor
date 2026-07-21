@@ -414,7 +414,7 @@ async function handleIdentifyChild(sessionId, exchangeId, data) {
     promptText =
       attempts >= FALLBACK_AFTER && names.length >= 2 && names.length <= 4
         ? `לא הצלחתי לזהות. מי כאן — ${names.join(" או ")}?`
-        : `לא הבנתי את השם. חזור שוב על שמך.`;
+        : `לא הבנתי את השם. חזור שוב על השם שלך.`;
   }
 
   const audioUrl = await safeSynthesize(promptText, `${exchangeId}_identify`);

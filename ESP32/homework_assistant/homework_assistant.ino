@@ -409,7 +409,7 @@ String identifyCaptureAnswer(const char* retryPrompt) {
 // should wait and retry instead (see setup()).
 bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // ── Step 1 — ask "who's here?" ────────────────────────────────────────────
-  const char* welcomeText = "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.";
+  const char* welcomeText = "היי! מי כאן? תגיד לי את השם שלך אחרי שתלחץ על הכפתור.";
   faceEmotion("speaking");
   if (!speakTextCached(welcomeText)) {     // SD cache → instant after first boot
     Serial.println("[Identify] TTS welcome failed.");
@@ -421,7 +421,7 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   // mis-recognised. The only non-retry exit is needsPairing: the device's UID
   // isn't linked to any parent, so no spoken name can ever match and looping
   // would trap the child forever.
-  const char* nameRetry = "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.";
+  const char* nameRetry = "לא שמעתי. תלחץ על הכפתור ותגיד שוב את השם שלך.";
   IdentifyResult child;
   while (true) {
     String nameTranscript = identifyCaptureAnswer(nameRetry);
@@ -597,8 +597,8 @@ void setup() {
   // passed to speakTextCached() below verbatim (same bytes → same cache key). Runs
   // once; on later boots every phrase is already on the card and is skipped.
   static const char* const STATIC_TTS_PHRASES[] = {
-    "היי! מי כאן? תגיד לי את שמך אחרי שתלחץ על הכפתור.",
-    "לא שמעתי. תלחץ על הכפתור ותגיד שוב את שמך.",
+    "היי! מי כאן? תגיד לי את השם שלך אחרי שתלחץ על הכפתור.",
+    "לא שמעתי. תלחץ על הכפתור ותגיד שוב את השם שלך.",
     "לא שמעתי אותך. נסה לענות שוב.",
     "לא הכרתי את השם הזה. אפשר להגיד אותו שוב, בבקשה?",
     "לא שמעתי. חשבון או אנגלית?",
