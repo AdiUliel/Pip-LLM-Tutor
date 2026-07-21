@@ -236,7 +236,10 @@ async function recognizeSpeech(audioBase64, languageCode = "he-IL", phraseHints 
 // Low-level Google TTS call → MP3 Buffer (no Storage). Shared by the URL-based
 // path (synthesizeAudio) and the bytes-in-response path (processTurn).
 async function ttsToMp3Buffer(text) {
-  const speech = String(text || "").trim();
+  // Fill-in-the-blank prompts contain "___" — the TTS voice reads each
+  // underscore aloud ("קו תחתון" ×3), so swap the blank for a comma pause:
+  // "She ___ happy" is spoken "She, happy". Display text keeps the blank.
+  const speech = String(text || "").replace(/_+/g, ", ").trim();
   if (!speech) return null;
 
   const access_token = await getAccessToken();

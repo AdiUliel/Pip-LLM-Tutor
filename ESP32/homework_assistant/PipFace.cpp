@@ -342,6 +342,21 @@ bool isLtrStrong(uint32_t cp) {
          (cp >= 'A' && cp <= 'Z');
 }
 
+// Direction-neutral characters. When these sit BETWEEN two LTR-strong runs
+// they belong to the English/number phrase ("She ___ happy", "5 + 3"), so the
+// re-reverse pass bridges across them — otherwise the phrase's word order
+// flips on screen ("happy ___ She").
+bool isBidiNeutral(uint32_t cp) {
+  switch (cp) {
+    case ' ': case '_': case '.': case ',': case '\'': case '"':
+    case '-': case '?': case '!': case ':': case '+': case '=':
+    case '/': case '*': case '%':
+      return true;
+    default:
+      return false;
+  }
+}
+
 String bidiToVisual(const char* utf8) {
   constexpr int MAX_CPS = 128;
   uint32_t cps[MAX_CPS];
@@ -373,15 +388,33 @@ String bidiToVisual(const char* utf8) {
   }
 
   // 3. Re-reverse LTR-strong runs (numbers + Latin) so they read naturally.
+  //    A run extends across neutral characters when another LTR-strong char
+  //    follows, so a multi-word English phrase stays one left-to-right block
+  //    ("She ___ happy") instead of word-reversing. Hebrew between numbers
+  //    ("5 כפול 8") still splits the runs as before.
   int i = 0;
   while (i < n) {
     if (isLtrStrong(cps[i])) {
+      int lastStrong = i;
       int j = i;
-      while (j < n && isLtrStrong(cps[j])) j++;
-      for (int a = i, b = j - 1; a < b; a++, b--) {
+      while (j < n) {
+        if (isLtrStrong(cps[j])) {
+          lastStrong = j;
+          j++;
+        } else if (isBidiNeutral(cps[j])) {
+          int k = j;
+          while (k < n && isBidiNeutral(cps[k])) k++;
+          if (k < n && isLtrStrong(cps[k])) j = k;
+          else break;
+        } else {
+          break;
+        }
+      }
+      int end = lastStrong + 1;
+      for (int a = i, b = end - 1; a < b; a++, b--) {
         uint32_t t = cps[a]; cps[a] = cps[b]; cps[b] = t;
       }
-      i = j;
+      i = end;
     } else {
       i++;
     }
