@@ -453,9 +453,16 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
   g_childIdentified = true;   // real child confirmed — deviceState may attribute activity now
 
   // ── Step 2 — speak greeting + ask for subject, record answer ──────────────
+  // Download first (previous face persists); the "speaking" face flips only
+  // when the audio is in hand — not 1-2 s of TLS+download before any sound.
   if (!child.audioUrl.isEmpty()) {
-    faceEmotion("speaking");
-    speakAudio(child.audioUrl);
+    size_t gLen = 0;
+    uint8_t* gMp3 = ttsFetchUrl(child.audioUrl, &gLen);
+    if (gMp3) {
+      faceEmotion("speaking");
+      speakFromBuffer(gMp3, gLen);
+      free(gMp3);
+    }
   }
 
   // Repeat "math or english?" until the cloud returns a recognised subject
@@ -484,15 +491,24 @@ bool runIdentifyFlow(String& firstQuestionOut, String& firstAudioUrlOut) {
 }
 
 // Speak the current question and move into the "waiting for the child" state.
+// Slow work first (Firestore write + MP3 download, ~2-4 s combined) while the
+// previous face still shows; the "asking" face + question text land only right
+// before the sound — otherwise the screen led the audio by those seconds.
 void askCurrentQuestion(const String& audioUrl) {
   Serial.println("[Tutor] Question: " + g_currentQuestion);
+  state = SPEAKING;
+  firestoreWriteDeviceState("asking", g_currentQuestion);
+
+  size_t qLen = 0;
+  uint8_t* qMp3 = ttsFetchUrl(audioUrl, &qLen);
+
   faceStatus("asking");
   faceStrip(g_currentQuestion);
-  firestoreWriteDeviceState("asking", g_currentQuestion);
   faceTick();
-
-  state = SPEAKING;
-  speakAudio(audioUrl);            // releases I2S when done
+  if (qMp3) {
+    speakFromBuffer(qMp3, qLen);
+    free(qMp3);
+  }
 
   // Now listen.
   state = IDLE;
@@ -909,24 +925,43 @@ void processCapturedAnswer() {
   Serial.println("[Main] Next:     " + turn.nextQuestion);
   Serial.println("[Main] Emotion:  " + turn.emotion);
 
-  // Show emotion + speak feedback (audio already includes the next question).
+  // Show emotion + speak. When the server reports the feedback/question MP3
+  // boundary (X-Feedback-Mp3-Bytes), play in TWO parts: the strip keeps the
+  // question the feedback refers to, then flips to the next question exactly
+  // when its own audio starts. Without the header — legacy single play.
+  bool splitPlay = turn.feedbackMp3Bytes > 0 && turn.audioBuf &&
+                   turn.feedbackMp3Bytes < turn.audioLen;
   faceEmotion(pipEmotionFor(turn.emotion));
   // (No deviceState write here — the post-playback "listening" write below pushes
   // the next question; keeping a write on this line only delayed playback ~2 s.)
-  faceStrip(turn.nextQuestion);
+  faceStrip(splitPlay ? g_currentQuestion : turn.nextQuestion);
 
   state = SPEAKING;
   uint32_t _latPrePlay = millis();
+  uint32_t _latFirstSoundStamp = 0;
 #if USE_PROCESS_TURN
-  speakFromBuffer(turn.audioBuf, turn.audioLen);   // inline MP3 from the turn response
+  if (splitPlay) {
+    speakFromBuffer(turn.audioBuf, turn.feedbackMp3Bytes);       // feedback part
+    _latFirstSoundStamp = g_ttsFirstSampleMs;   // part 2 resets the global stamp
+    faceEmotion("speaking");
+    faceStrip(turn.nextQuestion);               // flips WITH the question audio
+    g_currentQuestion = turn.nextQuestion;
+    speakFromBuffer(turn.audioBuf + turn.feedbackMp3Bytes,       // question part
+                    turn.audioLen - turn.feedbackMp3Bytes);
+  } else {
+    speakFromBuffer(turn.audioBuf, turn.audioLen); // inline MP3 from the turn response
+    _latFirstSoundStamp = g_ttsFirstSampleMs;
+  }
   if (turn.audioBuf) { free(turn.audioBuf); turn.audioBuf = nullptr; }
 #else
   speakAudio(turn.audioUrl);          // installs its own I2S; releases it when done
+  _latFirstSoundStamp = g_ttsFirstSampleMs;
 #endif
 
-  // [lat] One-line round-trip summary. g_ttsFirstSampleMs was stamped the instant
-  // the first audio sample hit I2S (robot starts speaking).
-  uint32_t _latFirstSound = g_ttsFirstSampleMs ? g_ttsFirstSampleMs : millis();
+  // [lat] One-line round-trip summary. The stamp was captured right after the
+  // FIRST play call (robot starts speaking) — the split path's second call
+  // would otherwise overwrite it with the question onset.
+  uint32_t _latFirstSound = _latFirstSoundStamp ? _latFirstSoundStamp : millis();
 #if USE_PROCESS_TURN && USE_PROCESS_TURN_AUDIO
   // Phase 2: STT is folded into processTurnAudio, so there's no separate stt stage.
   Serial.printf(

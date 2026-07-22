@@ -173,6 +173,22 @@ uint8_t* _ttsDownloadToPSRAM(const String& audioUrl, size_t* outLen) {
   return mp3Buf;
 }
 
+// ── Two-phase play: fetch now, play later ────────────────────────────────────
+// Lets the caller download the MP3 FIRST (while the previous face/strip is
+// still showing) and only then set the new visuals + speakFromBuffer — so the
+// face doesn't flip seconds before the sound. Returns a fresh PSRAM buffer
+// (caller frees) or nullptr on empty/non-URL/download failure.
+uint8_t* ttsFetchUrl(const String& audioUrl, size_t* outLen) {
+  *outLen = 0;
+  if (audioUrl.isEmpty() ||
+      (!audioUrl.startsWith("http://") && !audioUrl.startsWith("https://"))) {
+    Serial.println("[TTS] no fetchable audio URL — skipping.");
+    return nullptr;
+  }
+  Serial.println("[TTS] Prefetching: " + audioUrl);
+  return _ttsDownloadToPSRAM(audioUrl, outLen);
+}
+
 // ── Download MP3 from a URL, decode, play ────────────────────────────────────
 void speakFromUrl(const String& audioUrl) {
   if (audioUrl.isEmpty()) {

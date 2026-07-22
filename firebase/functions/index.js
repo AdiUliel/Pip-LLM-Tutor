@@ -959,6 +959,26 @@ exports.processTurn = onRequest(
         if (r.buffer) audioBuffer = r.buffer;
         return r.url;   // "" — audioData isn't used on the processTurn path
       };
+      // Two-part variant: feedback + next question synthesized separately and
+      // concatenated, so the device can be told where the feedback MP3 ends
+      // (X-Feedback-Mp3-Bytes) and flip the strip exactly at the question audio.
+      // Old firmware ignores the header and plays the concatenation unchanged.
+      let feedbackMp3Bytes = 0;
+      const synthesizePartsCapturing = async (feedbackText, questionText, _fileId) => {
+        const [fb, q] = await Promise.all([
+          ttsToMp3Buffer(feedbackText),
+          ttsToMp3Buffer(questionText),
+        ]);
+        if (fb && fb.length && q && q.length) {
+          audioBuffer = Buffer.concat([fb, q]);
+          feedbackMp3Bytes = fb.length;
+        } else {
+          // One part came back empty — degrade to single-utterance semantics.
+          audioBuffer = (fb && fb.length) ? fb : ((q && q.length) ? q : null);
+          feedbackMp3Bytes = 0;
+        }
+        return "";      // audioData isn't used on the processTurn path
+      };
 
       const tTurn = Date.now();
       const result = await processLearningTurn({
@@ -967,6 +987,7 @@ exports.processTurn = onRequest(
         model: GEMINI_MODEL,
         safetySettings: CHILD_SAFETY_SETTINGS,
         synthesize: synthesizeCapturing,
+        synthesizeParts: synthesizePartsCapturing,
         sessionId,
         exchangeId,
         exchangeData,
@@ -999,6 +1020,11 @@ exports.processTurn = onRequest(
       res.set("X-Next-Question-B64", b64(result.nextQuestion));
       // Echo what we heard so the audio path can log/show it (Phase 2 STT result).
       res.set("X-Transcript-B64",    b64(childAnswer));
+      // Where the feedback MP3 ends inside the body (two-part synth). Absent on
+      // single-utterance turns (hint / farewell / resync) — device plays as one.
+      if (feedbackMp3Bytes > 0 && audioBuffer && feedbackMp3Bytes < audioBuffer.length) {
+        res.set("X-Feedback-Mp3-Bytes", String(feedbackMp3Bytes));
+      }
 
       if (audioBuffer && audioBuffer.length > 0) {
         res.set("Content-Type", "audio/mpeg");

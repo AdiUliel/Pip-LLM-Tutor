@@ -572,6 +572,9 @@ struct TurnResult {
   // the caller — free(audioBuf) after playback. Empty on the post+poll path.
   uint8_t* audioBuf    = nullptr;
   size_t   audioLen    = 0;
+  // Bytes of the FEEDBACK part at the start of audioBuf (X-Feedback-Mp3-Bytes);
+  // the rest is the next question's MP3. 0 = single utterance, play as one.
+  size_t   feedbackMp3Bytes = 0;
 };
 
 // ── Poll the exchange until the Cloud Function finishes the turn ──────────────
@@ -715,7 +718,8 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
 
   const char* hdrKeys[] = {
     "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended", "X-End-Reason",
-    "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id", "X-Turn-Seq"
+    "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id", "X-Turn-Seq",
+    "X-Feedback-Mp3-Bytes"
   };
 
   // Up to 2 attempts so an expired token (401) can be refreshed and retried once.
@@ -746,6 +750,8 @@ bool firestoreProcessTurn(const String& sessionId, const String& childAnswer, Tu
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
     { String ts = http.header("X-Turn-Seq"); if (ts.length()) g_turnSeq = ts.toInt(); }
+    { String fb = http.header("X-Feedback-Mp3-Bytes");
+      out.feedbackMp3Bytes = fb.length() ? (size_t)fb.toInt() : 0; }
     Serial.println("[Firestore] exchangeId: " + http.header("X-Exchange-Id"));
 
     // ── MP3 body → PSRAM (caller frees out.audioBuf) ──────────────────────────
@@ -780,7 +786,7 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
   const char* hdrKeys[] = {
     "X-Is-Correct", "X-Emotion", "X-Should-Break", "X-Session-Ended", "X-End-Reason",
     "X-Feedback-B64", "X-Next-Question-B64", "X-Exchange-Id",
-    "X-Stt-Empty", "X-Transcript-B64", "X-Turn-Seq"
+    "X-Stt-Empty", "X-Transcript-B64", "X-Turn-Seq", "X-Feedback-Mp3-Bytes"
   };
   const size_t hdrCount = sizeof(hdrKeys) / sizeof(hdrKeys[0]);
 
@@ -825,6 +831,8 @@ bool firestoreProcessTurnAudio(const String& sessionId, const uint8_t* pcm, size
     out.spokenFeedback  = _b64ToString(http.header("X-Feedback-B64"));
     out.nextQuestion    = _b64ToString(http.header("X-Next-Question-B64"));
     { String ts = http.header("X-Turn-Seq"); if (ts.length()) g_turnSeq = ts.toInt(); }
+    { String fb = http.header("X-Feedback-Mp3-Bytes");
+      out.feedbackMp3Bytes = fb.length() ? (size_t)fb.toInt() : 0; }
     Serial.println("[Firestore] exchangeId: " + http.header("X-Exchange-Id"));
     String transcript   = _b64ToString(http.header("X-Transcript-B64"));
     if (transcript.length()) Serial.println("[STT] (server) heard: " + transcript);

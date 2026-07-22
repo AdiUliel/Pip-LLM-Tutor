@@ -393,6 +393,10 @@ async function processLearningTurn({
   model = DEFAULT_MODEL,
   safetySettings = CHILD_SAFETY_SETTINGS,
   synthesize = null,
+  // Optional two-part synthesizer (feedbackText, questionText, fileId) for the
+  // device path: lets the firmware learn where the feedback MP3 ends so it can
+  // flip the strip to the next question exactly when its audio starts.
+  synthesizeParts = null,
   sessionId,
   exchangeId,
   exchangeData,
@@ -754,13 +758,19 @@ async function processLearningTurn({
   // robot saying it twice in a row.
   const sayYesNo = (child && child.gender === "boy") ? "תגיד" : "תגידי";
   const continuePromptText = `${youWant} להמשיך לתרגל עוד קצת? ${sayYesNo} כן או לא.`;
+  const questionTail = isHintMode
+    ? ""
+    : (shouldAskToContinue ? continuePromptText : nextQuestion.prompt);
   const spokenText = isHintMode
     ? feedback.spokenFeedback.trim()
-    : shouldAskToContinue
-      ? `${feedback.spokenFeedback} ${continuePromptText}`.trim()
-      : `${feedback.spokenFeedback} ${nextQuestion.prompt}`.trim();
+    : `${feedback.spokenFeedback} ${questionTail}`.trim();
   let audioUrl = "";
-  if (synthesize) {
+  const fbText = feedback.spokenFeedback.trim();
+  if (synthesizeParts && fbText && questionTail.trim()) {
+    // Two-part synth: same sentences, but the caller learns the feedback/question
+    // MP3 boundary and reports it to the device (X-Feedback-Mp3-Bytes).
+    audioUrl = await synthesizeParts(fbText, questionTail.trim(), exchangeId);
+  } else if (synthesize) {
     audioUrl = await synthesize(spokenText, exchangeId);
   }
 
