@@ -584,6 +584,15 @@ exports.onSessionCreated = onDocumentCreated(
     const { sessionId } = event.params;
     const sessionRef = snap.ref;
 
+    // startedAt comes from the DEVICE clock. With NTP blocked (filtered
+    // networks) it's the 2000-01-01 placeholder — overwrite bogus epochs with
+    // the server clock so session-cap math and app history stay correct.
+    const startedMs = data.startedAt?.toMillis?.() ?? 0;
+    if (startedMs < Date.parse("2024-01-01T00:00:00Z")) {
+      await sessionRef.set({ startedAt: FieldValue.serverTimestamp() }, { merge: true });
+      console.log(`[${sessionId}] device startedAt was unsynced — restamped with server time`);
+    }
+
     // New identification flow: greet the child and ask for their name.
     if (data.status === "identifying") {
       const greetingText = "שלום! אני פיפ, המורה שלך. איך קוראים לך?";

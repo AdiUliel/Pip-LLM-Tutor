@@ -568,8 +568,13 @@ async function processLearningTurn({
   // Measure from the first LEARNING turn, not session creation — the session
   // opens at boot, before identify/subject-pick, and that overhead shouldn't
   // eat into the lesson time. Fallback: startedAt (sessions predating the field).
-  const sessionStartMs =
+  // startedAt is DEVICE-written: with NTP blocked (filtered networks) the device
+  // clock is the 2000-01-01 placeholder, which would compute a 26-year session
+  // age and end the lesson on the very first answer — ignore bogus epochs.
+  const MIN_SANE_START_MS = Date.parse("2024-01-01T00:00:00Z");
+  const rawStartMs =
     session.learningStartedAt?.toMillis?.() ?? session.startedAt?.toMillis?.() ?? 0;
+  const sessionStartMs = rawStartMs >= MIN_SANE_START_MS ? rawStartMs : 0;
   const sessionAgeMin = sessionStartMs > 0 ? (Date.now() - sessionStartMs) / 60000 : 0;
   // End at the parent-configured session length (clamped 5–60 min). Was a
   // hardcoded 50 that ignored the child's setting.
