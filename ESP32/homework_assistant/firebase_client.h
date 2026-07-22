@@ -1070,50 +1070,61 @@ int firestoreWriteDeviceState(const String& status,
                               const String& subject = SESSION_SUBJECT) {
   if (g_firebaseUid.isEmpty()) return -1;
 
-  // PATCH with an updateMask so we only touch the fields we own.
+  // documents:commit (not a document PATCH): its updateTransforms let FIRESTORE
+  // stamp lastHeartbeat with the server clock (REQUEST_TIME). With the device
+  // clock unsynced (NTP blocked — common on filtered conference/enterprise
+  // WiFi), a client timestamp would be the 2000-01-01 placeholder and the app
+  // would reject pairing as a stale heartbeat.
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
-  url += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
-  url += "?updateMask.fieldPaths=status";
-  url += "&updateMask.fieldPaths=lastHeartbeat";
-  url += "&updateMask.fieldPaths=currentQuestion";
-  url += "&updateMask.fieldPaths=activeSubject";
-  // Device health telemetry (refreshed on every state transition).
-  url += "&updateMask.fieldPaths=wifiRssi";
-  url += "&updateMask.fieldPaths=freeHeap";
-  url += "&updateMask.fieldPaths=uptimeSec";
-  url += "&updateMask.fieldPaths=bootCount";
-  url += "&updateMask.fieldPaths=ttsCacheHits";
-  url += "&updateMask.fieldPaths=ttsCacheMisses";
-  url += "&updateMask.fieldPaths=activeChildId";
-  url += "&updateMask.fieldPaths=activeChildName";
+  url += "/databases/(default)/documents:commit";
+
+  String docName = "projects/";
+  docName += FIREBASE_PROJECT_ID;
+  docName += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
 
   JsonDocument body;
-  body["fields"]["status"]["stringValue"]        = status;       // idle|asking|listening|feedback|break|error
-  body["fields"]["lastHeartbeat"]["timestampValue"] = isoNow();
+  body["writes"][0]["update"]["name"] = docName;
+  JsonObject fields = body["writes"][0]["update"]["fields"].to<JsonObject>();
+  fields["status"]["stringValue"]        = status;       // idle|asking|listening|feedback|break|error
   if (currentQuestion.length() > 0)
-    body["fields"]["currentQuestion"]["stringValue"] = currentQuestion;
+    fields["currentQuestion"]["stringValue"] = currentQuestion;
   else
-    body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
-  body["fields"]["activeSubject"]["stringValue"]   = subject;
+    fields["currentQuestion"]["nullValue"]   = nullptr;
+  fields["activeSubject"]["stringValue"]   = subject;
   // Firestore REST wants integerValue as a string. RSSI is dBm (negative), the
   // rest are unsigned. Cheap to read; useful for the reliability/coverage report.
-  body["fields"]["wifiRssi"]["integerValue"]       = String((int)WiFi.RSSI());
-  body["fields"]["freeHeap"]["integerValue"]       = String((uint32_t)ESP.getFreeHeap());
-  body["fields"]["uptimeSec"]["integerValue"]      = String((uint32_t)(millis() / 1000UL));
-  body["fields"]["bootCount"]["integerValue"]      = String(g_bootCount);
-  body["fields"]["ttsCacheHits"]["integerValue"]   = String(g_ttsCacheHits);
-  body["fields"]["ttsCacheMisses"]["integerValue"] = String(g_ttsCacheMisses);
+  fields["wifiRssi"]["integerValue"]       = String((int)WiFi.RSSI());
+  fields["freeHeap"]["integerValue"]       = String((uint32_t)ESP.getFreeHeap());
+  fields["uptimeSec"]["integerValue"]      = String((uint32_t)(millis() / 1000UL));
+  fields["bootCount"]["integerValue"]      = String(g_bootCount);
+  fields["ttsCacheHits"]["integerValue"]   = String(g_ttsCacheHits);
+  fields["ttsCacheMisses"]["integerValue"] = String(g_ttsCacheMisses);
   // Who's currently in front of the device — reported only once the child has
   // been identified by voice; before that g_childId may hold an arbitrary
   // sibling from the limit-1 resolve.
   if (g_childIdentified && g_childId.length() > 0) {
-    body["fields"]["activeChildId"]["stringValue"]   = g_childId;
-    body["fields"]["activeChildName"]["stringValue"] = g_childName;
+    fields["activeChildId"]["stringValue"]   = g_childId;
+    fields["activeChildName"]["stringValue"] = g_childName;
   } else {
-    body["fields"]["activeChildId"]["nullValue"]   = nullptr;
-    body["fields"]["activeChildName"]["nullValue"] = nullptr;
+    fields["activeChildId"]["nullValue"]   = nullptr;
+    fields["activeChildName"]["nullValue"] = nullptr;
   }
+  // Mask = only the fields we own (lastHeartbeat is owned by the transform).
+  JsonArray mask = body["writes"][0]["updateMask"]["fieldPaths"].to<JsonArray>();
+  mask.add("status");
+  mask.add("currentQuestion");
+  mask.add("activeSubject");
+  mask.add("wifiRssi");
+  mask.add("freeHeap");
+  mask.add("uptimeSec");
+  mask.add("bootCount");
+  mask.add("ttsCacheHits");
+  mask.add("ttsCacheMisses");
+  mask.add("activeChildId");
+  mask.add("activeChildName");
+  body["writes"][0]["updateTransforms"][0]["fieldPath"]        = "lastHeartbeat";
+  body["writes"][0]["updateTransforms"][0]["setToServerValue"] = "REQUEST_TIME";
 
   String bodyStr;
   serializeJson(body, bodyStr);
@@ -1123,9 +1134,9 @@ int firestoreWriteDeviceState(const String& status,
   http.begin(_sslClient, url);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + g_idToken);
-  int code = http.sendRequest("PATCH", bodyStr);
+  int code = http.POST(bodyStr);
   if (code != 200) {
-    Serial.printf("[Firestore] deviceState PATCH HTTP %d\n", code);
+    Serial.printf("[Firestore] deviceState commit HTTP %d\n", code);
   }
   http.end();
   return code;
@@ -1150,13 +1161,11 @@ void firestoreHeartbeat(const String& status,
                         const String& subject = SESSION_SUBJECT) {
   if (g_firebaseUid.isEmpty()) return;
 
+  // Same server-timestamp commit as firestoreWriteDeviceState — the heartbeat
+  // freshness must never depend on the device clock (NTP can be blocked).
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
-  url += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
-  url += "?updateMask.fieldPaths=status";
-  url += "&updateMask.fieldPaths=lastHeartbeat";
-  url += "&updateMask.fieldPaths=currentQuestion";
-  url += "&updateMask.fieldPaths=activeSubject";
+  url += "/databases/(default)/documents:commit";
 
   if (!_hbInit) {
     _initSSL();                          // fresh socket for the first heartbeat
@@ -1167,17 +1176,28 @@ void firestoreHeartbeat(const String& status,
     _hbInit = true;
   }
 
+  String docName = "projects/";
+  docName += FIREBASE_PROJECT_ID;
+  docName += "/databases/(default)/documents/deviceState/" + g_firebaseUid;
+
   JsonDocument body;
-  body["fields"]["status"]["stringValue"]           = status;
-  body["fields"]["lastHeartbeat"]["timestampValue"] = isoNow();
+  body["writes"][0]["update"]["name"] = docName;
+  JsonObject fields = body["writes"][0]["update"]["fields"].to<JsonObject>();
+  fields["status"]["stringValue"]           = status;
   if (currentQuestion.length() > 0)
-    body["fields"]["currentQuestion"]["stringValue"] = currentQuestion;
+    fields["currentQuestion"]["stringValue"] = currentQuestion;
   else
-    body["fields"]["currentQuestion"]["nullValue"]   = nullptr;
-  body["fields"]["activeSubject"]["stringValue"]     = subject;
+    fields["currentQuestion"]["nullValue"]   = nullptr;
+  fields["activeSubject"]["stringValue"]     = subject;
+  JsonArray mask = body["writes"][0]["updateMask"]["fieldPaths"].to<JsonArray>();
+  mask.add("status");
+  mask.add("currentQuestion");
+  mask.add("activeSubject");
+  body["writes"][0]["updateTransforms"][0]["fieldPath"]        = "lastHeartbeat";
+  body["writes"][0]["updateTransforms"][0]["setToServerValue"] = "REQUEST_TIME";
   String bodyStr; serializeJson(body, bodyStr);
 
-  int code = _hbHttp.sendRequest("PATCH", bodyStr);
+  int code = _hbHttp.sendRequest("POST", bodyStr);
   // Always drain the body — a reused keep-alive socket must be left clean.
   _hbHttp.getString();
   if (code == 401) {
@@ -1188,7 +1208,7 @@ void firestoreHeartbeat(const String& status,
     return;
   }
   if (code != 200) {
-    Serial.printf("[Firestore] heartbeat PATCH HTTP %d\n", code);
+    Serial.printf("[Firestore] heartbeat commit HTTP %d\n", code);
     if (code <= 0) { _hbHttp.end(); _hbInit = false; }  // socket dead — rebuild next time
   }
 }
