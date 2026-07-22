@@ -565,7 +565,11 @@ async function processLearningTurn({
   // ── 50-minute session auto-end ────────────────────────────────────────────────
   // Never cut a turn mid-flight; instead flag the end so it happens after this
   // answer's feedback is played and the child hears a natural farewell.
-  const sessionStartMs = session.startedAt?.toMillis?.() ?? 0;
+  // Measure from the first LEARNING turn, not session creation — the session
+  // opens at boot, before identify/subject-pick, and that overhead shouldn't
+  // eat into the lesson time. Fallback: startedAt (sessions predating the field).
+  const sessionStartMs =
+    session.learningStartedAt?.toMillis?.() ?? session.startedAt?.toMillis?.() ?? 0;
   const sessionAgeMin = sessionStartMs > 0 ? (Date.now() - sessionStartMs) / 60000 : 0;
   // End at the parent-configured session length (clamped 5–60 min). Was a
   // hardcoded 50 that ignored the child's setting.
